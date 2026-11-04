@@ -514,7 +514,8 @@ class AnalysisConfig {
   bool badChannels = true;
   bool gedai = true;
   bool interpolate = true;
-  bool epochBeforeGedai = true;
+  bool epochBeforeGedai = false;
+  double preprocessingEpochSeconds = 5;
   double gedaiEpochSeconds = 1;
   String gedaiThreshold = 'auto';
   // ICA (runica / Picard + ICLabel) and ASR, run before GEDAI.

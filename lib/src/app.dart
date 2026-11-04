@@ -293,6 +293,7 @@ class _FeatureHomeState extends State<FeatureHome>
   final _epochOverlap = TextEditingController(text: '0');
   final _dfaWindow = TextEditingController(text: '60');
   final _prepOverlap = TextEditingController(text: '0');
+  final _prepWindow = TextEditingController(text: '5');
   bool _batchPreprocessedInput = false;
   String? _groupInputCsv;
   bool _batchOpenGroupAfter = true;
@@ -445,6 +446,7 @@ class _FeatureHomeState extends State<FeatureHome>
     _epochOverlap.addListener(_syncConfigFromControllers);
     _dfaWindow.addListener(_syncConfigFromControllers);
     _prepOverlap.addListener(_syncConfigFromControllers);
+    _prepWindow.addListener(_syncConfigFromControllers);
     _gedaiEpoch.addListener(_syncConfigFromControllers);
     _gedaiThreshold.addListener(_syncConfigFromControllers);
     _start.addListener(_syncConfigFromControllers);
@@ -474,6 +476,7 @@ class _FeatureHomeState extends State<FeatureHome>
       ..epochSeconds = double.tryParse(_epoch.text) ?? _cfg.epochSeconds
       ..epochOverlapSeconds = double.tryParse(_epochOverlap.text) ?? 0
       ..preprocessingOverlapSeconds = double.tryParse(_prepOverlap.text) ?? 0
+      ..preprocessingEpochSeconds = double.tryParse(_prepWindow.text) ?? 5
       ..gedaiEpochSeconds =
           gedaiEpoch != null && gedaiEpoch.isFinite && gedaiEpoch > 0
           ? gedaiEpoch
@@ -520,6 +523,7 @@ class _FeatureHomeState extends State<FeatureHome>
       _epochOverlap,
       _dfaWindow,
       _prepOverlap,
+      _prepWindow,
       _batchSubjectLimit,
       _gedaiEpoch,
       _gedaiThreshold,
@@ -951,7 +955,7 @@ class _FeatureHomeState extends State<FeatureHome>
             (_presetKey == 'erp' || _cfg.stimEpochs || !_cfg.epochBeforeGedai)
             ? 0
             : _cfg.preprocessingOverlapSeconds,
-        outputWindowSeconds: _cfg.gedaiEpochSeconds,
+        outputWindowSeconds: _cfg.preprocessingEpochSeconds,
         options: PreprocessingOptions.fromJson({
           ..._cfg
               .toPreprocessingOptions(nonEegChannels: _channels.nonEegChannels)
@@ -3251,6 +3255,17 @@ class _FeatureHomeState extends State<FeatureHome>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (_presetKey != 'erp')
+          _preparationSection(
+            'Saved output',
+            _usesExistingEpochs
+                ? 'Preserve existing epochs'
+                : _cfg.epochBeforeGedai
+                ? 'Fixed windows · ${_cfg.preprocessingEpochSeconds}s'
+                : 'Continuous cleaned EEG',
+            [_buildSavedOutputOptions()],
+            open: true,
+          ),
         _preparationSection(
           'Signal preparation',
           '${_cfg.filter ? '${_cfg.lowHz}–${_cfg.highHz} Hz' : 'Filter off'} · ${_cfg.referenceMode == 'average' ? 'Average reference' : 'Reference: ${_cfg.referenceMode}'}',
@@ -3402,10 +3417,16 @@ class _FeatureHomeState extends State<FeatureHome>
     );
   }
 
-  Widget _buildDetailedPreprocessingOptions() => Column(
+  Widget _buildSavedOutputOptions() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      ProtocolTools(config: _cfg, onChanged: () => setState(() {})),
+      if (_usesExistingEpochs)
+        const Text(
+          'Existing epochs are preserved. Open the original continuous recording to create new windows.',
+        ),
+      const Text(
+        'Continuous output lets Feature Extraction define windows and overlap. GEDAI processing blocks do not define saved epochs.',
+      ),
       if (!_usesExistingEpochs && _presetKey != 'erp')
         DropdownButtonFormField<String>(
           initialValue: _cfg.stimEpochs
@@ -3436,7 +3457,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   _cfg.epochBeforeGedai = v == 'fixed';
                 }),
         ),
-      if (!_usesExistingEpochs && _presetKey != 'erp')
+      if (!_usesExistingEpochs && _presetKey != 'erp' && _cfg.stimEpochs)
         StimEpochPanel(
           showEnableControl: false,
           config: _cfg,
@@ -3449,15 +3470,21 @@ class _FeatureHomeState extends State<FeatureHome>
           !_cfg.stimEpochs &&
           _cfg.epochBeforeGedai) ...[
         _field(
-          _gedaiEpoch,
+          _prepWindow,
           'Fixed window length',
           suffix: 's',
           helper:
               'Length of each saved fixed window. Event-based trials use their own event window.',
-          error: _gedaiEpochError,
         ),
         _field(_prepOverlap, 'Fixed window overlap', suffix: 's'),
       ],
+    ],
+  );
+
+  Widget _buildDetailedPreprocessingOptions() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      ProtocolTools(config: _cfg, onChanged: () => setState(() {})),
       TextButton.icon(
         icon: const Icon(Icons.tune, size: 17),
         label: const Text('Additional processing parameters'),
@@ -4909,7 +4936,7 @@ class _FeatureHomeState extends State<FeatureHome>
           outputOverlapSeconds: (_cfg.stimEpochs || !_cfg.epochBeforeGedai)
               ? 0
               : _cfg.preprocessingOverlapSeconds,
-          outputWindowSeconds: _cfg.gedaiEpochSeconds,
+          outputWindowSeconds: _cfg.preprocessingEpochSeconds,
           onProgress: (p, msg) {
             _updateBatchFile(path, 'Running', progress: p);
             if (standalone) {

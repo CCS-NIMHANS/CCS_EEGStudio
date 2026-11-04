@@ -132,6 +132,12 @@ class ExtractionService {
           recording = await RecordingLoader().loadFull(recording);
         }
         final rewindow = subepochExisting && recording.isEpoched;
+        if (recording.isEpoched && !rewindow && epochOverlapSeconds != 0) {
+          onProgress(
+            0,
+            'Using saved epochs; the continuous-window overlap setting is ignored.',
+          );
+        }
         if (rewindow) {
           recording = RecordingTransform.subepoch(
             recording,
@@ -182,7 +188,9 @@ class ExtractionService {
             'epoch_start_seconds': recording.epochStartSeconds,
             'points_per_epoch': recording.pointsPerEpoch,
             'epoch_seconds': epochSeconds,
-            'epoch_overlap_seconds': rewindow ? 0 : epochOverlapSeconds,
+            'epoch_overlap_seconds': recording.isEpoched
+                ? 0
+                : epochOverlapSeconds,
             'options': options.toJson(),
             'selected_channels': selection.selectedChannels,
             'accepted_intervals': selection.acceptedIntervals,
@@ -325,16 +333,23 @@ class ExtractionService {
       onProgress(latestProgress, message);
     }
 
+    final saveFixedWindows =
+        options.epochBeforeGedai &&
+        options.stimEpochs == null &&
+        !recording.isEpoched;
     final outputWindow = outputWindowSeconds ?? options.gedaiEpochSeconds;
-    if (!outputOverlapSeconds.isFinite ||
-        outputOverlapSeconds < 0 ||
-        outputOverlapSeconds >= outputWindow) {
+    if (saveFixedWindows &&
+        (!outputOverlapSeconds.isFinite ||
+            outputOverlapSeconds < 0 ||
+            !outputWindow.isFinite ||
+            outputWindow <= 0 ||
+            outputOverlapSeconds >= outputWindow)) {
       throw ArgumentError(
         'Saved epoch overlap must be nonnegative and shorter than its window.',
       );
     }
     final stim = options.stimEpochs;
-    if (stim == null && outputOverlapSeconds > 0 && !recording.isEpoched) {
+    if (stim == null && !recording.isEpoched) {
       // Clean original samples once, then form overlapping saved windows.
       options = PreprocessingOptions.fromJson({
         ...options.toJson(),
@@ -645,7 +660,7 @@ class ExtractionService {
         }),
       );
       var cleaned = await RecordingLoader().load(outputPath);
-      if (stim == null && outputOverlapSeconds > 0) {
+      if (saveFixedWindows) {
         cleaned = RecordingTransform.subepoch(
           cleaned,
           outputWindowSeconds ?? options.gedaiEpochSeconds,

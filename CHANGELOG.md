@@ -4,7 +4,25 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
-## [Unreleased]
+## [1.2.32]
+
+### Continuous cleaned output and independent analysis windows
+
+- Correct the hidden preprocessing default that saved continuous inputs as 1-second trials using GEDAI's internal block length. New preprocessing now saves continuous cleaned EEG by default; feature extraction independently chooses analysis length and overlap.
+- Move **Saved output** into a visible, expanded preprocessing section in single-recording and EEG batch workflows. Choose continuous, event-based or explicit fixed-length output. Fixed output has its own length (default 5 seconds) and overlap fields, separate from GEDAI's internal processing blocks.
+- Clean continuous samples once before forming explicit fixed windows, including overlapping windows. Preserve annotation times and duplicate annotations into their corresponding overlapping windows. Existing saved trials retain their boundaries.
+- Fix feature extraction on saved trials rejecting an unrelated continuous-window overlap setting. Reusing complete saved trials ignores that setting; continuous and newly subdivided windows retain strict overlap validation. The engine also guards this behavior for direct callers.
+
+### Recovery and validation
+
+- Existing 1-second files are not repaired by installing this release. Rerun preprocessing from the original continuous recordings into a new output folder, choose **Saved output → Continuous recording**, then select the desired epoch length and overlap in Feature Extraction. Do not reuse old `-epo_clean` files when the intention is to create longer analysis windows.
+- Explicit fixed windows are optional; they deliberately create saved epochs. Existing trials can be subdivided within parent boundaries, but are not silently joined into longer recordings.
+- Validate three complete supplied raw EDFs through 19-channel selection, filtering, resampling, common-average referencing, GEDAI, continuous EDF export and 5-second/2-second-overlap PSD extraction. The cleaned recordings contained 400,750, 338,500 and 326,000 samples at 250 Hz, producing the expected 533, 450 and 434 analysis windows with original marker counts retained.
+- Add regression coverage for continuous output despite 1-second GEDAI blocks, explicit 5-second saved windows with 2-second overlap and annotation duplication, visible output controls, and native saved-trial overlap handling. Engine binary unit tests passed locally alongside the library and integration tests.
+
+### In-app updates
+
+Use **Updates → Check for updates → Download and install**. GitHub publishes macOS, Windows and Linux packages with SHA-256 checksums verified by the updater. Existing per-user Linux updates remain supported.
 
 ## [1.2.31]
 

@@ -23,10 +23,24 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.26</b> ·
+  <b>Current version: 1.2.32</b> ·
   <a href="CHANGELOG.md">Detailed changelog</a> ·
   <a href="https://github.com/arunsasidharan84/CCS_EEGStudio/issues">Report a problem</a>
 </p>
+
+### Cleaned output and analysis epochs — 1.2.32
+
+Preprocessing now defaults to **continuous cleaned EEG**. GEDAI's 1-second internal processing blocks do not determine saved epochs. The visible **Saved output** section offers continuous recording, event-based trials, or optional fixed windows with independent length and overlap. Feature Extraction creates its own analysis windows from continuous input. Saved trials are reused at their actual length unless explicitly subdivided; parent trial boundaries are preserved.
+
+**Rerun recordings affected by the old 1-second default:**
+
+1. Install 1.2.32 using **Updates → Check for updates → Download and install**.
+2. In Batch Workspace → EEG, select the original raw recordings, not the previous `-epo_clean` outputs. Review the EEG channel mapping and preprocessing settings.
+3. Under preprocessing **Saved output**, choose **Continuous recording**. Save into a new output folder so old results remain identifiable.
+4. In Feature Extraction, set the intended epoch length and overlap, for example **5 seconds / 2 seconds**, and use the new Stage 1 outputs.
+5. Check the cleaned file shows continuous duration rather than a 1-second epoch badge. Feature CSV rows represent the new analysis windows.
+
+Installing the update does not join or repair existing 1-second trials. To obtain longer windows, regenerate from the original continuous data. Explicit fixed output is available when saved epochs are actually wanted; its window length is independent of GEDAI. Three complete raw EDFs were validated through cleaning, EDF export and overlapping feature extraction; see [release details](CHANGELOG.md#1232).
 
 > **Important in 1.2.16:** corrected preprocessing resampling/event alignment, including 256→250 Hz. Version 1.2.15 used an incorrect rate ratio that can shift response-locked samples and reverse an ERP contrast. Regenerate affected outputs from their original inputs; an application update cannot repair already-misaligned epochs. See [the diagnosis, validation and recovery guidance](docs/erp_workbench.md#resampling-correction-and-existing-results). Individual-trial measurement CSV export is now optional and off by default; use `erp_measurements.csv` for conventional ERP condition averages.
 

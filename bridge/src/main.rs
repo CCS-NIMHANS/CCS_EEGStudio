@@ -686,6 +686,10 @@ fn analysis_offsets(
     overlap: f64,
     rate: f64,
 ) -> Result<Vec<usize>, String> {
+    // Existing trials are complete analysis windows; overlap cannot change them.
+    if parent == Some(window) && window > 0 {
+        return Ok((0..total/window).map(|i|i*window).collect());
+    }
     if !overlap.is_finite() || overlap < 0.0 || overlap * rate >= window as f64 {
         return Err("Epoch overlap must be nonnegative and shorter than the epoch".into());
     }
@@ -1772,5 +1776,17 @@ mod overlap_tests {
             vec![0, 4]
         );
         assert!(analysis_offsets(10, 4, None, 0.4, 10.0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod saved_epoch_overlap_regression {
+    #[test]
+    fn reuse_ignores_continuous_overlap() {
+        assert_eq!(
+            super::analysis_offsets(750, 250, Some(250), 2.0, 250.0).unwrap(),
+            vec![0, 250, 500]
+        );
+        assert!(super::analysis_offsets(750, 250, None, 2.0, 250.0).is_err());
     }
 }
