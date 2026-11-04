@@ -821,3 +821,34 @@ for validation findings, limitations, and method references.
 Install through **Updates → Check for updates → Download and install**. Platform packages and checksums are published in the GitHub release.
 
 Microstate analysis now offers per-sample state/fit/GFP exports, explicit epoch DC removal, Microsynt entropy representation ratios and dictionary discovery in both interactive and batch workflows. Progress includes model restarts, iterations and per-recording phases. See the [microstate syntax workflow, formulas and validation](docs/microstate_syntax.md).
+
+## New in 1.2.31: batch EEG channel correction
+
+Install using **Updates → Check for updates → Download and install**.
+
+Use **Batch EEG channel mapping…** above the EEG stages (also available in Stage 1).
+Choose any queued file as the representative. Review original names alongside
+editable EEG names; blank fields exclude channels. Suggestions remove `EEG ` and
+`-Ref` for compatible EDF labels and exclude POL channels and A1/A2 reference
+channels by default. Review these suggestions against your acquisition montage.
+
+For other naming conventions use the literal prefix/suffix and find/replace
+fields, including blank replacement to remove text. **Start from all original
+names** populates every channel; use source-name exclusion or blank individual
+fields to remove auxiliaries before applying. Corrections act on included names.
+Use **Apply to batch**, then run the desired stages. Save/load reusable
+`.ccschannels` mappings, or reset the mapping to restore automatic detection.
+
+Mapping is matched by original channel name, with corrected names also accepted
+for the next stage's already-cleaned input. Unmatched channels are excluded;
+files with fewer than four matching channels or duplicate corrected names fail
+explicitly. The mapping applies to samples before preprocessing, common-average
+referencing, ICA/GEDAI and subsequent source analysis, and to direct feature
+extraction. Signal samples and annotations are selected together; channel-specific
+annotations are reindexed. Original source names and the mapping are retained
+in processing history. Source files are not rewritten.
+
+Validated on three EDF recordings from the supplied RESEARCH_DATA02 folder,
+including a numerical EEG-only average-reference check. Unknown channel names
+remain a user decision; normalizing a label does not establish its anatomical
+identity or restore a missing acquisition reference.

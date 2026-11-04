@@ -143,7 +143,8 @@ class ExtractionService {
         String inputPath = recording.path;
         String inputFormat = recording.format;
 
-        if (!File(recording.path).existsSync() ||
+        if (recording.provenance.containsKey('batch_channel_mapping') ||
+            !File(recording.path).existsSync() ||
             (recording.isEpoched && recording.format != 'ccseeg') ||
             (recording.format == 'orb' || recording.format == 'xdf')) {
           final tempInput = File('${temp.path}/input_temp_$i.ccseeg.json');
@@ -388,7 +389,8 @@ class ExtractionService {
       String inputPath = recording.path;
       String inputFormat = recording.format;
 
-      if (!File(recording.path).existsSync() ||
+      if (recording.provenance.containsKey('batch_channel_mapping') ||
+          !File(recording.path).existsSync() ||
           (recording.isEpoched && recording.format != 'ccseeg') ||
           (recording.format == 'orb' || recording.format == 'xdf')) {
         final tempInput = File('${temp.path}/input_temp.ccseeg.json');

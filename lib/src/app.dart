@@ -1,3 +1,4 @@
+import 'batch_channels.dart';
 import 'feature_window_warnings.dart';
 import 'app_instance.dart';
 import 'recording_details.dart';
@@ -1643,6 +1644,268 @@ class _FeatureHomeState extends State<FeatureHome>
 
   _Module get _afterEpochs =>
       _cfg.erpEpochFirst ? _Module.preprocess : _Module.erpAnalysis;
+
+  BatchChannels? _batchChannels;
+  Future<EegRecording> _resolveBatchChannels(EegRecording r) async =>
+      _batchChannels == null
+      ? r
+      : _batchChannels!.apply(await RecordingLoader().loadFull(r));
+  Future<void> _editBatchChannels([String? example]) async {
+    final files = {..._batchPrepFiles, ..._batchFeatFiles}.toList();
+    if (files.isEmpty) return;
+    final r = await _loadRecordingWithFeedback(example ?? files.first);
+    final controls = {
+      for (final label in r.labels)
+        label: TextEditingController(
+          text:
+              _batchChannels?.names[label] ??
+              (label.toUpperCase().startsWith('EEG ') &&
+                      !RegExp(
+                        r'^EEG\s+[AM][12]-',
+                        caseSensitive: false,
+                      ).hasMatch(label)
+                  ? suggestedEegName(label)
+                  : ''),
+        ),
+    };
+    if (!mounted) return;
+    var loadedNames = <String, String>{...?_batchChannels?.names};
+    String? nextExample;
+    final exclude = TextEditingController();
+    final prefix = TextEditingController(),
+        suffix = TextEditingController(),
+        find = TextEditingController(),
+        replacement = TextEditingController();
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Batch EEG channel mapping'),
+        content: SizedBox(
+          width: 560,
+          height: 480,
+          child: Column(
+            children: [
+              DropdownButton<String>(
+                isExpanded: true,
+                value: example ?? files.first,
+                items: [
+                  for (final path in files)
+                    DropdownMenuItem(
+                      value: path,
+                      child: Text(
+                        _shortName(path),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (v) {
+                  if (v != null && v != (example ?? files.first)) {
+                    nextExample = v;
+                    Navigator.pop(ctx, false);
+                  }
+                },
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: prefix,
+                      decoration: const InputDecoration(
+                        labelText: 'Remove prefix (literal)',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: suffix,
+                      decoration: const InputDecoration(
+                        labelText: 'Remove suffix (literal)',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: find,
+                      decoration: const InputDecoration(
+                        labelText: 'Find text (literal)',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: replacement,
+                      decoration: const InputDecoration(
+                        labelText: 'Replace with (blank removes)',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              TextField(
+                controller: exclude,
+                decoration: const InputDecoration(
+                  labelText: 'Exclude source names containing (literal)',
+                ),
+              ),
+              TextButton(
+                onPressed: () {
+                  if (exclude.text.isNotEmpty)
+                    for (final e in controls.entries)
+                      if (e.key.contains(exclude.text)) e.value.text = '';
+                },
+                child: const Text('Exclude matching channels'),
+              ),
+              Wrap(
+                children: [
+                  TextButton(
+                    onPressed: () {
+                      for (final e in controls.entries) e.value.text = e.key;
+                    },
+                    child: const Text('Start from all original names'),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      for (final c in controls.values) {
+                        if (c.text.isEmpty) continue;
+                        var name = c.text;
+                        if (prefix.text.isNotEmpty &&
+                            name.startsWith(prefix.text))
+                          name = name.substring(prefix.text.length);
+                        if (suffix.text.isNotEmpty &&
+                            name.endsWith(suffix.text))
+                          name = name.substring(
+                            0,
+                            name.length - suffix.text.length,
+                          );
+                        if (find.text.isNotEmpty)
+                          name = name.replaceAll(find.text, replacement.text);
+                        c.text = name.trim();
+                      }
+                    },
+                    child: const Text('Apply corrections to included names'),
+                  ),
+                ],
+              ),
+
+              const Text(
+                'Enter an EEG name to include a channel. Leave blank to exclude it. Preview uses the first queued file; unmatched channels are excluded and files with fewer than four selected channels stop with a clear error.',
+              ),
+              Expanded(
+                child: ListView(
+                  children: [
+                    for (final entry in controls.entries)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: TextField(
+                          controller: entry.value,
+                          decoration: InputDecoration(
+                            labelText: entry.key,
+                            hintText: 'Excluded from EEG analysis',
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              final picked = await FilePicker.pickFiles(
+                type: FileType.custom,
+                allowedExtensions: ['ccschannels'],
+              );
+              if (picked?.files.single.path == null) return;
+              try {
+                final data =
+                    jsonDecode(
+                          await File(picked!.files.single.path!).readAsString(),
+                        )
+                        as Map;
+                final names = data['channels'] as Map;
+                loadedNames = names.map(
+                  (key, value) => MapEntry(key as String, value as String),
+                );
+                for (final e in controls.entries)
+                  e.value.text = names[e.key] as String? ?? '';
+              } catch (e) {
+                if (ctx.mounted)
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    SnackBar(content: Text('Could not load mapping: $e')),
+                  );
+              }
+            },
+            child: const Text('Load mapping'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final path = await FilePicker.saveFile(
+                fileName: 'batch_channels',
+                type: FileType.custom,
+                allowedExtensions: ['ccschannels'],
+              );
+              if (path == null) return;
+              await File(
+                path.endsWith('.ccschannels') ? path : '$path.ccschannels',
+              ).writeAsString(
+                jsonEncode({
+                  'format': 'ccs-batch-channels-v1',
+                  'channels': {
+                    ...loadedNames,
+                    for (final e in controls.entries)
+                      e.key: e.value.text.trim(),
+                  },
+                }),
+              );
+            },
+            child: const Text('Save mapping'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final values = controls.values
+                  .map((c) => c.text.trim().toLowerCase())
+                  .where((v) => v.isNotEmpty)
+                  .toList();
+              if (values.length < 4 || values.toSet().length != values.length) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Select at least four EEG channels with unique corrected names.',
+                    ),
+                  ),
+                );
+                return;
+              }
+              Navigator.pop(ctx, true);
+            },
+            child: const Text('Apply to batch'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true)
+      setState(
+        () => _batchChannels = BatchChannels({
+          ...loadedNames,
+          for (final e in controls.entries) e.key: e.value.text.trim(),
+        }),
+      );
+    for (final c in controls.values) c.dispose();
+    for (final c in [prefix, suffix, find, replacement, exclude]) c.dispose();
+    if (nextExample != null && mounted) await _editBatchChannels(nextExample);
+  }
 
   Widget _buildPipelineSidebar() => Material(
     color: const Color(0xFF0A1628),
@@ -3738,6 +4001,21 @@ class _FeatureHomeState extends State<FeatureHome>
               'Folder import: first N subjects (0 = all)',
             ),
           ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _running ? null : _editBatchChannels,
+              icon: const Icon(Icons.tune),
+              label: const Text('Batch EEG channel mapping…'),
+            ),
+          ),
+          if (_batchChannels != null)
+            TextButton(
+              onPressed: _running
+                  ? null
+                  : () => setState(() => _batchChannels = null),
+              child: const Text('Reset batch channel mapping'),
+            ),
           SwitchListTile(
             dense: true,
             title: const Text('Already preprocessed: start with features'),
@@ -3863,13 +4141,19 @@ class _FeatureHomeState extends State<FeatureHome>
         const SizedBox(height: 8),
         _subLabel('CHANNEL TYPES'),
         const SizedBox(height: 2),
-        _infoBox(
-          'Non-EEG channels are auto-detected per file from their labels '
-          '(ECG, EOG, EMG, GSR, respiration, PPG, motion, references, '
-          'triggers). Load a file in Single Recording mode to review and '
-          'override the detection before batching.',
-          _accentPink,
+        OutlinedButton.icon(
+          onPressed: _running ? null : _editBatchChannels,
+          icon: const Icon(Icons.edit),
+          label: Text(
+            _batchChannels == null
+                ? 'Define batch EEG channels…'
+                : 'Edit batch EEG channels…',
+          ),
         ),
+        if (_batchChannels != null)
+          Text(
+            '${_batchChannels!.names.values.where((n) => n.isNotEmpty).length} EEG channels selected; mapping applies before referencing and cleaning.',
+          ),
         const SizedBox(height: 8),
         _check(
           'Also run source localisation',
@@ -4603,7 +4887,9 @@ class _FeatureHomeState extends State<FeatureHome>
       _log('[${i + 1}/${_batchPrepFiles.length}] ${_shortName(path)}');
       try {
         final dir = _batchPrepOutputDir ?? File(path).parent.path;
-        final rec = await _loadRecordingWithFeedback(path);
+        final rec = await _resolveBatchChannels(
+          await _loadRecordingWithFeedback(path),
+        );
         if (_batchCancelRequested) break;
         final outPath =
             '$dir${Platform.pathSeparator}${erpOutputName(path, extension: RecordingStorage.extension, epoched: rec.isEpoched || _cfg.stimEpochs || _cfg.epochBeforeGedai, cleaned: true)}';
@@ -4776,7 +5062,9 @@ class _FeatureHomeState extends State<FeatureHome>
         try {
           // Deliberately retain only one recording at a time. The psiconnect
           // corpus is ~20 GB; loading its 482 previews together exhausted RAM.
-          final rec = await _loadRecordingWithFeedback(path);
+          final rec = await _resolveBatchChannels(
+            await _loadRecordingWithFeedback(path),
+          );
           if (_batchCancelRequested) break;
           final windowAdvice = featureWindowWarnings(_cfg, rec).join('\n');
           if (windowAdvice.isNotEmpty &&

@@ -6,6 +6,26 @@ its matching section is missing.
 
 ## [Unreleased]
 
+## [1.2.31]
+
+### Batch channel correction and selection
+
+- Add a batch EEG mapping editor with representative-file selection, arbitrary name editing, literal prefix/suffix removal, find/replace, source-name exclusions and reusable `.ccschannels` mappings.
+- Apply selected and renamed EEG samples before preprocessing/referencing/ICA and to direct feature extraction; corrected output names remain usable in downstream stages. Preserve original source names, mapping history and annotation channel indices.
+- Suggest EEG prefix/reference-suffix correction for compatible EDFs, excluding POL/auxiliary and A1/A2 references by default. Reject duplicate names or insufficient matches per file rather than silently incorporating unmatched channels.
+- Validate real EDF selection across three source files, an EEG-only average-reference calculation, app regression tests and static analysis.
+
+### Workflow and compatibility
+
+- Open **Batch EEG channel mapping…** above the EEG stages or within Stage 1. Choose any queued representative file. Use arbitrary per-channel edits or literal prefix/suffix removal and find/replace (blank replacement removes text); leave fields blank or use source-name exclusions to omit channels.
+- Review corrected names before applying. Save/load `.ccschannels` mappings for reuse. Already-corrected names are accepted when later stages consume cleaned outputs. Unknown/unmatched channels are excluded, duplicate corrected names are rejected, and files with fewer than four matching EEG channels fail with a clear message.
+- Apply mapping only in the EEG batch paths. Keep source files unchanged, retain source names/history, and materialize selected samples before native jobs so original EDF headers cannot override the reviewed selection.
+- Validation: 239 app tests passed (six skipped), clean static analysis, and three real EDFs with 39/43 channels resolved to the same 19 scalp EEG channels. A numerical common-average check used only those selected channels. This validates routing and referencing; it does not establish acquisition montage identity or validate every ICA/source result.
+
+### Installation and in-app updates
+
+Use **Updates → Check for updates → Download and install**. macOS, Windows and Linux packages include SHA-256 checksums verified by the app. Existing per-user Linux updates remain supported.
+
 ## [1.2.30]
 
 ### Microstate syntax and sample-level exports
