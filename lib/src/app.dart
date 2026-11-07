@@ -494,8 +494,144 @@ class _FeatureHomeState extends State<FeatureHome>
     setState(() {});
   }
 
-  bool get _usesExistingEpochs =>
-      !_batchMaximized && _activeRecording?.pointsPerEpoch != null;
+  EegRecording? _batchPrepEpochPreview;
+  EegRecording? _batchFeatEpochPreview;
+
+  EegRecording? get _prepEpochInput => _batchMaximized
+      ? (_batchPrepFiles.contains(_batchPrepEpochPreview?.path)
+            ? _batchPrepEpochPreview
+            : null)
+      : _activeRecording;
+
+  bool get _featureInputEpoched {
+    if (!_batchMaximized) return _activeRecording?.isEpoched ?? false;
+    if (_batchFeatUsePrep && !_batchPreprocessedInput) {
+      return (_prepEpochInput?.isEpoched ?? false) ||
+          _cfg.stimEpochs ||
+          _cfg.epochBeforeGedai;
+    }
+    return _batchFeatFiles.contains(_batchFeatEpochPreview?.path) &&
+        (_batchFeatEpochPreview?.isEpoched ?? false);
+  }
+
+  Future<void> _inspectEpochInput({bool features = false}) async {
+    final files = _batchMaximized
+        ? (features ? _batchFeatFiles : _batchPrepFiles)
+        : [if (_activeRecording != null) _activeRecording!.path];
+    if (files.isEmpty) {
+      _log('Add a recording first to inspect its events and saved epochs.');
+      return;
+    }
+    var selected = files.first;
+    Future<EegRecording> load(String path) => RecordingLoader().load(path);
+    var future = load(selected);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, refresh) => AlertDialog(
+          title: Text(
+            features
+                ? 'Inspect feature input'
+                : _cfg.stimEpochs
+                ? 'Event trials & condition groups'
+                : 'Inspect preprocessing input',
+          ),
+          content: SizedBox(
+            width: 540,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_batchMaximized)
+                    DropdownButtonFormField<String>(
+                      initialValue: selected,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Representative recording',
+                      ),
+                      items: [
+                        for (final path in files)
+                          DropdownMenuItem(
+                            value: path,
+                            child: Text(
+                              _shortName(path),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (path) {
+                        if (path != null)
+                          refresh(() {
+                            selected = path;
+                            future = load(path);
+                          });
+                      },
+                    ),
+                  FutureBuilder<EegRecording>(
+                    future: future,
+                    builder: (ctx, snapshot) {
+                      if (snapshot.hasError)
+                        return Text('Cannot inspect: ${snapshot.error}');
+                      final rec = snapshot.data;
+                      if (rec == null ||
+                          snapshot.connectionState != ConnectionState.done) {
+                        return const Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Column(
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(height: 12),
+                              Text('Reading events and recording structure…'),
+                            ],
+                          ),
+                        );
+                      }
+                      if (features) {
+                        _batchFeatEpochPreview = rec;
+                      } else {
+                        _batchPrepEpochPreview = rec;
+                      }
+                      if (features || rec.isEpoched || !_cfg.stimEpochs)
+                        return Text(
+                          rec.isEpoched
+                              ? '${rec.epochCount} saved epochs · ${rec.pointsPerEpoch! / rec.sampleRate} s each. Reuse them or subdivide within each parent trial.'
+                              : 'Continuous recording. Choose continuous output, fixed windows or event trials in Preprocessing.',
+                        );
+                      return Column(
+                        children: [
+                          ProtocolTools(
+                            config: _cfg,
+                            onChanged: () => refresh(() {}),
+                          ),
+                          StimEpochPanel(
+                            config: _cfg,
+                            compact: true,
+                            showEnableControl: false,
+                            markers: rec.markers,
+                            enabled: !_running,
+                            onChanged: () => refresh(() {}),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  bool get _usesExistingEpochs => _prepEpochInput?.isEpoched ?? false;
 
   String? get _gedaiEpochError {
     if (!_cfg.gedai) return null;
@@ -3064,6 +3200,11 @@ class _FeatureHomeState extends State<FeatureHome>
               (v) => _cfg.removeNonEeg = v,
             ),
             _check(
+              'Detailed PDF (all channels and feature tables)',
+              _cfg.detailedReport,
+              (v) => _cfg.detailedReport = v,
+            ),
+            _check(
               'Write PDF report',
               _cfg.generatePdfReport,
               (v) => _cfg.generatePdfReport = v,
@@ -3260,6 +3401,8 @@ class _FeatureHomeState extends State<FeatureHome>
             'Saved output',
             _usesExistingEpochs
                 ? 'Preserve existing epochs'
+                : _cfg.stimEpochs
+                ? 'Event trials · ${_cfg.stimMarkerGroups.length} groups'
                 : _cfg.epochBeforeGedai
                 ? 'Fixed windows · ${_cfg.preprocessingEpochSeconds}s'
                 : 'Continuous cleaned EEG',
@@ -3420,13 +3563,23 @@ class _FeatureHomeState extends State<FeatureHome>
   Widget _buildSavedOutputOptions() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
+      if (_batchMaximized && _batchPrepFiles.isNotEmpty)
+        TextButton.icon(
+          onPressed: _running ? null : () => _inspectEpochInput(),
+          icon: const Icon(Icons.find_in_page, size: 16),
+          label: const Text('Inspect input structure…'),
+        ),
       if (_usesExistingEpochs)
         const Text(
           'Existing epochs are preserved. Open the original continuous recording to create new windows.',
         ),
-      const Text(
-        'Continuous output lets Feature Extraction define windows and overlap. GEDAI processing blocks do not define saved epochs.',
-      ),
+      if (!_usesExistingEpochs)
+        const Padding(
+          padding: EdgeInsets.only(bottom: 8),
+          child: Text(
+            'Choose where to create epochs. Feature Extraction will reuse saved trials.',
+          ),
+        ),
       if (!_usesExistingEpochs && _presetKey != 'erp')
         DropdownButtonFormField<String>(
           initialValue: _cfg.stimEpochs
@@ -3457,14 +3610,22 @@ class _FeatureHomeState extends State<FeatureHome>
                   _cfg.epochBeforeGedai = v == 'fixed';
                 }),
         ),
-      if (!_usesExistingEpochs && _presetKey != 'erp' && _cfg.stimEpochs)
-        StimEpochPanel(
-          showEnableControl: false,
-          config: _cfg,
-          markers: _raw?.markers ?? const [],
-          enabled: !_running,
-          onChanged: () => setState(() {}),
+      if (!_usesExistingEpochs && _presetKey != 'erp' && _cfg.stimEpochs) ...[
+        Text(
+          '${_cfg.stimMarkerGroups.length} condition groups · ${_cfg.stimTmin} to ${_cfg.stimTmax} s',
         ),
+        OutlinedButton.icon(
+          onPressed:
+              _running ||
+                  (_batchMaximized
+                      ? _batchPrepFiles.isEmpty
+                      : _activeRecording == null)
+              ? null
+              : () => _inspectEpochInput(),
+          icon: const Icon(Icons.edit),
+          label: const Text('Define events & condition groups…'),
+        ),
+      ],
       if (!_usesExistingEpochs &&
           _presetKey != 'erp' &&
           !_cfg.stimEpochs &&
@@ -3474,7 +3635,7 @@ class _FeatureHomeState extends State<FeatureHome>
           'Fixed window length',
           suffix: 's',
           helper:
-              'Length of each saved fixed window. Event-based trials use their own event window.',
+              'Feature Extraction reuses these windows; optional subepochs stay within each window.',
         ),
         _field(_prepOverlap, 'Fixed window overlap', suffix: 's'),
       ],
@@ -3502,48 +3663,86 @@ class _FeatureHomeState extends State<FeatureHome>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _subLabel('EPOCH & DURATION'),
+        _subLabel(_featureInputEpoched ? 'SAVED EPOCHS' : 'ANALYSIS WINDOWS'),
         const SizedBox(height: 6),
-        _check(
-          'Detailed PDF (all channels and feature tables)',
-          _cfg.detailedReport,
-          (v) => _cfg.detailedReport = v,
-        ),
-        _field(_epoch, 'Epoch length (s)', suffix: 's'),
-        _field(_epochOverlap, 'Epoch overlap (s)', suffix: 's'),
-        _check(
-          'Subepoch existing trials (keep parent boundaries)',
-          _cfg.subepochExisting,
-          (v) => _cfg.subepochExisting = v,
-        ),
-        const SizedBox(height: 6),
-        DropdownButtonFormField<DurationMode>(
-          value: _cfg.mode,
-          dropdownColor: _cardColor,
-          style: const TextStyle(color: Colors.white, fontSize: 12),
-          decoration: const InputDecoration(labelText: 'Duration mode'),
-          items: DurationMode.values
-              .map(
-                (m) =>
-                    DropdownMenuItem(value: m, child: Text(_durationLabel(m))),
-              )
-              .toList(),
-          onChanged: _running ? null : (v) => setState(() => _cfg.mode = v!),
-        ),
-        if (_cfg.mode == DurationMode.interval) ...[
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              Expanded(child: _field(_start, 'Start s')),
-              const SizedBox(width: 8),
-              Expanded(child: _field(_end, 'End s')),
-            ],
+        if (_featureInputEpoched) ...[
+          const Text(
+            'Using saved preprocessing epochs. Event groups and parent boundaries are retained.',
           ),
+          _check(
+            'Subdivide saved epochs',
+            _cfg.subepochExisting,
+            (v) => _cfg.subepochExisting = v,
+          ),
+          if (_cfg.subepochExisting) ...[
+            _field(_epoch, 'Subepoch length (s)', suffix: 's'),
+            _field(_epochOverlap, 'Subepoch overlap (s)', suffix: 's'),
+            const Text(
+              'Subepochs must fit inside each parent epoch; epochs are never joined.',
+            ),
+          ],
+        ] else ...[
+          _field(_epoch, 'Epoch length (s)', suffix: 's'),
+          _field(_epochOverlap, 'Epoch overlap (s)', suffix: 's'),
+          if (_batchMaximized &&
+              (!_batchFeatUsePrep || _batchPreprocessedInput)) ...[
+            TextButton(
+              onPressed: _running
+                  ? null
+                  : () => _inspectEpochInput(features: true),
+              child: const Text('Inspect saved epochs from a file…'),
+            ),
+            _check(
+              'Subdivide saved epochs',
+              _cfg.subepochExisting,
+              (v) => _cfg.subepochExisting = v,
+            ),
+            const Text(
+              'Continuous files use these windows. Saved epochs are reused unless subdivision is enabled.',
+            ),
+          ],
         ],
-        if (_cfg.mode == DurationMode.bins) ...[
-          const SizedBox(height: 6),
-          _field(_bin, 'Bin size (s)', suffix: 's'),
-        ],
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text(
+            'Recording range (optional)',
+            style: TextStyle(fontSize: 12),
+          ),
+          children: [
+            const SizedBox(height: 6),
+            DropdownButtonFormField<DurationMode>(
+              value: _cfg.mode,
+              dropdownColor: _cardColor,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              decoration: const InputDecoration(labelText: 'Duration mode'),
+              items: DurationMode.values
+                  .map(
+                    (m) => DropdownMenuItem(
+                      value: m,
+                      child: Text(_durationLabel(m)),
+                    ),
+                  )
+                  .toList(),
+              onChanged: _running
+                  ? null
+                  : (v) => setState(() => _cfg.mode = v!),
+            ),
+            if (_cfg.mode == DurationMode.interval) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(child: _field(_start, 'Start s')),
+                  const SizedBox(width: 8),
+                  Expanded(child: _field(_end, 'End s')),
+                ],
+              ),
+            ],
+            if (_cfg.mode == DurationMode.bins) ...[
+              const SizedBox(height: 6),
+              _field(_bin, 'Bin size (s)', suffix: 's'),
+            ],
+          ],
+        ),
       ],
     );
   }
@@ -4249,6 +4448,11 @@ class _FeatureHomeState extends State<FeatureHome>
         _buildFeatureFamilies(padding: EdgeInsets.zero),
         const SizedBox(height: 8),
         _subLabel('OUTPUTS'),
+        _check(
+          'Detailed PDF (all channels and feature tables)',
+          _cfg.detailedReport,
+          (v) => _cfg.detailedReport = v,
+        ),
         _check('One CSV per file', _cfg.perFileCsv, (v) => _cfg.perFileCsv = v),
         _check(
           'Combined CSV across files',

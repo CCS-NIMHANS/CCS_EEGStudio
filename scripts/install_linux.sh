@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # CCS EEG Studio - Enterprise Linux Multi-User Server Installer & Updater
-# Repository: https://github.com/arunsasidharan84/CCS_EEGStudio
+# Repository: https://github.com/CCS-NIMHANS/CCS_EEGStudio
 # ==============================================================================
 set -euo pipefail
 
-GITHUB_REPO="arunsasidharan84/CCS_EEGStudio"
+GITHUB_REPO="CCS-NIMHANS/CCS_EEGStudio"
 
 echo "======================================================================"
 echo "          CCS EEG Studio - Linux Server Installation Setup            "
@@ -234,7 +234,7 @@ echo "--> Checking for latest CCS EEG Studio updates..."
 UPDATE_WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ccseeg-update.XXXXXXXX")
 trap 'rm -rf -- "$UPDATE_WORK_DIR"' EXIT
 TMP_SCRIPT="$UPDATE_WORK_DIR/install_linux.sh"
-curl -fsSL "https://raw.githubusercontent.com/arunsasidharan84/CCS_EEGStudio/main/scripts/install_linux.sh" -o "$TMP_SCRIPT"
+curl -fsSL "https://raw.githubusercontent.com/CCS-NIMHANS/CCS_EEGStudio/main/scripts/install_linux.sh" -o "$TMP_SCRIPT"
 chmod +x "$TMP_SCRIPT"
 bash "$TMP_SCRIPT" "$@"
 EOF

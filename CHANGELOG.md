@@ -4,6 +4,15 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [Unreleased]
+
+### Connected epoch workflow
+
+- Adapt Feature Extraction to the linked preprocessing output: saved fixed/event epochs are reused, with only optional subdivision controls. Hide unrelated fresh-epoch fields until continuous input is chosen; retain boundaries when subdividing.
+- Open event definitions in the same compact named-condition editor as ERP, including trial/baseline windows, response rules, advanced matching and reusable protocols. Inspect markers from a selectable representative batch recording rather than an unrelated single-recording file.
+- Add input-structure inspection for saved batch recordings. Mixed queues still use each recording's actual structure at execution; continuous files receive analysis windows and saved trials are reused or explicitly subdivided.
+- Collapse optional recording-range controls and move detailed PDF options into report settings. Preserve settings while navigating or switching output structure.
+
 ## [1.2.32]
 
 ### Continuous cleaned output and independent analysis windows
@@ -255,7 +264,7 @@ Open **Updates → Check for updates** to download and install v1.2.27. GitHub p
 - Isolate group-statistics scripts, Matplotlib caches and copied-plot files in unique temporary directories, avoiding cross-account and cross-instance temporary-file collisions.
 - Add ERP axis-control, epoch/stitched-window label, per-user installer, portable-asset selection and checksum-rejection tests.
 - Exercise two successive rootless installs and verify the first version remains intact while the launcher selects the second.
-- See [server installation, multiple instances and ERP display controls](https://github.com/arunsasidharan84/CCS_EEGStudio/blob/v1.2.21/docs/server_and_plot_controls.md).
+- See [server installation, multiple instances and ERP display controls](https://github.com/CCS-NIMHANS/CCS_EEGStudio/blob/v1.2.21/docs/server_and_plot_controls.md).
 
 
 ## [1.2.19]
@@ -312,9 +321,9 @@ Open **Updates → Check for updates** to download and install v1.2.27. GitHub p
 
 ### Guides and method references
 
-- [Recording formats, performance checks and independent format validation](https://github.com/arunsasidharan84/CCS_EEGStudio/blob/v1.2.19/docs/pallavi_performance_and_files.md)
-- [Pallavi ERP timing review, boundary-aware ICA, response rules and filename migration](https://github.com/arunsasidharan84/CCS_EEGStudio/blob/v1.2.19/docs/pallavi_erp_review.md)
-- [ERP methods, references, parity and recovery guidance](https://github.com/arunsasidharan84/CCS_EEGStudio/blob/v1.2.19/docs/erp_workbench.md)
+- [Recording formats, performance checks and independent format validation](https://github.com/CCS-NIMHANS/CCS_EEGStudio/blob/v1.2.19/docs/pallavi_performance_and_files.md)
+- [Pallavi ERP timing review, boundary-aware ICA, response rules and filename migration](https://github.com/CCS-NIMHANS/CCS_EEGStudio/blob/v1.2.19/docs/pallavi_erp_review.md)
+- [ERP methods, references, parity and recovery guidance](https://github.com/CCS-NIMHANS/CCS_EEGStudio/blob/v1.2.19/docs/erp_workbench.md)
 - [EEGLAB ICA workflow](https://eeglab.org/tutorials/06_RejectArtifacts/RunICA.html), [EEGLAB filtering guidance](https://eeglab.org/tutorials/05_Preprocess/Filtering.html), [EDF specifications](https://www.edfplus.info/specs/edf.html), [EDF+ specifications](https://www.edfplus.info/specs/edfplus.html)
 
 ## [1.2.16]
@@ -911,15 +920,15 @@ The sign reversal was caused by sample/event misalignment, not display orientati
 - Added Rust-backed EEG feature extraction, connectivity analysis, plotting,
   batch execution, CSV output, and PDF reporting.
 
-[1.2.5]: https://github.com/arunsasidharan84/CCS_EEGStudio/compare/v1.2.4...v1.2.5
-[1.2.4]: https://github.com/arunsasidharan84/CCS_EEGStudio/compare/v1.2.0...v1.2.4
-[1.2.3]: https://github.com/arunsasidharan84/CCS_EEGStudio/compare/v1.2.0...v1.2.3
-[1.2.0]: https://github.com/arunsasidharan84/CCS_EEGStudio/releases/tag/v1.2.0
-[1.1.3]: https://github.com/arunsasidharan84/CCS_EEGStudio/releases/tag/v1.1.3
-[1.1.2]: https://github.com/arunsasidharan84/CCS_EEGStudio/releases/tag/v1.1.2
-[1.1.1]: https://github.com/arunsasidharan84/CCS_EEGStudio/releases/tag/v1.1.1
-[1.1.0]: https://github.com/arunsasidharan84/CCS_EEGStudio/releases/tag/v1.1.0
-[1.0.0]: https://github.com/arunsasidharan84/CCS_EEGStudio/releases/tag/v1.0.0
+[1.2.5]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/compare/v1.2.4...v1.2.5
+[1.2.4]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/compare/v1.2.0...v1.2.4
+[1.2.3]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/compare/v1.2.0...v1.2.3
+[1.2.0]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/tag/v1.2.0
+[1.1.3]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/tag/v1.1.3
+[1.1.2]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/tag/v1.1.2
+[1.1.1]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/tag/v1.1.1
+[1.1.0]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/tag/v1.1.0
+[1.0.0]: https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/tag/v1.0.0
 
 ### Event-aligned feature plots (unreleased)
 - Export raw annotations as structured `event_markers` metadata with exact source onsets and durations.

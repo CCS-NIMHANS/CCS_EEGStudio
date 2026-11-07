@@ -6,7 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-const _repoOwner = 'arunsasidharan84';
+const _repoOwner = 'CCS-NIMHANS';
 const _repoName = 'CCS_EEGStudio';
 
 enum UpdatePlatform { macOS, windows, linuxDebian, linuxRpm }

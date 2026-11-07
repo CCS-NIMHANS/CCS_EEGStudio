@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use CCS EEG Studio in your research, please cite it using these metadata."
+type: software
+title: "CCS EEG Studio"
+abstract: "A cross-platform desktop suite for cognitive and clinical neurophysiology research, artifact cleaning, ERP analysis, microstates, and quantitative electroencephalography."
+version: 1.2.32
+date-released: 2026-11-07
+license: MIT
+repository-code: "https://github.com/CCS-NIMHANS/CCS_EEGStudio"
+url: "https://github.com/CCS-NIMHANS/CCS_EEGStudio"
+keywords:
+  - electroencephalography
+  - EEG
+  - event-related potentials
+  - ERP
+  - microstates
+  - source localization
+  - artifact removal
+  - functional connectivity
+  - neurophysiology
+  - Rust
+  - Flutter
+authors:
+  - family-names: Sasidharan
+    given-names: Arun
+    # orcid: "https://orcid.org/0000-0000-0000-0000"   # TODO: add ORCID
+    affiliation: "Centre for Consciousness Studies, Department of Neurophysiology, National Institute of Mental Health and Neurosciences (NIMHANS), Bengaluru, India"
+  # TODO: add co-authors who will be listed on the JOSS paper.
+# TODO: after the JOSS paper is accepted, add its DOI under preferred-citation.

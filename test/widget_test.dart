@@ -88,12 +88,55 @@ void main() {
       expect(find.text('Fixed window length'), findsOneWidget);
       expect(
         find.text(
-          'Length of each saved fixed window. Event-based trials use their own event window.',
+          'Feature Extraction reuses these windows; optional subepochs stay within each window.',
         ),
         findsOneWidget,
       );
     },
   );
+
+  testWidgets('batch saved windows allow reuse or subdivision only', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    await tester.tap(find.text('Batch Workspace'));
+    await tester.pumpAndSettle();
+    expect(find.text('Epoch length (s)'), findsOneWidget);
+    await tester.tap(find.text('Continuous recording'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fixed-length windows').last);
+    await tester.pumpAndSettle();
+    expect(find.text('SAVED EPOCHS'), findsOneWidget);
+    expect(find.text('Epoch length (s)'), findsNothing);
+    expect(find.text('Subepoch length (s)'), findsNothing);
+    await tester.tap(find.text('Subdivide saved epochs'));
+    await tester.pumpAndSettle();
+    expect(find.text('Subepoch length (s)'), findsOneWidget);
+    expect(find.text('Subepoch overlap (s)'), findsOneWidget);
+    await tester.tap(find.text('Fixed-length windows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continuous recording').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Epoch length (s)'), findsOneWidget);
+    expect(find.text('Subepoch length (s)'), findsNothing);
+  });
+
+  testWidgets('batch event epochs use compact ERP group editor entry', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    await tester.tap(find.text('Batch Workspace'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continuous recording'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Event-based trials (ERP)').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Define events & condition groups…'), findsOneWidget);
+    expect(find.text('SAVED EPOCHS'), findsOneWidget);
+    expect(find.text('Epoch length (s)'), findsNothing);
+    expect(find.text('Fixed window length'), findsNothing);
+    expect(find.text('Advanced marker matching'), findsNothing);
+  });
 
   test('GEDAI epoch size is independent of feature epoch length', () {
     final config = AnalysisConfig()

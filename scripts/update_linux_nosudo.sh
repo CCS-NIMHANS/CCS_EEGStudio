@@ -3,8 +3,8 @@
 set -euo pipefail
 TASK_DOWNLOAD_DIR="$(mktemp -d)"
 trap 'rm -rf "$TASK_DOWNLOAD_DIR"' EXIT
-REPO="https://github.com/arunsasidharan84/CCS_EEGStudio"
-VERSION="$(curl -fsSL https://api.github.com/repos/arunsasidharan84/CCS_EEGStudio/releases/latest | sed -n 's/.*"tag_name": *"v\([0-9.]*\)".*/\1/p' | head -1)"
+REPO="https://github.com/CCS-NIMHANS/CCS_EEGStudio"
+VERSION="$(curl -fsSL https://api.github.com/repos/CCS-NIMHANS/CCS_EEGStudio/releases/latest | sed -n 's/.*"tag_name": *"v\([0-9.]*\)".*/\1/p' | head -1)"
 case "$VERSION" in *[!0-9.]*|'') echo 'Cannot determine latest version' >&2; exit 1;; esac
 ASSET="CCSEEGStudio-linux-x86_64.tar.gz"
 curl -fL "$REPO/releases/download/v$VERSION/$ASSET" -o "$TASK_DOWNLOAD_DIR/$ASSET"

@@ -17,20 +17,25 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arunsasidharan84/CCS_EEGStudio/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/arunsasidharan84/CCS_EEGStudio?style=for-the-badge&color=2563eb&label=RELEASE"></a>
-  <a href="https://github.com/arunsasidharan84/CCS_EEGStudio/actions/workflows/build.yml"><img alt="Desktop build" src="https://img.shields.io/github/actions/workflow/status/arunsasidharan84/CCS_EEGStudio/build.yml?style=for-the-badge&label=BUILD"></a>
-  <a href="https://github.com/arunsasidharan84/CCS_EEGStudio/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/arunsasidharan84/CCS_EEGStudio/total?style=for-the-badge&color=16a34a&label=DOWNLOADS"></a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/CCS-NIMHANS/CCS_EEGStudio?style=for-the-badge&color=2563eb&label=RELEASE"></a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml"><img alt="Desktop build" src="https://img.shields.io/github/actions/workflow/status/CCS-NIMHANS/CCS_EEGStudio/build.yml?style=for-the-badge&label=BUILD"></a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/CCS-NIMHANS/CCS_EEGStudio/total?style=for-the-badge&color=16a34a&label=DOWNLOADS"></a>
+  <a href="https://joss.theoj.org/"><img alt="JOSS submission" src="https://img.shields.io/badge/JOSS-submission-brightgreen?style=for-the-badge"></a>
 </p>
 
 <p align="center">
   <b>Current version: 1.2.32</b> ·
   <a href="CHANGELOG.md">Detailed changelog</a> ·
-  <a href="https://github.com/arunsasidharan84/CCS_EEGStudio/issues">Report a problem</a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/issues">Report a problem</a>
 </p>
 
 ### Cleaned output and analysis epochs — 1.2.32
 
 Preprocessing now defaults to **continuous cleaned EEG**. GEDAI's 1-second internal processing blocks do not determine saved epochs. The visible **Saved output** section offers continuous recording, event-based trials, or optional fixed windows with independent length and overlap. Feature Extraction creates its own analysis windows from continuous input. Saved trials are reused at their actual length unless explicitly subdivided; parent trial boundaries are preserved.
+
+**Connected epoch controls:** In a linked EEG batch, choosing fixed windows or event trials in Preprocessing makes Feature Extraction show **Saved epochs**. Reuse them as-is, or enable **Subdivide saved epochs** to set a shorter length and overlap within each parent trial. Continuous output shows the regular analysis-window controls. For direct file queues, use **Inspect saved epochs from a file…** to adapt the controls to a representative recording; execution always checks each recording's actual structure.
+
+For event trials, choose **Define events & condition groups…**. Select a representative queued file to view its markers, name conditions, and set trial/baseline windows. Response inclusion and advanced matching remain available in collapsible sections. The same ERP editor and `.ccsprotocol` definitions are reused. **Inspect input structure…** identifies continuous versus already-epoched preprocessing inputs. Mixed queues may contain both structures; saved trials are never implicitly joined.
 
 **Rerun recordings affected by the old 1-second default:**
 
@@ -68,9 +73,11 @@ See [ERP workflow, methods, references, numerical validation and limitations](do
   <a href="#-quick-download"><b>📥 Download App</b></a> &nbsp;•&nbsp;
   <a href="#about"><b>About</b></a> &nbsp;•&nbsp;
   <a href="#-features"><b>Features</b></a> &nbsp;•&nbsp;
-  <a href="#-running--building-locally"><b>Build from Source</b></a> &nbsp;•&nbsp;
+  <a href="#-running--building-locally"><b>Build & Test</b></a> &nbsp;•&nbsp;
   <a href="CHANGELOG.md"><b>Release Notes</b></a> &nbsp;•&nbsp;
-  <a href="https://github.com/arunsasidharan84/CCS_EEGStudio/issues"><b>Report Issue</b></a>
+  <a href="CONTRIBUTING.md"><b>Contributing</b></a> &nbsp;•&nbsp;
+  <a href="paper/paper.md"><b>JOSS Paper</b></a> &nbsp;•&nbsp;
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/issues"><b>Report Issue</b></a>
 </p>
 
 ---
@@ -81,12 +88,12 @@ Pre-built standalone desktop installers and application bundles are published th
 
 | Platform | Package Type | Extracted App / Binary | Direct Download Link |
 | :--- | :--- | :--- | :--- |
-| **macOS** | Apple Silicon ZIP (macOS 12+) | **`CCS EEG Studio.app`** | [CCSEEGStudio-macos.zip](https://github.com/arunsasidharan84/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-macos.zip) |
-| **Windows** | 64-bit installer (Windows 10/11) | `CCSEEGStudio-Installer.exe` | [CCSEEGStudio-Installer.exe](https://github.com/arunsasidharan84/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-Installer.exe) |
-| **Linux (Debian / Ubuntu)** | amd64 DEB package | `ccseegstudio` | [CCSEEGStudio-linux-amd64.deb](https://github.com/arunsasidharan84/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-linux-amd64.deb) |
-| **Linux (RHEL / AlmaLinux)** | x86_64 RPM package | `ccseegstudio` | [CCSEEGStudio-linux-x86_64.rpm](https://github.com/arunsasidharan84/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-linux-x86_64.rpm) |
+| **macOS** | Apple Silicon ZIP (macOS 12+) | **`CCS EEG Studio.app`** | [CCSEEGStudio-macos.zip](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-macos.zip) |
+| **Windows** | 64-bit installer (Windows 10/11) | `CCSEEGStudio-Installer.exe` | [CCSEEGStudio-Installer.exe](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-Installer.exe) |
+| **Linux (Debian / Ubuntu)** | amd64 DEB package | `ccseegstudio` | [CCSEEGStudio-linux-amd64.deb](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-linux-amd64.deb) |
+| **Linux (RHEL / AlmaLinux)** | x86_64 RPM package | `ccseegstudio` | [CCSEEGStudio-linux-x86_64.rpm](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-linux-x86_64.rpm) |
 
-> 📦 **All Releases & Checksums:** Every release includes [`SHA256SUMS.txt`](https://github.com/arunsasidharan84/CCS_EEGStudio/releases/latest/download/SHA256SUMS.txt) for cryptographic verification. View all packages on the **[GitHub Releases Page](https://github.com/arunsasidharan84/CCS_EEGStudio/releases/latest)**.  
+> 📦 **All Releases & Checksums:** Every release includes [`SHA256SUMS.txt`](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/SHA256SUMS.txt) for cryptographic verification. View all packages on the **[GitHub Releases Page](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest)**.  
 > 🔄 **In-App Upgrades:** Once installed, choose **Updates** in the app's top bar to check, download, and apply the correct update package automatically.
 
 #### 🍏 First-Time Launch for macOS Users (Gatekeeper Setup)
@@ -111,7 +118,7 @@ To install or update CCS EEG Studio across all current and future user accounts 
 
 ```bash
 # Automated multi-user installation:
-curl -fsSL https://raw.githubusercontent.com/arunsasidharan84/CCS_EEGStudio/main/scripts/install_linux.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/CCS-NIMHANS/CCS_EEGStudio/main/scripts/install_linux.sh | sudo bash
 ```
 
 Administrators can update the shared installation with the command below. Standard users can instead use the no-sudo bootstrap/update described in [the per-user server guide](docs/server_and_plot_controls.md); that installs an independent user copy and leaves the shared package intact:
@@ -255,7 +262,7 @@ For an older installation that only offers sudo updates, download and run the
 [no-sudo bootstrap script](scripts/update_linux_nosudo.sh) once:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/arunsasidharan84/CCS_EEGStudio/main/scripts/update_linux_nosudo.sh -o /tmp/ccseeg-update.sh
+curl -fsSL https://raw.githubusercontent.com/CCS-NIMHANS/CCS_EEGStudio/main/scripts/update_linux_nosudo.sh -o /tmp/ccseeg-update.sh
 bash /tmp/ccseeg-update.sh
 ```
 
@@ -741,7 +748,30 @@ flutter run -d windows
 flutter run -d linux
 ```
 
-### 3. Package Production Release
+### 3. Run Automated Test Suites
+
+CCS EEG Studio maintains automated test suites covering both the native Rust computation engine and the Flutter UI/integration layers:
+
+```sh
+# A. Run native Rust engine unit tests
+cd bridge
+cargo test
+
+# B. Run ERP parity and numerical integration benchmarks
+cargo test --test erp_workbench_parity
+cd ..
+
+# C. Run Flutter static analysis (linter checks)
+flutter analyze
+
+# D. Run Flutter unit, widget, and pipeline test suites
+flutter test
+
+# E. Run scientific parity validation (Python reference comparison)
+python3 scripts/compare_parity.py
+```
+
+### 4. Package Production Release
 ```sh
 # macOS (.app bundle)
 ./scripts/build_macos.sh
@@ -804,15 +834,32 @@ bash scripts/run_parity_test.sh /path/to/recording.set /path/to/reference_output
 
 | Repository | Description |
 | :--- | :--- |
-| [CCS Sleep Studio](https://github.com/arunsasidharan84/CCS_SleepStudio) | Sleep EEG visualization, manual staging, 9 automated AI models, and AnalyseNidra quantitative reports |
-| [CCS Mobile Studio](https://github.com/arunsasidharan84/CCS_MobileStudio) | Mobile/desktop neurophysiology acquisition, stimulation, ANGEL ERP, and cognitive experiments |
-| [CCS PPG Studio](https://github.com/arunsasidharan84/CCS_PPGStudio) | Clinical and research photoplethysmography analytics, gapless quality ribbon, and HRV dynamics |
+| [CCS Sleep Studio](https://github.com/CCS-NIMHANS/CCS_SleepStudio) | Sleep EEG visualization, manual staging, 9 automated AI models, and AnalyseNidra quantitative reports |
+| [CCS Mobile Studio](https://github.com/CCS-NIMHANS/CCS_MobileStudio) | Mobile/desktop neurophysiology acquisition, stimulation, ANGEL ERP, and cognitive experiments |
+| [CCS PPG Studio](https://github.com/CCS-NIMHANS/CCS_PPGStudio) | Clinical and research photoplethysmography analytics, gapless quality ribbon, and HRV dynamics |
 
 ---
 
 ## 📄 License
 
-Proprietary — Centre for Consciousness Studies, NIMHANS, Bengaluru, India. All rights reserved.
+CCS EEG Studio is released under the [MIT License](LICENSE). Copyright (c) 2026 Dr. Arun Sasidharan, Centre for Consciousness Studies, NIMHANS, Bengaluru, India.
+
+---
+
+## 📖 Citation
+
+If you use CCS EEG Studio in your research or clinical workflow, please cite our [JOSS paper](paper/paper.md) (or see [`CITATION.cff`](CITATION.cff)):
+
+```bibtex
+@article{Sasidharan2026CCSEEGStudio,
+  author    = {Arun Sasidharan},
+  title     = {{CCS EEG Studio}: A cross-platform desktop application for cognitive and clinical neurophysiology research, artifact cleaning, and quantitative electroencephalography},
+  journal   = {Journal of Open Source Software},
+  year      = {2026},
+  publisher = {The Open Journal},
+  url       = {https://github.com/CCS-NIMHANS/CCS_EEGStudio}
+}
+```
 
 ### Upcoming: large recordings and clearer ERP/file workflows
 
