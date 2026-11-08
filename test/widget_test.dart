@@ -101,6 +101,8 @@ void main() {
     await pumpApp(tester);
     await tester.tap(find.text('Batch Workspace'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Columns'));
+    await tester.pumpAndSettle();
     expect(find.text('Epoch length (s)'), findsOneWidget);
     await tester.tap(find.text('Continuous recording'));
     await tester.pumpAndSettle();
@@ -126,6 +128,8 @@ void main() {
   ) async {
     await pumpApp(tester);
     await tester.tap(find.text('Batch Workspace'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Columns'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Continuous recording'));
     await tester.pumpAndSettle();
@@ -170,11 +174,13 @@ void main() {
 
     await tester.tap(find.text('Batch Workspace'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Columns'));
+    await tester.pumpAndSettle();
 
     expect(find.text('BATCH QUEUE'), findsOneWidget);
-    expect(find.text('Stage 1: Preprocessing'), findsOneWidget);
-    expect(find.text('Stage 2: Feature Extraction'), findsOneWidget);
-    expect(find.text('Stage 3: Plots'), findsOneWidget);
+    expect(find.text('Stage 1: Preprocessing'), findsWidgets);
+    expect(find.text('Stage 2: Feature Extraction'), findsWidgets);
+    expect(find.text('Stage 3: Plots'), findsWidgets);
 
     // Connectivity families used to be missing from Batch entirely — both tabs
     // now render the same shared widget, so they must appear here.
@@ -228,6 +234,8 @@ void main() {
 
       await tester.tap(find.text('Batch Workspace'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Columns'));
+      await tester.pumpAndSettle();
 
       expect(find.text('BATCH QUEUE'), findsOneWidget);
       expect(
@@ -264,6 +272,8 @@ void main() {
     await pumpApp(tester);
     await tester.tap(find.text('Batch Workspace'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Columns'));
+    await tester.pumpAndSettle();
 
     final stage2 = find.ancestor(
       of: find.text('Stage 2: Feature Extraction'),
@@ -290,6 +300,8 @@ void main() {
   testWidgets('batch plots can be split per recording', (tester) async {
     await pumpApp(tester);
     await tester.tap(find.text('Batch Workspace'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Columns'));
     await tester.pumpAndSettle();
 
     final stage3 = find.ancestor(
@@ -372,5 +384,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Add recordings'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('batch workspace supports tabbed navigation and global output folder', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    await tester.tap(find.text('Batch Workspace'));
+    await tester.pumpAndSettle();
+
+    // Verify global batch output directory bar is present
+    expect(find.text('BATCH OUTPUT DIRECTORY (ALL STAGES)'), findsOneWidget);
+    expect(find.textContaining('Next to source files'), findsWidgets);
+
+    // Verify tabbed stage tabs
+    expect(find.text('Stage 1: Preprocessing'), findsWidgets);
+    expect(find.text('Stage 2: Feature Extraction'), findsWidgets);
+    expect(find.text('Stage 3: Plots'), findsWidgets);
+    expect(find.text('Stage 4: Group Statistics'), findsWidgets);
+
+    // Tab 0 is active by default (Preprocessing)
+    expect(find.text('1. Channel setup & montage'), findsOneWidget);
+
+    // Switch to Stage 2: Feature Extraction
+    await tester.tap(find.text('Stage 2: Feature Extraction').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Run Feature Extraction Only'), findsOneWidget);
+
+    // Switch to Stage 3: Plots
+    await tester.tap(find.text('Stage 3: Plots').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Run Plotting Only'), findsOneWidget);
+
+    // Switch to Stage 4: Group Statistics
+    await tester.tap(find.text('Stage 4: Group Statistics').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Open Group Analysis Workbench'), findsOneWidget);
   });
 }

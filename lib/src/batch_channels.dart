@@ -6,6 +6,29 @@ String suggestedEegName(String input) => input
     .replaceFirst(RegExp(r'[-\s]+Ref$', caseSensitive: false), '')
     .trim();
 
+/// Standard LiveAmp 32 / ActiCAP 32-channel montage layout.
+const List<String> kLiveAmp32ActiCapLabels = [
+  'Fp1', 'Fz', 'F3', 'F7', 'FT9', 'FC5', 'FC1', 'C3', 'T7', 'TP9',
+  'CP5', 'CP1', 'Pz', 'P3', 'P7', 'O1', 'Oz', 'O2', 'P4', 'P8',
+  'TP10', 'CP6', 'CP2', 'Cz', 'C4', 'T8', 'FT10', 'FC6', 'FC2', 'F4',
+  'F8', 'Fp2',
+];
+
+/// Standard 10-20 32-channel layout.
+const List<String> kStandard32Labels = [
+  'Fp1', 'Fp2', 'F7', 'F3', 'Fz', 'F4', 'F8', 'FC5',
+  'FC1', 'FC2', 'FC6', 'T7', 'C3', 'Cz', 'C4', 'T8',
+  'TP9', 'CP5', 'CP1', 'CP2', 'CP6', 'TP10', 'P7', 'P3',
+  'Pz', 'P4', 'P8', 'PO9', 'O1', 'Oz', 'O2', 'PO10',
+];
+
+/// Standard 10-20 19-channel clinical layout.
+const List<String> kStandard19Labels = [
+  'Fp1', 'Fp2', 'F7', 'F3', 'Fz', 'F4', 'F8', 'T7',
+  'C3', 'Cz', 'C4', 'T8', 'P7', 'P3', 'Pz', 'P4',
+  'P8', 'O1', 'O2',
+];
+
 class BatchChannels {
   final Map<String, String> names;
   BatchChannels(this.names);

@@ -74,6 +74,72 @@ class ErpWorkbenchService {
   }
 }
 
+/// Extract participant / subject identifier generically from path, directory hierarchy,
+/// or BIDS entities, avoiding across-file collisions when filenames share default names.
+String extractRecordingSubject(String path) {
+  final file = File(path);
+  final stem = file.uri.pathSegments.isNotEmpty
+      ? file.uri.pathSegments.last.replaceFirst(RegExp(r'\.[^.]+$'), '')
+      : '';
+  final parent = file.parent.uri.pathSegments.length >= 2
+      ? file.parent.uri.pathSegments[file.parent.uri.pathSegments.length - 2]
+      : '';
+  final parentClean = parent.trim().toLowerCase();
+  const genericDirs = {
+    'eeg',
+    'raw',
+    'data',
+    'sourcedata',
+    'eegdata',
+    'bids',
+    'desktop',
+    'downloads',
+    'documents',
+    'temp',
+    'tmp',
+    'default',
+    'run',
+    'session',
+  };
+
+  final isGenericStem =
+      stem.toLowerCase().startsWith('sub-p001_ses-s001_task-default') ||
+      stem.toLowerCase() == 'eeg' ||
+      stem.toLowerCase() == 'recording' ||
+      stem.toLowerCase() == 'data' ||
+      stem.toLowerCase() == 'raw';
+
+  if (parent.isNotEmpty && !genericDirs.contains(parentClean) && isGenericStem) {
+    return parent;
+  }
+
+  if (parent.startsWith('sub-')) {
+    return parent.substring(4);
+  }
+
+  final subMatch = RegExp(r'\bsub-([a-zA-Z0-9]+)\b').firstMatch(stem);
+  if (subMatch != null) {
+    final sub = subMatch.group(1)!;
+    if ((sub == 'P001' || sub.toLowerCase() == 'default') &&
+        parent.isNotEmpty &&
+        !genericDirs.contains(parentClean)) {
+      return parent;
+    }
+    return sub;
+  }
+
+  final first = stem.split('_').first.trim();
+  if (first.isNotEmpty && first != 'unknown') {
+    return first.replaceAll(RegExp(r'-epo|_clean'), '');
+  }
+
+  if (parent.isNotEmpty && !genericDirs.contains(parentClean)) {
+    return parent;
+  }
+
+  return 'unknown';
+}
+
 /// Prefer cleaned counterparts, preserve subject/task pairs, skip resource forks.
 List<String> discoverErpRecordings(String directory, {int firstSubjects = 0}) {
   final paths = Directory(directory)
@@ -85,6 +151,7 @@ List<String> discoverErpRecordings(String directory, {int firstSubjects = 0}) {
             !p.split(Platform.pathSeparator).last.startsWith('._') &&
             (p.toLowerCase().endsWith('.edf') ||
                 p.toLowerCase().endsWith('.fif') ||
+                p.toLowerCase().endsWith('.xdf') ||
                 (p.toLowerCase().endsWith('.ccseeg.json') ||
                     p.toLowerCase().endsWith('.ccseeg'))),
       )
@@ -95,6 +162,7 @@ List<String> discoverErpRecordings(String directory, {int firstSubjects = 0}) {
         (p) =>
             !p.toLowerCase().endsWith('.edf') ||
             p.toLowerCase().endsWith('.fif') ||
+            p.toLowerCase().endsWith('.xdf') ||
             p.toLowerCase().endsWith('_cleaned.edf') ||
             !existing.contains(
               p.replaceFirst(
@@ -115,7 +183,7 @@ List<String> discoverErpRecordings(String directory, {int firstSubjects = 0}) {
   if (firstSubjects <= 0) return chosen;
   final subjects = <String>{};
   return chosen.where((p) {
-    final subject = p.split(Platform.pathSeparator).last.split('_').first;
+    final subject = extractRecordingSubject(p);
     if (subjects.contains(subject)) return true;
     if (subjects.length >= firstSubjects) return false;
     subjects.add(subject);

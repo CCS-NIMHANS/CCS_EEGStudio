@@ -4,14 +4,22 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
-## [Unreleased]
+## [1.2.33]
 
-### Connected epoch workflow
+### Pipeline sequence alignment and batch workspace redesign
 
-- Adapt Feature Extraction to the linked preprocessing output: saved fixed/event epochs are reused, with only optional subdivision controls. Hide unrelated fresh-epoch fields until continuous input is chosen; retain boundaries when subdividing.
-- Open event definitions in the same compact named-condition editor as ERP, including trial/baseline windows, response rules, advanced matching and reusable protocols. Inspect markers from a selectable representative batch recording rather than an unrelated single-recording file.
-- Add input-structure inspection for saved batch recordings. Mixed queues still use each recording's actual structure at execution; continuous files receive analysis windows and saved trials are reused or explicitly subdivided.
-- Collapse optional recording-range controls and move detailed PDF options into report settings. Preserve settings while navigating or switching output structure.
+- Strictly align preprocessing steps with the original MATLAB CCS pipeline (`accs_CCScleaningpipeline.m`): Channel mapping / montage setup -> Downsample -> Bandpass & notch filtering -> Bad channel detection -> Artifact cleaning (GEDAI, ICA/ICLabel, ASR) -> Spherical spline bad channel interpolation -> Re-referencing (final step before saving).
+- Add global batch output directory container placed prominently outside stage cards, applicable to all batch processing stages with browse and reset options while preserving per-stage overrides.
+- Redesign batch cards into a responsive tabbed view with step bar badges (`Stage 1: Preprocessing`, `Stage 2: Feature Extraction`, `Stage 3: Plots`, `Stage 4: Group Statistics`) and previous/next navigation for clearer visibility on smaller screens, with a toggle segmented button to switch between Tab and Column views.
+- Link preprocessing epoching to feature extraction: when trials or fixed windows are defined in preprocessing, feature extraction locks primary epoch creation and restricts modification to trial subepoching within parent boundaries.
+- Provide an interactive batch channel montage modal with preset configurations for LiveAmp 32 (10-20), ActiCAP 32 / BioSemi, standard 10-20 (19-ch), automatic prefix/suffix stripping, and `.ccschannels` profile save/load.
+
+### Multi-condition ERP workbench and high-performance XDF loading
+
+- Support multi-condition ERP analysis beyond two-group comparisons: event groups display actual condition names in plots and exported statistics tables instead of generic Group A/B labels.
+- Correct peak latency calculation to identify the exact timepoint of maximal/minimal amplitude within the analysis window rather than reporting the window endpoint.
+- Add group tagging directly from the ERP batch workbench UI to simplify publication-ready split and group comparison plots.
+- Implement high-performance native Rust XDF streaming parser (`bridge/src/xdf_loader.rs`) with multi-stream detection, irregular timestamp resolution, and robust header parsing for LiveAmp, OpenBCI, and Neuropype recording setups.
 
 ## [1.2.32]
 

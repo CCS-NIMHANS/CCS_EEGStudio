@@ -385,6 +385,16 @@ class _FeatureHomeState extends State<FeatureHome>
   String? _batchPrepOutputDir;
   String? _batchFeatOutputDir;
   String? _batchPlotOutputDir;
+  String? _batchGlobalOutputDir;
+  int _batchActiveStage = 0;
+  bool _batchTabbedView = true;
+
+  String? get _effectiveBatchPrepOutputDir =>
+      _batchPrepOutputDir ?? _batchGlobalOutputDir;
+  String? get _effectiveBatchFeatOutputDir =>
+      _batchFeatOutputDir ?? _batchGlobalOutputDir;
+  String? get _effectiveBatchPlotOutputDir =>
+      _batchPlotOutputDir ?? _batchGlobalOutputDir;
 
   /// Preprocessed files actually produced by the last Stage 1 batch run.
   ///
@@ -1792,7 +1802,20 @@ class _FeatureHomeState extends State<FeatureHome>
       : _batchChannels!.apply(await RecordingLoader().loadFull(r));
   Future<void> _editBatchChannels([String? example]) async {
     final files = {..._batchPrepFiles, ..._batchFeatFiles}.toList();
-    if (files.isEmpty) return;
+    if (files.isEmpty) {
+      if (_activeRecording != null) {
+        files.add(_activeRecording!.path);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Queue at least one recording to configure batch channel mapping.',
+            ),
+          ),
+        );
+        return;
+      }
+    }
     final r = await _loadRecordingWithFeedback(example ?? files.first);
     final controls = {
       for (final label in r.labels)
@@ -1818,221 +1841,486 @@ class _FeatureHomeState extends State<FeatureHome>
         replacement = TextEditingController();
     final accepted = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Batch EEG channel mapping'),
-        content: SizedBox(
-          width: 560,
-          height: 480,
-          child: Column(
-            children: [
-              DropdownButton<String>(
-                isExpanded: true,
-                value: example ?? files.first,
-                items: [
-                  for (final path in files)
-                    DropdownMenuItem(
-                      value: path,
-                      child: Text(
-                        _shortName(path),
-                        overflow: TextOverflow.ellipsis,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final includedCount = controls.values
+              .where((c) => c.text.trim().isNotEmpty)
+              .length;
+          final totalCount = controls.length;
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.tune, color: _accentPurple),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('Batch EEG Channel Mapping & Montage'),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: includedCount >= 4
+                        ? _accentGreen.withOpacity(0.15)
+                        : Colors.redAccent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '$includedCount / $totalCount channels included',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: includedCount >= 4
+                          ? _accentGreen
+                          : Colors.redAccent,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 620,
+              height: 520,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  DropdownButton<String>(
+                    isExpanded: true,
+                    value: example ?? files.first,
+                    items: [
+                      for (final path in files)
+                        DropdownMenuItem(
+                          value: path,
+                          child: Text(
+                            'Template recording: ${_shortName(path)}',
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: (v) {
+                      if (v != null && v != (example ?? files.first)) {
+                        nextExample = v;
+                        Navigator.pop(ctx, false);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'QUICK MONTAGE PRESETS',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: _textMuted,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      ActionChip(
+                        avatar: const Icon(
+                          Icons.flash_on,
+                          size: 13,
+                          color: _accentPurple,
+                        ),
+                        label: const Text(
+                          'LiveAmp 32 (10-20)',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        tooltip:
+                            'Map channels sequentially to 10-20 (Fp1, Fp2, F7...)',
+                        onPressed: () {
+                          final keys = controls.keys.toList();
+                          for (var i = 0; i < keys.length; i++) {
+                            controls[keys[i]]!.text =
+                                i < kStandard32Labels.length
+                                ? kStandard32Labels[i]
+                                : '';
+                          }
+                          setDialogState(() {});
+                        },
+                      ),
+                      ActionChip(
+                        avatar: const Icon(
+                          Icons.flash_on,
+                          size: 13,
+                          color: _accentBlue,
+                        ),
+                        label: const Text(
+                          'ActiCAP 32 / BioSemi',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        tooltip:
+                            'Map channels sequentially to ActiCAP 32 (Fp1, Fz, F3...)',
+                        onPressed: () {
+                          final keys = controls.keys.toList();
+                          for (var i = 0; i < keys.length; i++) {
+                            controls[keys[i]]!.text =
+                                i < kLiveAmp32ActiCapLabels.length
+                                ? kLiveAmp32ActiCapLabels[i]
+                                : '';
+                          }
+                          setDialogState(() {});
+                        },
+                      ),
+                      ActionChip(
+                        avatar: const Icon(
+                          Icons.flash_on,
+                          size: 13,
+                          color: _accentAmber,
+                        ),
+                        label: const Text(
+                          'Standard 10-20 (19-ch)',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        tooltip:
+                            'Map first 19 channels to clinical 10-20 montage and exclude extras',
+                        onPressed: () {
+                          final keys = controls.keys.toList();
+                          for (var i = 0; i < keys.length; i++) {
+                            controls[keys[i]]!.text =
+                                i < kStandard19Labels.length
+                                ? kStandard19Labels[i]
+                                : '';
+                          }
+                          setDialogState(() {});
+                        },
+                      ),
+                      ActionChip(
+                        avatar: const Icon(
+                          Icons.auto_fix_high,
+                          size: 13,
+                          color: _accentGreen,
+                        ),
+                        label: const Text(
+                          'Clean "EEG" / "-Ref"',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        tooltip:
+                            'Strip leading "EEG " and trailing "-Ref" suffixes from labels',
+                        onPressed: () {
+                          for (final e in controls.entries) {
+                            e.value.text = suggestedEegName(e.key);
+                          }
+                          setDialogState(() {});
+                        },
+                      ),
+                      ActionChip(
+                        avatar: const Icon(Icons.restart_alt, size: 13),
+                        label: const Text(
+                          'Reset to original',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        onPressed: () {
+                          for (final e in controls.entries) {
+                            e.value.text = e.key;
+                          }
+                          setDialogState(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    dense: true,
+                    title: const Text(
+                      'Batch text replace & exclude rules',
+                      style: TextStyle(fontSize: 11, color: _accentBlue),
+                    ),
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: prefix,
+                              decoration: const InputDecoration(
+                                labelText: 'Remove prefix',
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: suffix,
+                              decoration: const InputDecoration(
+                                labelText: 'Remove suffix',
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: find,
+                              decoration: const InputDecoration(
+                                labelText: 'Find text',
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: replacement,
+                              decoration: const InputDecoration(
+                                labelText: 'Replace with',
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: exclude,
+                              decoration: const InputDecoration(
+                                labelText: 'Exclude matching text',
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          OutlinedButton(
+                            onPressed: () {
+                              if (exclude.text.isNotEmpty) {
+                                for (final e in controls.entries) {
+                                  if (e.key.contains(exclude.text))
+                                    e.value.text = '';
+                                }
+                                setDialogState(() {});
+                              }
+                            },
+                            child: const Text('Exclude'),
+                          ),
+                          const SizedBox(width: 6),
+                          FilledButton.tonal(
+                            onPressed: () {
+                              for (final c in controls.values) {
+                                if (c.text.isEmpty) continue;
+                                var name = c.text;
+                                if (prefix.text.isNotEmpty &&
+                                    name.startsWith(prefix.text)) {
+                                  name = name.substring(prefix.text.length);
+                                }
+                                if (suffix.text.isNotEmpty &&
+                                    name.endsWith(suffix.text)) {
+                                  name = name.substring(
+                                    0,
+                                    name.length - suffix.text.length,
+                                  );
+                                }
+                                if (find.text.isNotEmpty) {
+                                  name = name.replaceAll(
+                                    find.text,
+                                    replacement.text,
+                                  );
+                                }
+                                c.text = name.trim();
+                              }
+                              setDialogState(() {});
+                            },
+                            child: const Text('Apply text rules'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Set standard electrode name for each channel. Blank channels are excluded from analysis.',
+                    style: TextStyle(color: _textMuted, fontSize: 11),
+                  ),
+                  const SizedBox(height: 6),
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: _bgColor,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: _borderColor),
+                      ),
+                      child: ListView.separated(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        itemCount: controls.length,
+                        separatorBuilder: (_, __) =>
+                            const Divider(height: 1, color: _borderColor),
+                        itemBuilder: (context, idx) {
+                          final entry = controls.entries.elementAt(idx);
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: 28,
+                                  child: Text(
+                                    '${idx + 1}',
+                                    style: const TextStyle(
+                                      color: _textMuted,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  flex: 3,
+                                  child: Text(
+                                    entry.key,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const Icon(
+                                  Icons.arrow_forward,
+                                  size: 13,
+                                  color: _textMuted,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  flex: 4,
+                                  child: TextField(
+                                    controller: entry.value,
+                                    decoration: InputDecoration(
+                                      isDense: true,
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 8,
+                                          ),
+                                      hintText: 'Excluded (leave blank)',
+                                      hintStyle: const TextStyle(
+                                        color: _textMuted,
+                                        fontSize: 11,
+                                      ),
+                                      suffixIcon: entry.value.text.isNotEmpty
+                                          ? IconButton(
+                                              icon: const Icon(
+                                                Icons.clear,
+                                                size: 14,
+                                              ),
+                                              onPressed: () {
+                                                entry.value.clear();
+                                                setDialogState(() {});
+                                              },
+                                            )
+                                          : null,
+                                    ),
+                                    onChanged: (_) => setDialogState(() {}),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
                       ),
                     ),
+                  ),
                 ],
-                onChanged: (v) {
-                  if (v != null && v != (example ?? files.first)) {
-                    nextExample = v;
-                    Navigator.pop(ctx, false);
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                icon: const Icon(Icons.folder_open, size: 14),
+                label: const Text('Load .ccschannels'),
+                onPressed: () async {
+                  final picked = await FilePicker.pickFiles(
+                    type: FileType.custom,
+                    allowedExtensions: ['ccschannels'],
+                  );
+                  if (picked?.files.single.path == null) return;
+                  try {
+                    final data =
+                        jsonDecode(
+                              await File(
+                                picked!.files.single.path!,
+                              ).readAsString(),
+                            )
+                            as Map;
+                    final names = data['channels'] as Map;
+                    loadedNames = names.map(
+                      (key, value) => MapEntry(key as String, value as String),
+                    );
+                    for (final e in controls.entries) {
+                      e.value.text = names[e.key] as String? ?? '';
+                    }
+                    setDialogState(() {});
+                  } catch (e) {
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        SnackBar(content: Text('Could not load mapping: $e')),
+                      );
+                    }
                   }
                 },
               ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: prefix,
-                      decoration: const InputDecoration(
-                        labelText: 'Remove prefix (literal)',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: suffix,
-                      decoration: const InputDecoration(
-                        labelText: 'Remove suffix (literal)',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: find,
-                      decoration: const InputDecoration(
-                        labelText: 'Find text (literal)',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: replacement,
-                      decoration: const InputDecoration(
-                        labelText: 'Replace with (blank removes)',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              TextField(
-                controller: exclude,
-                decoration: const InputDecoration(
-                  labelText: 'Exclude source names containing (literal)',
-                ),
-              ),
-              TextButton(
-                onPressed: () {
-                  if (exclude.text.isNotEmpty)
-                    for (final e in controls.entries)
-                      if (e.key.contains(exclude.text)) e.value.text = '';
+              TextButton.icon(
+                icon: const Icon(Icons.save_alt, size: 14),
+                label: const Text('Save .ccschannels'),
+                onPressed: () async {
+                  final path = await FilePicker.saveFile(
+                    fileName: 'batch_channels',
+                    type: FileType.custom,
+                    allowedExtensions: ['ccschannels'],
+                  );
+                  if (path == null) return;
+                  await File(
+                    path.endsWith('.ccschannels') ? path : '$path.ccschannels',
+                  ).writeAsString(
+                    jsonEncode({
+                      'format': 'ccs-batch-channels-v1',
+                      'channels': {
+                        ...loadedNames,
+                        for (final e in controls.entries)
+                          e.key: e.value.text.trim(),
+                      },
+                    }),
+                  );
                 },
-                child: const Text('Exclude matching channels'),
               ),
-              Wrap(
-                children: [
-                  TextButton(
-                    onPressed: () {
-                      for (final e in controls.entries) e.value.text = e.key;
-                    },
-                    child: const Text('Start from all original names'),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      for (final c in controls.values) {
-                        if (c.text.isEmpty) continue;
-                        var name = c.text;
-                        if (prefix.text.isNotEmpty &&
-                            name.startsWith(prefix.text))
-                          name = name.substring(prefix.text.length);
-                        if (suffix.text.isNotEmpty &&
-                            name.endsWith(suffix.text))
-                          name = name.substring(
-                            0,
-                            name.length - suffix.text.length,
-                          );
-                        if (find.text.isNotEmpty)
-                          name = name.replaceAll(find.text, replacement.text);
-                        c.text = name.trim();
-                      }
-                    },
-                    child: const Text('Apply corrections to included names'),
-                  ),
-                ],
+              const Spacer(),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
               ),
-
-              const Text(
-                'Enter an EEG name to include a channel. Leave blank to exclude it. Preview uses the first queued file; unmatched channels are excluded and files with fewer than four selected channels stop with a clear error.',
-              ),
-              Expanded(
-                child: ListView(
-                  children: [
-                    for (final entry in controls.entries)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: TextField(
-                          controller: entry.value,
-                          decoration: InputDecoration(
-                            labelText: entry.key,
-                            hintText: 'Excluded from EEG analysis',
-                          ),
+              FilledButton(
+                onPressed: () {
+                  final values = controls.values
+                      .map((c) => c.text.trim().toLowerCase())
+                      .where((v) => v.isNotEmpty)
+                      .toList();
+                  if (values.length < 4 ||
+                      values.toSet().length != values.length) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Select at least four EEG channels with unique corrected names.',
                         ),
                       ),
-                  ],
-                ),
+                    );
+                    return;
+                  }
+                  Navigator.pop(ctx, true);
+                },
+                child: const Text('Apply to batch'),
               ),
             ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              final picked = await FilePicker.pickFiles(
-                type: FileType.custom,
-                allowedExtensions: ['ccschannels'],
-              );
-              if (picked?.files.single.path == null) return;
-              try {
-                final data =
-                    jsonDecode(
-                          await File(picked!.files.single.path!).readAsString(),
-                        )
-                        as Map;
-                final names = data['channels'] as Map;
-                loadedNames = names.map(
-                  (key, value) => MapEntry(key as String, value as String),
-                );
-                for (final e in controls.entries)
-                  e.value.text = names[e.key] as String? ?? '';
-              } catch (e) {
-                if (ctx.mounted)
-                  ScaffoldMessenger.of(ctx).showSnackBar(
-                    SnackBar(content: Text('Could not load mapping: $e')),
-                  );
-              }
-            },
-            child: const Text('Load mapping'),
-          ),
-          TextButton(
-            onPressed: () async {
-              final path = await FilePicker.saveFile(
-                fileName: 'batch_channels',
-                type: FileType.custom,
-                allowedExtensions: ['ccschannels'],
-              );
-              if (path == null) return;
-              await File(
-                path.endsWith('.ccschannels') ? path : '$path.ccschannels',
-              ).writeAsString(
-                jsonEncode({
-                  'format': 'ccs-batch-channels-v1',
-                  'channels': {
-                    ...loadedNames,
-                    for (final e in controls.entries)
-                      e.key: e.value.text.trim(),
-                  },
-                }),
-              );
-            },
-            child: const Text('Save mapping'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final values = controls.values
-                  .map((c) => c.text.trim().toLowerCase())
-                  .where((v) => v.isNotEmpty)
-                  .toList();
-              if (values.length < 4 || values.toSet().length != values.length) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      'Select at least four EEG channels with unique corrected names.',
-                    ),
-                  ),
-                );
-                return;
-              }
-              Navigator.pop(ctx, true);
-            },
-            child: const Text('Apply to batch'),
-          ),
-        ],
+          );
+        },
       ),
     );
     if (accepted == true)
@@ -3396,62 +3684,74 @@ class _FeatureHomeState extends State<FeatureHome>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (_presetKey != 'erp')
-          _preparationSection(
-            'Saved output',
-            _usesExistingEpochs
-                ? 'Preserve existing epochs'
-                : _cfg.stimEpochs
-                ? 'Event trials · ${_cfg.stimMarkerGroups.length} groups'
-                : _cfg.epochBeforeGedai
-                ? 'Fixed windows · ${_cfg.preprocessingEpochSeconds}s'
-                : 'Continuous cleaned EEG',
-            [_buildSavedOutputOptions()],
-            open: true,
-          ),
+        // Step 1: Channel mapping & Montage
         _preparationSection(
-          'Signal preparation',
-          '${_cfg.filter ? '${_cfg.lowHz}–${_cfg.highHz} Hz' : 'Filter off'} · ${_cfg.referenceMode == 'average' ? 'Average reference' : 'Reference: ${_cfg.referenceMode}'}',
+          '1. Channel setup & montage',
+          _batchChannels == null
+              ? 'Default recording montage'
+              : '${_batchChannels!.names.values.where((n) => n.isNotEmpty).length} channels mapped',
           [
-            DropdownButtonFormField<String>(
-              key: ValueKey('compact-ref-${_cfg.referenceMode}'),
-              initialValue: _cfg.referenceMode,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'Output reference',
-                isDense: true,
-              ),
-              items: const [
-                DropdownMenuItem(value: 'none', child: Text('Keep existing')),
-                DropdownMenuItem(
-                  value: 'average',
-                  child: Text('Common average'),
-                ),
-                DropdownMenuItem(
-                  value: 'channels',
-                  child: Text('Selected electrodes'),
-                ),
-              ],
-              onChanged: _running
-                  ? null
-                  : (v) => setState(() => _cfg.referenceMode = v!),
+            const Text(
+              'Align channel names and montage layout first (e.g. mapping LiveAmp 32 generic pinouts or standard 10-20 electrodes).',
+              style: TextStyle(color: _textMuted, fontSize: 11),
             ),
-            if (_cfg.referenceMode == 'channels')
-              TextFormField(
-                initialValue: _cfg.referenceChannels.join(', '),
-                decoration: const InputDecoration(
-                  labelText: 'Reference electrodes',
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                FilledButton.icon(
+                  onPressed: _running ? null : _editBatchChannels,
+                  icon: const Icon(Icons.tune, size: 15),
+                  label: Text(
+                    _batchChannels == null
+                        ? 'Interactive Montage & Channel Mapping…'
+                        : 'Edit Channel Mapping (${_batchChannels!.names.values.where((n) => n.isNotEmpty).length} mapped)…',
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _accentPurple,
+                    foregroundColor: Colors.white,
+                  ),
                 ),
-                onChanged: (v) => _cfg.referenceChannels = v
-                    .split(',')
-                    .map((s) => s.trim())
-                    .where((s) => s.isNotEmpty)
-                    .toList(),
+                if (_batchChannels != null)
+                  OutlinedButton.icon(
+                    onPressed: _running
+                        ? null
+                        : () => setState(() => _batchChannels = null),
+                    icon: const Icon(Icons.restart_alt, size: 14),
+                    label: const Text('Reset mapping'),
+                  ),
+              ],
+            ),
+            if (_batchChannels != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  '✓ ${_batchChannels!.names.values.where((n) => n.isNotEmpty).length} EEG channels selected; mapping applies before referencing and cleaning.',
+                  style: const TextStyle(color: _accentGreen, fontSize: 11),
+                ),
               ),
-            _check('Resample', _cfg.downsample, (v) => _cfg.downsample = v),
+          ],
+          open: true,
+        ),
+
+        // Step 2: Resample, Filtering & Bad channel detection
+        _preparationSection(
+          '2. Filtering & signal preparation',
+          '${_cfg.downsample ? 'Downsample ${_cfg.downsampleFreq}Hz · ' : ''}${_cfg.filter ? '${_cfg.lowHz}–${_cfg.highHz} Hz' : 'Filter off'} · ${_cfg.badChannels ? 'Detect bad ch' : 'No bad ch detection'}',
+          [
+            _check(
+              'Resample (downsample)',
+              _cfg.downsample,
+              (v) => _cfg.downsample = v,
+            ),
             if (_cfg.downsample)
               _field(_preDownsample, 'Target rate', suffix: 'Hz'),
-            _check('Bandpass + notch', _cfg.filter, (v) => _cfg.filter = v),
+            _check(
+              'Bandpass + notch filter',
+              _cfg.filter,
+              (v) => _cfg.filter = v,
+            ),
             if (_cfg.filter)
               Row(
                 children: [
@@ -3463,20 +3763,17 @@ class _FeatureHomeState extends State<FeatureHome>
                 ],
               ),
             _check(
-              'Detect bad channels',
+              'Detect bad channels (flatline, correlation, line noise)',
               _cfg.badChannels,
               (v) => _cfg.badChannels = v,
-            ),
-            _check(
-              'Interpolate bad channels',
-              _cfg.interpolate,
-              (v) => _cfg.interpolate = v,
             ),
           ],
           open: true,
         ),
+
+        // Step 3: Artifact Cleaning (GEDAI, ICA, ASR)
         _preparationSection(
-          'Artifact cleaning',
+          '3. Artifact cleaning',
           steps.isEmpty ? 'Off' : steps.join(' → '),
           [
             _compactCleaner(
@@ -3551,10 +3848,108 @@ class _FeatureHomeState extends State<FeatureHome>
           ],
           open: true,
         ),
+
+        // Step 4: Bad channel interpolation (after artifact cleaning, per accs_CCScleaningpipeline.m)
+        _preparationSection(
+          '4. Bad channel interpolation',
+          _cfg.interpolate
+              ? 'Spherical spline interpolation'
+              : 'Off (keep channel exclusions)',
+          [
+            _check(
+              'Interpolate bad channels',
+              _cfg.interpolate,
+              (v) => _cfg.interpolate = v,
+            ),
+            const Text(
+              'Reconstructs detected bad channels using spherical spline interpolation after artifact cleaning, preserving original montage topology.',
+              style: TextStyle(color: _textMuted, fontSize: 11),
+            ),
+          ],
+          open: true,
+        ),
+
+        // Step 5: Re-referencing (last step before saving, per accs_CCScleaningpipeline.m)
+        _preparationSection(
+          '5. Re-referencing (last step before saving)',
+          _cfg.referenceMode == 'average'
+              ? 'Common average reference'
+              : _cfg.referenceMode == 'channels'
+              ? 'Electrode reference (${_cfg.referenceChannels.join(', ')})'
+              : 'Keep existing reference',
+          [
+            DropdownButtonFormField<String>(
+              key: ValueKey('compact-ref-${_cfg.referenceMode}'),
+              initialValue: _cfg.referenceMode,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Output reference',
+                isDense: true,
+              ),
+              items: const [
+                DropdownMenuItem(value: 'none', child: Text('Keep existing')),
+                DropdownMenuItem(
+                  value: 'average',
+                  child: Text('Common average'),
+                ),
+                DropdownMenuItem(
+                  value: 'channels',
+                  child: Text('Selected electrodes'),
+                ),
+              ],
+              onChanged: _running
+                  ? null
+                  : (v) => setState(() => _cfg.referenceMode = v!),
+            ),
+            if (_cfg.referenceMode == 'channels')
+              TextFormField(
+                initialValue: _cfg.referenceChannels.join(', '),
+                decoration: const InputDecoration(
+                  labelText: 'Reference electrodes',
+                  helperText:
+                      'Comma-separated labels, e.g. M1, M2 or TP9, TP10',
+                ),
+                onChanged: (v) => _cfg.referenceChannels = v
+                    .split(',')
+                    .map((s) => s.trim())
+                    .where((s) => s.isNotEmpty)
+                    .toList(),
+              ),
+            const SizedBox(height: 4),
+            const Text(
+              'Final re-referencing applied to cleaned and interpolated scalp EEG before saving.',
+              style: TextStyle(color: _textMuted, fontSize: 11),
+            ),
+          ],
+          open: true,
+        ),
+
+        // Step 6: Saved output structure
+        if (_presetKey != 'erp')
+          _preparationSection(
+            '6. Saved output data structure',
+            _usesExistingEpochs
+                ? 'Preserve existing epochs'
+                : _cfg.stimEpochs
+                ? 'Event trials · ${_cfg.stimMarkerGroups.length} groups'
+                : _cfg.epochBeforeGedai
+                ? 'Fixed windows · ${_cfg.preprocessingEpochSeconds}s'
+                : 'Continuous cleaned EEG',
+            [_buildSavedOutputOptions()],
+            open: true,
+          ),
+
         _preparationSection(
           'Advanced settings & protocols',
-          'Reuse settings or configure additional parameters',
-          [_buildDetailedPreprocessingOptions()],
+          'Source localization, export formats & additional parameters',
+          [
+            _check(
+              'Also run source localisation',
+              _cfg.sourceLocalization,
+              (v) => _cfg.sourceLocalization = v,
+            ),
+            _buildDetailedPreprocessingOptions(),
+          ],
         ),
       ],
     );
@@ -3660,12 +4055,80 @@ class _FeatureHomeState extends State<FeatureHome>
   );
 
   Widget _buildEpochingOptions() {
+    final isStage1Epoched =
+        !_batchPreprocessedInput &&
+        _batchFeatUsePrep &&
+        (_cfg.stimEpochs || _cfg.epochBeforeGedai);
+    final isEpochedInput = _featureInputEpoched || isStage1Epoched;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _subLabel(_featureInputEpoched ? 'SAVED EPOCHS' : 'ANALYSIS WINDOWS'),
+        _subLabel(isEpochedInput ? 'SAVED EPOCHS' : 'ANALYSIS WINDOWS'),
         const SizedBox(height: 6),
-        if (_featureInputEpoched) ...[
+        if (isStage1Epoched) ...[
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: _accentGreen.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: _accentGreen.withOpacity(0.35)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.link, size: 16, color: _accentGreen),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Inherited Preprocessing Epochs',
+                        style: TextStyle(
+                          color: _accentGreen,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 11,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _cfg.stimEpochs
+                            ? 'Using event-based trials defined in Stage 1 (${_cfg.stimMarkerGroups.length} groups, ${_cfg.stimTmin} to ${_cfg.stimTmax} s). Primary trial boundaries are preserved.'
+                            : 'Using fixed-length windows defined in Stage 1 (${_cfg.preprocessingEpochSeconds} s windows, ${_cfg.preprocessingOverlapSeconds} s overlap). Primary boundaries are preserved.',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _check(
+            'Subdivide saved epochs',
+            _cfg.subepochExisting,
+            (v) => _cfg.subepochExisting = v,
+          ),
+          if (_cfg.subepochExisting) ...[
+            _field(
+              _epoch,
+              'Subepoch length (s)',
+              suffix: 's',
+              helper: _cfg.epochBeforeGedai
+                  ? 'Must fit inside ${_cfg.preprocessingEpochSeconds}s window'
+                  : 'Must fit inside trial duration',
+            ),
+            _field(_epochOverlap, 'Subepoch overlap (s)', suffix: 's'),
+            const Text(
+              'Subepochs fit inside each parent epoch; parent event tags and trial boundaries are preserved.',
+              style: TextStyle(color: _textMuted, fontSize: 11),
+            ),
+          ],
+        ] else if (isEpochedInput) ...[
           const Text(
             'Using saved preprocessing epochs. Event groups and parent boundaries are retained.',
           ),
@@ -4220,115 +4683,196 @@ class _FeatureHomeState extends State<FeatureHome>
               _accentBlue,
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: _field(
-              _batchSubjectLimit,
-              'Folder import: first N subjects (0 = all)',
+
+          // ── Global Batch Output Directory (Item 1: Outside stage cards, applicable to all steps) ──
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: _cardColor,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _borderColor),
             ),
-          ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: _running ? null : _editBatchChannels,
-              icon: const Icon(Icons.tune),
-              label: const Text('Batch EEG channel mapping…'),
-            ),
-          ),
-          if (_batchChannels != null)
-            TextButton(
-              onPressed: _running
-                  ? null
-                  : () => setState(() => _batchChannels = null),
-              child: const Text('Reset batch channel mapping'),
-            ),
-          SwitchListTile(
-            dense: true,
-            title: const Text('Already preprocessed: start with features'),
-            value: _batchPreprocessedInput,
-            onChanged: _running
-                ? null
-                : (v) => setState(() {
-                    _batchPreprocessedInput = v;
-                    _batchFeatUsePrep = !v;
-                    _batchPlotUseFeat = true;
-                  }),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
               children: [
-                const Icon(Icons.groups, size: 18),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text(
-                    'Next: group statistics · choose metadata and subject/state factors',
+                const Icon(
+                  Icons.folder_shared_outlined,
+                  size: 18,
+                  color: _accentBlue,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'BATCH OUTPUT DIRECTORY (ALL STAGES)',
+                        style: TextStyle(
+                          color: _accentBlue,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _batchGlobalOutputDir ??
+                            'Next to source files (default for each recording)',
+                        style: TextStyle(
+                          color: _batchGlobalOutputDir == null
+                              ? _textMuted
+                              : Colors.white,
+                          fontSize: 12,
+                          fontWeight: _batchGlobalOutputDir == null
+                              ? FontWeight.normal
+                              : FontWeight.w600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
                   ),
                 ),
-                TextButton(
-                  onPressed: _running ? null : _openBatchGroupStatistics,
-                  child: const Text(
-                    'Open group statistics with batch features',
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  onPressed: _running
+                      ? null
+                      : () async {
+                          final path = await FilePicker.getDirectoryPath(
+                            dialogTitle:
+                                'Select batch output directory for all stages',
+                          );
+                          if (path != null) {
+                            setState(() {
+                              _batchGlobalOutputDir = path;
+                              _batchPrepOutputDir = null;
+                              _batchFeatOutputDir = null;
+                              _batchPlotOutputDir = null;
+                            });
+                          }
+                        },
+                  icon: const Icon(Icons.folder_open, size: 14),
+                  label: const Text('Browse…'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
                   ),
+                ),
+                if (_batchGlobalOutputDir != null) ...[
+                  const SizedBox(width: 6),
+                  IconButton(
+                    tooltip: 'Reset to next to source files',
+                    icon: const Icon(Icons.clear, size: 16, color: _textMuted),
+                    onPressed: _running
+                        ? null
+                        : () => setState(() {
+                            _batchGlobalOutputDir = null;
+                          }),
+                  ),
+                ],
+              ],
+            ),
+          ),
+
+          // ── Batch workspace toolbar (skip prep toggle, subject limit, tabs/columns view switch) ──
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Already preprocessed: start with features',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    value: _batchPreprocessedInput,
+                    onChanged: _running
+                        ? null
+                        : (v) => setState(() {
+                            _batchPreprocessedInput = v;
+                            _batchFeatUsePrep = !v;
+                            _batchPlotUseFeat = true;
+                            if (v && _batchActiveStage == 0) {
+                              _batchActiveStage = 1;
+                            }
+                          }),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                SizedBox(
+                  width: 260,
+                  child: _field(
+                    _batchSubjectLimit,
+                    'Folder import limit (0 = all subjects)',
+                  ),
+                ),
+                const SizedBox(width: 16),
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(
+                      value: true,
+                      icon: Icon(Icons.tab, size: 14),
+                      label: Text('Tabs', style: TextStyle(fontSize: 11)),
+                    ),
+                    ButtonSegment(
+                      value: false,
+                      icon: Icon(Icons.view_column, size: 14),
+                      label: Text('Columns', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                  selected: {_batchTabbedView},
+                  onSelectionChanged: (set) =>
+                      setState(() => _batchTabbedView = set.first),
                 ),
               ],
             ),
           ),
-          // Batch content: preprocessing is optional.
+
+          // ── Pipeline Stage Step Tabs (Item 4: visible across top, details expanded for selected) ──
+          _buildBatchStageTabs(),
+
+          // ── Batch Content: Tabbed or Multi-column ──
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (!_batchPreprocessedInput)
-                    Expanded(child: _buildBatchStage1Card()),
-                  const SizedBox(width: 10),
-                  Expanded(child: _buildBatchStage2Card()),
-                  const SizedBox(width: 10),
-                  Expanded(child: _buildBatchStage3Card()),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: _cardColor,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Stage 4: Group Statistics',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'Batch feature CSVs → metadata join → subject/state factors → LMM / GLM. Review the model before running it.',
-                          ),
-                          SwitchListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: const Text('Open after batch finishes'),
-                            value: _batchOpenGroupAfter,
-                            onChanged: _running
-                                ? null
-                                : (v) =>
-                                      setState(() => _batchOpenGroupAfter = v),
-                          ),
-                          const Spacer(),
-                          FilledButton.icon(
-                            onPressed: _running
-                                ? null
-                                : _openBatchGroupStatistics,
-                            icon: const Icon(Icons.groups),
-                            label: const Text('Open group analysis'),
-                          ),
-                        ],
-                      ),
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+              child: _batchTabbedView
+                  ? switch (_batchActiveStage) {
+                      0 => _buildBatchStage1Card(
+                          onNext: () => setState(() => _batchActiveStage = 1),
+                        ),
+                      1 => _buildBatchStage2Card(
+                          onPrevious: _batchPreprocessedInput
+                              ? null
+                              : () => setState(() => _batchActiveStage = 0),
+                          onNext: () => setState(() => _batchActiveStage = 2),
+                        ),
+                      2 => _buildBatchStage3Card(
+                          onPrevious: () =>
+                              setState(() => _batchActiveStage = 1),
+                          onNext: () => setState(() => _batchActiveStage = 3),
+                        ),
+                      _ => _buildBatchStage4Card(
+                          onPrevious: () =>
+                              setState(() => _batchActiveStage = 2),
+                        ),
+                    }
+                  : Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (!_batchPreprocessedInput)
+                          Expanded(child: _buildBatchStage1Card()),
+                        const SizedBox(width: 10),
+                        Expanded(child: _buildBatchStage2Card()),
+                        const SizedBox(width: 10),
+                        Expanded(child: _buildBatchStage3Card()),
+                        const SizedBox(width: 10),
+                        Expanded(child: _buildBatchStage4Card()),
+                      ],
                     ),
-                  ),
-                ],
-              ),
             ),
           ),
         ],
@@ -4336,12 +4880,156 @@ class _FeatureHomeState extends State<FeatureHome>
     );
   }
 
-  Widget _buildBatchStage1Card() => _batchStageCard(
+  Widget _buildBatchStageTabs() {
+    final stages = [
+      (
+        index: 0,
+        title: 'Stage 1: Preprocessing',
+        shortTitle: '1. Preprocessing',
+        color: _accentPurple,
+        icon: Icons.cleaning_services,
+        badge: '${_batchPrepFiles.length} files',
+        enabled: !_batchPreprocessedInput,
+      ),
+      (
+        index: 1,
+        title: 'Stage 2: Feature Extraction',
+        shortTitle: '2. Features',
+        color: _accentGreen,
+        icon: Icons.analytics,
+        badge: _batchFeatUsePrep
+            ? 'Stage 1 output'
+            : '${_batchFeatFiles.length} files',
+        enabled: true,
+      ),
+      (
+        index: 2,
+        title: 'Stage 3: Plots',
+        shortTitle: '3. Plots',
+        color: _accentAmber,
+        icon: Icons.stacked_line_chart,
+        badge: _batchPlotUseFeat
+            ? 'Stage 2 CSVs'
+            : '${_batchPlotFiles.length} files',
+        enabled: true,
+      ),
+      (
+        index: 3,
+        title: 'Stage 4: Group Statistics',
+        shortTitle: '4. Group Stats',
+        color: _accentBlue,
+        icon: Icons.groups,
+        badge: 'LMM / GLM',
+        enabled: true,
+      ),
+    ];
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A1628),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _borderColor),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < stages.length; i++) ...[
+            if (i > 0)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 2),
+                child: Icon(Icons.chevron_right, size: 16, color: _borderColor),
+              ),
+            Expanded(
+              child: InkWell(
+                onTap: !stages[i].enabled
+                    ? null
+                    : () => setState(() => _batchActiveStage = stages[i].index),
+                borderRadius: BorderRadius.circular(8),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _batchActiveStage == stages[i].index
+                        ? stages[i].color.withOpacity(0.18)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _batchActiveStage == stages[i].index
+                          ? stages[i].color
+                          : Colors.transparent,
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        stages[i].icon,
+                        size: 14,
+                        color: stages[i].enabled
+                            ? (_batchActiveStage == stages[i].index
+                                ? stages[i].color
+                                : _textMuted)
+                            : _borderColor,
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          stages[i].title,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: stages[i].enabled
+                                ? (_batchActiveStage == stages[i].index
+                                    ? Colors.white
+                                    : _textMuted)
+                                : _borderColor,
+                            fontWeight: _batchActiveStage == stages[i].index
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                            fontSize: 11.5,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: stages[i].color.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          stages[i].badge,
+                          style: TextStyle(
+                            color: stages[i].color,
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBatchStage1Card({VoidCallback? onNext}) => _batchStageCard(
     title: 'Stage 1: Preprocessing',
     icon: Icons.cleaning_services,
     color: _accentPurple,
     files: _batchPrepFiles,
-    outputDir: _batchPrepOutputDir,
+    outputDir: _effectiveBatchPrepOutputDir,
     outputLabel: 'Output Directory',
     onSelectOutput: () async {
       final path = await FilePicker.getDirectoryPath(
@@ -4360,45 +5048,22 @@ class _FeatureHomeState extends State<FeatureHome>
       _batchPrepOutputs.clear();
     }),
     onRemove: (i) => setState(() => _batchPrepFiles.removeAt(i)),
-    options: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildPreprocessingOptions(),
-        const SizedBox(height: 8),
-        _subLabel('CHANNEL TYPES'),
-        const SizedBox(height: 2),
-        OutlinedButton.icon(
-          onPressed: _running ? null : _editBatchChannels,
-          icon: const Icon(Icons.edit),
-          label: Text(
-            _batchChannels == null
-                ? 'Define batch EEG channels…'
-                : 'Edit batch EEG channels…',
-          ),
-        ),
-        if (_batchChannels != null)
-          Text(
-            '${_batchChannels!.names.values.where((n) => n.isNotEmpty).length} EEG channels selected; mapping applies before referencing and cleaning.',
-          ),
-        const SizedBox(height: 8),
-        _check(
-          'Also run source localisation',
-          _cfg.sourceLocalization,
-          (v) => _cfg.sourceLocalization = v,
-        ),
-      ],
-    ),
+    options: _buildPreprocessingOptions(),
     runLabel: 'Run Preprocessing Only',
     onRun: _runBatchPreprocessing,
     runEnabled: _batchPrepFiles.isNotEmpty,
+    onNext: onNext,
   );
 
-  Widget _buildBatchStage2Card() => _batchStageCard(
+  Widget _buildBatchStage2Card({
+    VoidCallback? onPrevious,
+    VoidCallback? onNext,
+  }) => _batchStageCard(
     title: 'Stage 2: Feature Extraction',
     icon: Icons.analytics,
     color: _accentGreen,
     files: _batchFeatFiles,
-    outputDir: _batchFeatOutputDir,
+    outputDir: _effectiveBatchFeatOutputDir,
     outputLabel: 'Output Directory',
     onSelectOutput: () async {
       final path = await FilePicker.getDirectoryPath(
@@ -4481,14 +5146,19 @@ class _FeatureHomeState extends State<FeatureHome>
             : _batchFeatFiles.isNotEmpty) &&
         _cfg.anyFeature &&
         (_cfg.perFileCsv || _cfg.combinedCsv),
+    onPrevious: onPrevious,
+    onNext: onNext,
   );
 
-  Widget _buildBatchStage3Card() => _batchStageCard(
+  Widget _buildBatchStage3Card({
+    VoidCallback? onPrevious,
+    VoidCallback? onNext,
+  }) => _batchStageCard(
     title: 'Stage 3: Plots',
     icon: Icons.stacked_line_chart,
     color: _accentAmber,
     files: _batchPlotFiles,
-    outputDir: _batchPlotOutputDir,
+    outputDir: _effectiveBatchPlotOutputDir,
     outputLabel: 'Output Directory',
     onSelectOutput: () async {
       final path = await FilePicker.getDirectoryPath(
@@ -4545,6 +5215,117 @@ class _FeatureHomeState extends State<FeatureHome>
               _batchPrepFiles.isNotEmpty ||
               _batchFeatFiles.isNotEmpty)
         : _batchPlotFiles.isNotEmpty,
+    onPrevious: onPrevious,
+    onNext: onNext,
+  );
+
+  Widget _buildBatchStage4Card({VoidCallback? onPrevious}) => Material(
+    color: _cardColor,
+    borderRadius: BorderRadius.circular(8),
+    clipBehavior: Clip.antiAlias,
+    child: Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _cardColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: _accentBlue.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(6),
+              border: const Border(bottom: BorderSide(color: _borderColor)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.groups, size: 16, color: _accentBlue),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Stage 4: Group Statistics (LMM & GLM)',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: _accentBlue,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          _infoBox(
+            'Batch feature CSVs → metadata join → subject/state factors → Linear Mixed Models (LMM) / GLM with enhanced TFCE (eTFCE). Review model formulas and fixed/random factors before running.',
+            _accentBlue,
+          ),
+          const SizedBox(height: 12),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Open group analysis automatically after batch finishes',
+              style: TextStyle(fontSize: 12),
+            ),
+            value: _batchOpenGroupAfter,
+            onChanged: _running
+                ? null
+                : (v) => setState(() => _batchOpenGroupAfter = v),
+          ),
+          if (_batchResultCsvs.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Text(
+              'BATCH FEATURE RESULTS AVAILABLE:',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: _textMuted,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${_batchResultCsvs.length} feature result CSVs ready for statistical modeling.',
+              style: const TextStyle(fontSize: 11, color: Colors.white),
+            ),
+          ],
+          const Spacer(),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.only(top: 12),
+            decoration: const BoxDecoration(
+              border: Border(top: BorderSide(color: _borderColor)),
+            ),
+            child: Row(
+              children: [
+                if (onPrevious != null) ...[
+                  OutlinedButton.icon(
+                    onPressed: onPrevious,
+                    icon: const Icon(Icons.arrow_back, size: 14),
+                    label: const Text('Previous: Plots'),
+                  ),
+                  const SizedBox(width: 10),
+                ],
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _running ? null : _openBatchGroupStatistics,
+                    icon: const Icon(Icons.groups, size: 16),
+                    label: const Text('Open Group Analysis Workbench'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _accentBlue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 11),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
   );
 
   Widget _batchStageCard({
@@ -4566,6 +5347,8 @@ class _FeatureHomeState extends State<FeatureHome>
     required String runLabel,
     required VoidCallback onRun,
     bool runEnabled = true,
+    VoidCallback? onPrevious,
+    VoidCallback? onNext,
   }) {
     final linked = usePrevious == true;
     return Material(
@@ -4625,46 +5408,49 @@ class _FeatureHomeState extends State<FeatureHome>
                     ),
                     const SizedBox(height: 6),
                   ],
-                  Text(
-                    outputLabel,
-                    style: const TextStyle(
-                      color: _textMuted,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
+                  // Compact output dir indicator
                   Row(
                     children: [
+                      Icon(
+                        _batchGlobalOutputDir != null
+                            ? Icons.folder_shared_outlined
+                            : Icons.folder_outlined,
+                        size: 14,
+                        color: _textMuted,
+                      ),
+                      const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          outputDir ?? 'Next to source files',
+                          _batchGlobalOutputDir != null
+                              ? 'Output: ${outputDir ?? _batchGlobalOutputDir} (Shared batch folder)'
+                              : 'Output: ${outputDir ?? 'Next to source files'}',
                           style: TextStyle(
-                            color: outputDir == null
+                            color: outputDir == null &&
+                                    _batchGlobalOutputDir == null
                                 ? _textMuted
-                                : Colors.white,
+                                : Colors.white70,
                             fontSize: 11,
                           ),
-                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       IconButton(
+                        tooltip: 'Choose specific output directory',
                         icon: const Icon(
                           Icons.folder_open,
-                          size: 16,
+                          size: 15,
                           color: _accentBlue,
                         ),
                         onPressed: _running ? null : onSelectOutput,
                         constraints: const BoxConstraints(
-                          minWidth: 28,
-                          minHeight: 28,
+                          minWidth: 26,
+                          minHeight: 26,
                         ),
                         padding: EdgeInsets.zero,
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   if (!linked) ...[
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -4837,22 +5623,44 @@ class _FeatureHomeState extends State<FeatureHome>
               decoration: const BoxDecoration(
                 border: Border(top: BorderSide(color: _borderColor)),
               ),
-              child: FilledButton.icon(
-                onPressed: (_running || !runEnabled) ? null : onRun,
-                icon: const Icon(Icons.play_arrow, size: 14),
-                label: Text(
-                  runLabel,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
+              child: Row(
+                children: [
+                  if (onPrevious != null) ...[
+                    OutlinedButton.icon(
+                      onPressed: onPrevious,
+                      icon: const Icon(Icons.arrow_back, size: 14),
+                      label: const Text('Previous'),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: (_running || !runEnabled) ? null : onRun,
+                      icon: const Icon(Icons.play_arrow, size: 14),
+                      label: Text(
+                        runLabel,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: color,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: const Color(0xFF334155),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    ),
                   ),
-                ),
-                style: FilledButton.styleFrom(
-                  backgroundColor: color,
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: const Color(0xFF334155),
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                ),
+                  if (onNext != null) ...[
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: onNext,
+                      icon: const Icon(Icons.arrow_forward, size: 14),
+                      label: const Text('Next'),
+                    ),
+                  ],
+                ],
               ),
             ),
           ],
@@ -5117,7 +5925,7 @@ class _FeatureHomeState extends State<FeatureHome>
       _updateBatchFile(path, 'Loading', progress: 0);
       _log('[${i + 1}/${_batchPrepFiles.length}] ${_shortName(path)}');
       try {
-        final dir = _batchPrepOutputDir ?? File(path).parent.path;
+        final dir = _effectiveBatchPrepOutputDir ?? File(path).parent.path;
         final rec = await _resolveBatchChannels(
           await _loadRecordingWithFeedback(path),
         );
@@ -5216,7 +6024,7 @@ class _FeatureHomeState extends State<FeatureHome>
     if (_batchPrepOutputs.isNotEmpty) return List.of(_batchPrepOutputs);
     // Stage 1 has not run in this session — fall back to the expected paths.
     return _batchPrepFiles.map((path) {
-      final dir = _batchPrepOutputDir ?? File(path).parent.path;
+      final dir = _effectiveBatchPrepOutputDir ?? File(path).parent.path;
       final suffix = _cfg.sourceLocalization ? '_source' : '_clean';
       final native =
           '$dir${Platform.pathSeparator}${_stem(path)}$suffix.${RecordingStorage.extension}';
@@ -5267,7 +6075,7 @@ class _FeatureHomeState extends State<FeatureHome>
       _startBatchProgress('Batch feature extraction', kept);
     }
 
-    final outDir = _batchFeatOutputDir ?? File(kept.first).parent.path;
+    final outDir = _effectiveBatchFeatOutputDir ?? File(kept.first).parent.path;
     Directory(outDir).createSync(recursive: true);
     final combinedPath = '$outDir${Platform.pathSeparator}Batch_features.csv';
     final scratch = await Directory.systemTemp.createTemp(
@@ -5433,7 +6241,7 @@ class _FeatureHomeState extends State<FeatureHome>
     }
     final source = _batchFeatUsePrep ? _batchPrepFiles : _batchFeatFiles;
     if (source.isEmpty) return const [];
-    final dir = _batchFeatOutputDir ?? File(source.first).parent.path;
+    final dir = _effectiveBatchFeatOutputDir ?? File(source.first).parent.path;
     return source
         .map((p) => '$dir${Platform.pathSeparator}${_stem(p)}.features.csv')
         .where((p) => File(p).existsSync())
@@ -5457,7 +6265,7 @@ class _FeatureHomeState extends State<FeatureHome>
     }
     _log('── BATCH PLOTTING (${inputs.length} CSV(s)) ──');
     try {
-      final outDir = _batchPlotOutputDir ?? File(inputs.first).parent.path;
+      final outDir = _effectiveBatchPlotOutputDir ?? File(inputs.first).parent.path;
       for (final path in inputs) {
         _updateBatchFile(path, 'Running', progress: 0);
       }

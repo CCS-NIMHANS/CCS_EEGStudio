@@ -200,7 +200,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       )
       .toList();
   List<Map<String, dynamic>> get _inputs => [
-    for (final p in _selectedPaths) {'path': p, 'subject': _subjects[p] ?? ''},
+    for (final p in _selectedPaths) {
+      'path': p,
+      'subject': _subjects[p] ?? '',
+      'group': _participantGroups[_subjects[p] ?? ''] ?? '',
+    },
   ];
   @override
   void initState() {
@@ -221,6 +225,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     for (final path in (widget.batchMode ? widget.extraFiles : <String>[])) {
       if ((path.toLowerCase().endsWith('.edf') ||
               path.toLowerCase().endsWith('.fif') ||
+              path.toLowerCase().endsWith('.xdf') ||
               (path.toLowerCase().endsWith('.ccseeg.json') ||
                   path.toLowerCase().endsWith('.ccseeg'))) &&
           File(path).existsSync() &&
@@ -534,6 +539,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         for (final f in _scanFiles) {
           if (f['subject'] != null)
             _subjects[f['path'] as String] = f['subject'] as String;
+          if (f['group'] != null && (f['group'] as String).isNotEmpty) {
+            final s = f['subject'] as String;
+            if (!_participantGroups.containsKey(s)) {
+              _participantGroups[s] = f['group'] as String;
+            }
+          }
         }
         final profiles = _scanFiles
             .map((f) => erpMap(f['profile']))

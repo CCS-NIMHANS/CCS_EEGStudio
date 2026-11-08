@@ -221,15 +221,108 @@ pub fn detect_task(path: &str) -> Option<String> {
     None
 }
 
-fn participant(path: &str) -> String {
-    let stem = Path::new(path)
+pub fn participant(path: &str) -> String {
+    let p = Path::new(path);
+    let stem = p
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy();
-    if let Some(s) = stem.split('_').find(|s| s.starts_with("sub-")) {
-        return s.trim_start_matches("sub-").to_string();
+
+    // Check parent directory
+    let parent_name = p
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let parent_clean = parent_name.trim().to_lowercase();
+    let is_generic_dir = parent_clean.is_empty()
+        || matches!(
+            parent_clean.as_str(),
+            "eeg" | "raw" | "data" | "sourcedata" | "eegdata" | "bids" | "desktop"
+                | "downloads" | "documents" | "temp" | "tmp" | "default" | "run" | "session"
+        );
+
+    // If filename has a generic default BIDS identifier (e.g. sub-P001 with task-Default)
+    // or just a generic stem, but the parent directory is a specific subject directory,
+    // prefer the parent directory to prevent across-subject collisions.
+    let is_generic_stem = stem.eq_ignore_ascii_case("sub-p001_ses-s001_task-default_run-001_eeg")
+        || stem.starts_with("sub-P001_ses-S001_task-Default")
+        || stem.eq_ignore_ascii_case("eeg")
+        || stem.eq_ignore_ascii_case("recording")
+        || stem.eq_ignore_ascii_case("data")
+        || stem.eq_ignore_ascii_case("raw");
+
+    if !is_generic_dir && is_generic_stem {
+        return parent_name;
     }
-    stem.split('_').next().unwrap_or("unknown").to_string()
+
+    // Check parent directory for BIDS "sub-<ID>"
+    if parent_name.starts_with("sub-") {
+        return parent_name.trim_start_matches("sub-").to_string();
+    }
+
+    // Check BIDS "sub-<ID>" in filename
+    if let Some(s) = stem.split('_').find(|s| s.starts_with("sub-")) {
+        let sub = s.trim_start_matches("sub-");
+        if (sub == "P001" || sub.eq_ignore_ascii_case("default")) && !is_generic_dir {
+            return parent_name;
+        }
+        return sub.to_string();
+    }
+
+    // Check delimited prefix
+    let first = stem.split('_').next().unwrap_or("").trim();
+    if !first.is_empty() && first != "unknown" {
+        return first.replace("-epo", "").replace("_clean", "");
+    }
+
+    if !is_generic_dir {
+        return parent_name;
+    }
+
+    "unknown".to_string()
+}
+
+pub fn extract_group(path: &str) -> String {
+    let p = Path::new(path);
+    let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+
+    // 1. Check for group-<label> or grp-<label> in filename
+    for part in stem.split('_') {
+        if part.starts_with("group-") {
+            return part.trim_start_matches("group-").to_string();
+        }
+        if part.starts_with("grp-") {
+            return part.trim_start_matches("grp-").to_string();
+        }
+    }
+
+    // 2. Check directory hierarchy for group hints
+    let known_groups = [
+        "control", "controls", "patient", "patients", "healthy", "clinical",
+        "hc", "mdd", "sz", "bpd", "ad", "pd", "asd", "pre", "post", "sham", "active",
+        "groupa", "groupb", "group_a", "group_b", "group1", "group2",
+    ];
+
+    let mut curr = p.parent();
+    while let Some(dir) = curr {
+        let name = dir.file_name().unwrap_or_default().to_string_lossy();
+        let lower = name.trim().to_lowercase();
+        for kg in &known_groups {
+            if lower == *kg || lower.starts_with(&format!("{kg}_")) || lower.starts_with(&format!("{kg}-")) {
+                return name.to_string();
+            }
+        }
+        for part in lower.split('_') {
+            if part.starts_with("group-") {
+                return part.trim_start_matches("group-").to_string();
+            }
+        }
+        curr = dir.parent();
+    }
+
+    String::new()
 }
 fn csv_row(s: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -261,6 +354,10 @@ fn csv(s: &str) -> String {
     }
 }
 pub fn read_events(path: &Path) -> Result<(Vec<Event>, String), String> {
+    if path.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("xdf")).unwrap_or(false) {
+        let xdf = crate::xdf_loader::load_xdf(path)?;
+        return Ok((xdf.events, "XDF event streams".into()));
+    }
     let sidecar = path.with_extension("evt");
     if sidecar.exists() {
         let text = fs::read_to_string(&sidecar).map_err(|e| e.to_string())?;
@@ -510,6 +607,8 @@ pub struct Input {
     pub path: String,
     #[serde(default)]
     pub subject: String,
+    #[serde(default)]
+    pub group: String,
 }
 #[derive(Deserialize)]
 pub struct Job {
@@ -579,7 +678,13 @@ fn validate(o: &Options, p: &Profile) -> Result<(), String> {
 fn selected_events(path: &Path, o: &Options) -> Result<(Vec<Event>, String), String> {
     match o.event_source.as_str() {
         "auto" => read_events(path),
-        "native" => read_edf_events(path),
+        "native" => {
+            if path.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("xdf")).unwrap_or(false) {
+                read_events(path)
+            } else {
+                read_edf_events(path)
+            }
+        }
         "sidecar" => {
             if !path.with_extension("evt").exists() {
                 return Err("Selected .evt source is missing".into());
@@ -771,13 +876,15 @@ pub fn inspect(inputs: &[Input], o: &Options) -> Value {
     json!({"files":inputs.iter().map(|i| {
    let meta=epoch_metadata(&i.path);
    let p=prepared_profile(&i.path,o,meta.as_ref()).ok();
+   let subj = if i.subject.is_empty() { participant(&i.path) } else { i.subject.clone() };
+   let grp = if i.group.is_empty() { extract_group(&i.path) } else { i.group.clone() };
    if let Some(v)=meta {
      let labels=v["epoch_labels"].as_array().cloned().unwrap_or_default();let mut counts=BTreeMap::new();
      let raw_codes=original_epoch_codes(&i.path,&v);
      for (index,label) in labels.iter().enumerate() {let grouped=if o.regroup_epochs {regrouped_label(raw_codes.get(&index),p.as_ref().map(|p|p.task.as_str()).unwrap_or(""))}else{None};let label=if o.regroup_epochs {grouped.as_deref().unwrap_or("Unassigned")}else{label.as_str().unwrap_or("")};*counts.entry(label.to_string()).or_insert(0usize)+=1;}
-     return json!({"path":i.path,"subject":if i.subject.is_empty(){participant(&i.path)}else{i.subject.clone()},"profile":p,"is_epoched":true,"marker_source":"Saved epoch condition labels","marker_counts":counts,"event_count":labels.len(),"epoch_tmin":v["epoch_tmin"],"epoch_tmax":v["epoch_tmax"],"can_regroup":!raw_codes.is_empty()});
+     return json!({"path":i.path,"subject":subj,"group":grp,"profile":p,"is_epoched":true,"marker_source":"Saved epoch condition labels","marker_counts":counts,"event_count":labels.len(),"epoch_tmin":v["epoch_tmin"],"epoch_tmax":v["epoch_tmax"],"can_regroup":!raw_codes.is_empty()});
    }
-   match selected_events(Path::new(&i.path),o) {Ok((events,source))=>{let mut counts=BTreeMap::new();for e in &events{*counts.entry(e.label.clone()).or_insert(0usize)+=1;}json!({"path":i.path,"subject":if i.subject.is_empty(){participant(&i.path)}else{i.subject.clone()},"suggested_task":detect_task(&i.path),"profile":p,"is_epoched":false,"marker_source":source,"marker_counts":counts,"event_count":events.len(),"timing_audit":timing_audit(&i.path,&events)})},Err(error)=>json!({"path":i.path,"error":error})}
+   match selected_events(Path::new(&i.path),o) {Ok((events,source))=>{let mut counts=BTreeMap::new();for e in &events{*counts.entry(e.label.clone()).or_insert(0usize)+=1;}json!({"path":i.path,"subject":subj,"group":grp,"suggested_task":detect_task(&i.path),"profile":p,"is_epoched":false,"marker_source":source,"marker_counts":counts,"event_count":events.len(),"timing_audit":timing_audit(&i.path,&events)})},Err(error)=>json!({"path":i.path,"error":error})}
  }).collect::<Vec<_>>()})
 }
 #[derive(Clone)]
@@ -867,6 +974,8 @@ fn waves_sem(x: &[Vec<f64>]) -> Vec<f64> {
 pub struct FileResult {
     pub path: String,
     pub subject: String,
+    #[serde(default)]
+    pub group: String,
     pub task: String,
     pub marker_source: String,
     pub timing_audit: Option<Value>,
@@ -1376,6 +1485,11 @@ fn analyse_file(input: &Input, rec: Recording, o: &Options) -> Result<FileResult
             participant(&input.path)
         } else {
             input.subject.clone()
+        },
+        group: if input.group.is_empty() {
+            extract_group(&input.path)
+        } else {
+            input.group.clone()
         },
         task: p.task.clone(),
         timing_audit: timing_audit(&input.path, &events),
@@ -2083,12 +2197,13 @@ where
             )
         })
         .collect();
-    let mut measurements=String::from("subject,task,file,condition,n_trials,mean_uv,signed_auc_uv_s,positive_auc_uv_s,negative_auc_uv_s,peak_amplitude_uv,peak_latency_s,fractional_area_latency_s,fractional_peak_latency_s\n");
+    let mut measurements=String::from("subject,group,task,file,condition,n_trials,mean_uv,signed_auc_uv_s,positive_auc_uv_s,negative_auc_uv_s,peak_amplitude_uv,peak_latency_s,fractional_area_latency_s,fractional_peak_latency_s\n");
     for f in &files {
         for (name, m) in &f.measurements {
             measurements.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 csv(&f.subject),
+                csv(&f.group),
                 csv(&f.task),
                 csv(&f.path),
                 csv(name),
@@ -2141,9 +2256,9 @@ where
         statistics,
     )
     .map_err(|e| e.to_string())?;
-    let mut trial_csv=String::from("subject,task,file,event_index,condition,marker,onset_s,rt_s,mean_uv,signed_auc_uv_s,positive_auc_uv_s,negative_auc_uv_s,peak_amplitude_uv,peak_latency_s,fractional_area_latency_s,fractional_peak_latency_s\n");
+    let mut trial_csv=String::from("subject,group,task,file,event_index,condition,marker,onset_s,rt_s,mean_uv,signed_auc_uv_s,positive_auc_uv_s,negative_auc_uv_s,peak_amplitude_uv,peak_latency_s,fractional_area_latency_s,fractional_peak_latency_s\n");
     let mut wave_csv =
-        String::from("level,subject,task,time_s,A_uv,B_uv,difference_uv,sem_difference_uv\n");
+        String::from("level,subject,group,task,time_s,A_uv,B_uv,difference_uv,sem_difference_uv\n");
     let numeric = |v: &Value| {
         v.as_f64()
             .filter(|v| v.is_finite())
@@ -2160,6 +2275,7 @@ where
             let m = &trial["metrics"];
             let mut row = vec![
                 csv(&f.subject),
+                csv(&f.group),
                 csv(&f.task),
                 csv(&f.path),
                 trial["event_index"].to_string(),
@@ -2184,20 +2300,22 @@ where
         }
         for t in 0..f.times.len() {
             wave_csv.push_str(&format!(
-                "recording,{},{},{},{},{},{},\n",
+                "recording,{},{},{},{},{},{},{},{}\n",
                 csv(&f.subject),
+                csv(&f.group),
                 csv(&f.task),
                 f.times[t],
                 f.a[t],
                 f.b[t],
-                f.difference[t]
+                f.difference[t],
+                ""
             ));
         }
     }
     for g in &groups {
         for t in 0..g["times"].as_array().unwrap().len() {
             wave_csv.push_str(&format!(
-                "group,,{},{},{},{},{},{}\n",
+                "group,,,{},{},{},{},{},{}\n",
                 csv(g["task"].as_str().unwrap()),
                 numeric(&g["times"][t]),
                 numeric(&g["a"][t]),
@@ -2216,7 +2334,7 @@ where
     }
     fs::write(Path::new(&job.output).join("erp_waveforms.csv"), wave_csv)
         .map_err(|e| e.to_string())?;
-    let mut model_csv = String::from("subject,task,file,model,predictor,channel,time_s,beta\n");
+    let mut model_csv = String::from("subject,group,task,file,model,predictor,channel,time_s,beta\n");
     let mut model_rows = 0;
     for f in &files {
         for (name, model) in [("rERP", &f.regression), ("FIR_overlap", &f.deconvolution)] {
@@ -2227,8 +2345,9 @@ where
                     for c in 0..f.labels.len() {
                         for t in 0..time.len() {
                             model_csv.push_str(&format!(
-                                "{},{},{},{},{},{},{},{}\n",
+                                "{},{},{},{},{},{},{},{},{}\n",
                                 csv(&f.subject),
+                                csv(&f.group),
                                 csv(&f.task),
                                 csv(&f.path),
                                 name,

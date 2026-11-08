@@ -9,6 +9,7 @@ mod mat_v5;
 pub mod microstates;
 pub mod mne_fif;
 pub mod stats;
+pub mod xdf_loader;
 
 pub mod erp_math;
 pub mod erp_workbench;

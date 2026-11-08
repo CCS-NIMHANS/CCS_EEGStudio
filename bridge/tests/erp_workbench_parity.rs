@@ -140,6 +140,7 @@ fn lateralized_alignment_and_participant_units_are_correct() {
     let input = Input {
         path: path.to_str().unwrap().into(),
         subject: "same-participant".into(),
+        group: String::new(),
     };
     let job = Job {
         inputs: vec![input.clone(), input],
@@ -244,6 +245,7 @@ fn all_seven_tasks_reuse_saved_trials_without_re_epoching() {
             inputs: vec![Input {
                 path: path.to_string_lossy().into(),
                 subject: "1".into(),
+                group: String::new(),
             }],
             output: dir.join(task).to_string_lossy().into(),
             options,
@@ -272,8 +274,8 @@ fn all_seven_tasks_reuse_saved_trials_without_re_epoching() {
         let measurements = fs::read_to_string(std::path::Path::new(&job.output).join("erp_measurements.csv")).unwrap();
         for name in f["condition_names"].as_array().unwrap() {
             let name = name.as_str().unwrap();
-            let row = measurements.lines().skip(1).find(|row| row.split(',').nth(3) == Some(name)).unwrap();
-            assert_eq!(row.split(',').nth(4), Some("4"), "named condition trial count: {name}");
+            let row = measurements.lines().skip(1).find(|row| row.split(',').nth(4) == Some(name)).unwrap();
+            assert_eq!(row.split(',').nth(5), Some("4"), "named condition trial count: {name}");
         }
 
         let trial_csv = std::path::Path::new(&job.output).join("erp_trial_measurements.csv");
@@ -309,6 +311,7 @@ fn saved_locking_codes_can_regroup_and_reverse_the_comparison() {
         inputs: vec![Input {
             path: path.to_string_lossy().into(),
             subject: "1".into(),
+            group: String::new(),
         }],
         output: dir.join("out").to_string_lossy().into(),
         options,

@@ -79,6 +79,33 @@ class _Reader {
   };
 }
 
+const _liveAmp32Labels = [
+  'Fp1', 'Fz', 'F3', 'F7', 'FT9', 'FC5', 'FC1', 'C3', 'T7', 'TP9',
+  'CP5', 'CP1', 'Pz', 'P3', 'P7', 'O1', 'Oz', 'O2', 'P4', 'P8',
+  'TP10', 'CP6', 'CP2', 'Cz', 'C4', 'T8', 'FT10', 'FC6', 'FC2', 'F4',
+  'F8', 'Fp2',
+];
+
+List<String> _normalizeChannelLabels(List<String> rawLabels) {
+  final genericCount = rawLabels
+      .where((l) {
+        final u = l.trim().toUpperCase();
+        return u.startsWith('EEG 1_') ||
+            u.startsWith('EEG_') ||
+            u.startsWith('CH_') ||
+            u.startsWith('CH ');
+      })
+      .length;
+  if (genericCount >= 16) {
+    final out = List<String>.from(rawLabels);
+    for (var i = 0; i < _liveAmp32Labels.length && i < out.length; i++) {
+      out[i] = _liveAmp32Labels[i];
+    }
+    return out;
+  }
+  return rawLabels;
+}
+
 /// Chunked XDF 1.0 import. Refuse clock resets/data gaps rather than silently
 /// compressing time and moving ERP events. No Python dependency is required.
 class XdfLoader {
@@ -260,13 +287,14 @@ class XdfLoader {
             ?.findElements('channel')
             .toList() ??
         [];
-    final labels = [
+    final rawLabels = [
       for (var c = 0; c < stream.count; c++)
         c < channelXml.length
             ? channelXml[c].getElement('label')?.innerText.trim() ??
                   'Ch${c + 1}'
             : 'Ch${c + 1}',
     ];
+    final labels = _normalizeChannelLabels(rawLabels);
     final scales = [
       for (var c = 0; c < stream.count; c++)
         _unitScale(

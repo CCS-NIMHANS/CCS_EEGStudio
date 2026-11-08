@@ -59,6 +59,9 @@ fn main() -> Result<(), String> {
                     load_edf(Path::new(path))?
                 } else if path.to_lowercase().ends_with(".fif") {
                     mne_fif::load_fif(Path::new(path))?
+                } else if path.to_lowercase().ends_with(".xdf") {
+                    let xdf = ccs_eeg_engine::xdf_loader::load_xdf(Path::new(path))?;
+                    xdf.recording
                 } else {
                     preprocessing::load_portable(Path::new(path))?
                 };
@@ -307,6 +310,9 @@ fn main() -> Result<(), String> {
         fieldtrip_loader::load_fieldtrip(Path::new(&job.input))?
     } else if job.format == "vhdr" || job.input.to_lowercase().ends_with(".vhdr") {
         vhdr_loader::load_vhdr(Path::new(&job.input))?
+    } else if job.format == "xdf" || job.input.to_lowercase().ends_with(".xdf") {
+        let xdf = ccs_eeg_engine::xdf_loader::load_xdf(Path::new(&job.input))?;
+        xdf.recording
     } else if job.format == "ccseeg" || (job.input.ends_with(".ccseeg.json") || job.input.ends_with(".ccseeg")) {
         preprocessing::load_portable(Path::new(&job.input))?
     } else {
