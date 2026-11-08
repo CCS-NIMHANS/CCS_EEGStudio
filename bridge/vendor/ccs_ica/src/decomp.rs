@@ -109,7 +109,7 @@ pub fn vmd(f_in: &[f64], fs: f64, o: &VmdOpts) -> (Vec<Vec<f64>>, Vec<f64>, usiz
     }
     // reconstruct
     let mut order: Vec<usize> = (0..k).collect();
-    order.sort_by(|&a, &b| omega[a].partial_cmp(&omega[b]).unwrap());
+    order.sort_by(|&a, &b| omega[a].total_cmp(&omega[b]));
     let mut modes = vec![];
     let mut cf = vec![];
     for &kk in &order {
@@ -332,8 +332,8 @@ pub fn iswt(w: &Swt, lo_dec: &[f64]) -> Vec<f64> {
 }
 
 fn median_abs(x: &[f64]) -> f64 {
-    let mut v: Vec<f64> = x.iter().map(|a| a.abs()).collect();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut v: Vec<f64> = x.iter().map(|a| a.abs()).filter(|a| a.is_finite()).collect();
+    v.sort_by(|a, b| a.total_cmp(b));
     let n = v.len();
     if n == 0 {
         0.0

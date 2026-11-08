@@ -99,10 +99,10 @@ fn butter_zpk(n: usize, bt: BType, fs: f64) -> (Vec<C>, Vec<C>, f64) {
 fn pair_roots(r: &[C]) -> Vec<(C, C)> {
     // conjugate pairs first, then real roots paired up
     let mut cplx: Vec<C> = r.iter().cloned().filter(|v| v.im > 1e-9).collect();
-    cplx.sort_by(|a, b| a.re.partial_cmp(&b.re).unwrap());
+    cplx.sort_by(|a, b| a.re.total_cmp(&b.re));
     let mut out: Vec<(C, C)> = cplx.iter().map(|v| (*v, v.conj())).collect();
     let mut reals: Vec<f64> = r.iter().filter(|v| v.im.abs() <= 1e-9).map(|v| v.re).collect();
-    reals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    reals.sort_by(|a, b| a.total_cmp(b));
     while reals.len() >= 2 {
         let a = reals.remove(0);
         let b = reals.remove(0);
@@ -119,7 +119,7 @@ pub fn butter_sos(order: usize, bt: BType, fs: f64) -> Sos {
     let (z, p, k) = butter_zpk(order, bt, fs);
     let mut pp = pair_roots(&p);
     let mut zp = pair_roots(&z);
-    pp.sort_by(|a, b| b.0.norm().partial_cmp(&a.0.norm()).unwrap()); // most unit-circle-near first
+    pp.sort_by(|a, b| b.0.norm().total_cmp(&a.0.norm())); // most unit-circle-near first
     let mut sos: Sos = vec![];
     for (p1, p2) in pp {
         // nearest zero pair

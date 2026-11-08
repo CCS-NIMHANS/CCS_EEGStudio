@@ -423,7 +423,7 @@ pub fn wica(x: &Chans, o: &WicaOpts) -> Result<Chans, String> {
 /// fullest bin.
 fn histogram_mode(x: &[f64]) -> f64 {
     let mut v: Vec<f64> = x.iter().cloned().filter(|a| a.is_finite()).collect();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(|a, b| a.total_cmp(b));
     let n = v.len();
     let pct = |p: f64| -> f64 {
         let pos = (n - 1) as f64 * p;
@@ -552,7 +552,7 @@ pub fn gev_fit(x: &[f64]) -> (f64, f64, f64) {
     let mut fv: Vec<f64> = simplex.iter().map(|p| nll(p)).collect();
     for _ in 0..2000 {
         let mut idx: Vec<usize> = (0..4).collect();
-        idx.sort_by(|&a, &b| fv[a].partial_cmp(&fv[b]).unwrap());
+        idx.sort_by(|&a, &b| fv[a].total_cmp(&fv[b]));
         simplex = idx.iter().map(|&i| simplex[i]).collect();
         fv = idx.iter().map(|&i| fv[i]).collect();
         if (fv[3] - fv[0]).abs() < 1e-10 * (1.0 + fv[0].abs()) {
@@ -610,7 +610,7 @@ pub fn juggler_select(x: &Chans, srate: f64, strategy: Juggler, top_k: usize) ->
     let feats: Vec<Vec<f64>> = (0..n)
         .map(|t| {
             let mut v: Vec<f64> = (0..c).map(|ch| filt[ch][t].abs()).collect();
-            v.sort_by(|p, q| q.partial_cmp(p).unwrap());
+            v.sort_by(|p, q| q.total_cmp(p));
             v.truncate(k);
             v
         })
@@ -632,7 +632,7 @@ pub fn juggler_select(x: &Chans, srate: f64, strategy: Juggler, top_k: usize) ->
             let mut best: Option<(f64, usize, i64)> = None;
             for l in 0..ncl {
                 let mut norms: Vec<f64> = (0..n).filter(|&i| labels[i] == l).map(|i| feats[i].iter().cloned().fold(0.0, f64::max)).collect();
-                norms.sort_by(|p, q| p.partial_cmp(q).unwrap());
+                norms.sort_by(|p, q| p.total_cmp(q));
                 let med = if norms.len() % 2 == 1 { norms[norms.len() / 2] } else { 0.5 * (norms[norms.len() / 2 - 1] + norms[norms.len() / 2]) };
                 let better = match best {
                     None => true,
@@ -649,7 +649,7 @@ pub fn juggler_select(x: &Chans, srate: f64, strategy: Juggler, top_k: usize) ->
         Juggler::Gev => {
             let lead: Vec<f64> = feats.iter().map(|f| f[0]).collect();
             let mut s = lead.clone();
-            s.sort_by(|p, q| p.partial_cmp(q).unwrap());
+            s.sort_by(|p, q| p.total_cmp(q));
             let scale = if n % 2 == 1 { s[n / 2] } else { 0.5 * (s[n / 2 - 1] + s[n / 2]) };
             if !(scale > 0.0) {
                 return Err("juggler gev: degenerate amplitude scale".into());

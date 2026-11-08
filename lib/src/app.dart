@@ -295,6 +295,10 @@ class _FeatureHomeState extends State<FeatureHome>
   final _prepOverlap = TextEditingController(text: '0');
   final _prepWindow = TextEditingController(text: '5');
   bool _batchPreprocessedInput = false;
+  bool _batchStage1Enabled = true;
+  bool _batchStage2Enabled = true;
+  bool _batchStage3Enabled = true;
+  bool _batchSkipExisting = false;
   String? _groupInputCsv;
   bool _batchOpenGroupAfter = true;
   final _batchSubjectLimit = TextEditingController(text: '0');
@@ -1841,6 +1845,7 @@ class _FeatureHomeState extends State<FeatureHome>
         replacement = TextEditingController();
     final accepted = await showDialog<bool>(
       context: context,
+      barrierDismissible: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           final includedCount = controls.values
@@ -1876,6 +1881,12 @@ class _FeatureHomeState extends State<FeatureHome>
                           : Colors.redAccent,
                     ),
                   ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: 'Close without applying',
+                  onPressed: () => Navigator.pop(ctx, false),
                 ),
               ],
             ),
@@ -2292,7 +2303,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   );
                 },
               ),
-              const Spacer(),
+              const SizedBox(width: 16),
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
                 child: const Text('Cancel'),
@@ -4630,31 +4641,40 @@ class _FeatureHomeState extends State<FeatureHome>
                     )
                   else ...[
                     const SizedBox(width: 4),
-                    FilledButton.icon(
-                      onPressed:
-                          (_batchPreprocessedInput
-                                  ? _batchFeatFiles
-                                  : _batchPrepFiles)
-                              .isEmpty
-                          ? null
-                          : _runFullBatch,
-                      icon: const Icon(Icons.play_circle_filled, size: 14),
-                      label: Text(
-                        _batchPreprocessedInput
-                            ? 'Run feature workflow'
-                            : 'Run Full Pipeline',
-                        style: TextStyle(fontSize: 11),
-                      ),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: _accentGreen,
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor: _cardColor,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
+                    () {
+                      final activeQueue = (_batchStage1Enabled && !_batchPreprocessedInput)
+                          ? _batchPrepFiles
+                          : (_batchStage2Enabled ? _batchFeatFiles : _batchPlotFiles);
+                      final stages = [
+                        if (_batchStage1Enabled && !_batchPreprocessedInput) '1',
+                        if (_batchStage2Enabled) '2',
+                        if (_batchStage3Enabled) '3',
+                      ];
+                      final bool canRun = activeQueue.isNotEmpty && stages.isNotEmpty;
+                      final String runPipelineLabel = (stages.length == 3)
+                          ? 'Run Full Pipeline'
+                          : (stages.isEmpty
+                              ? 'No stages enabled'
+                              : 'Run Stages ${stages.join(" & ")}');
+
+                      return FilledButton.icon(
+                        onPressed: canRun ? _runFullBatch : null,
+                        icon: const Icon(Icons.play_circle_filled, size: 14),
+                        label: Text(
+                          runPipelineLabel,
+                          style: const TextStyle(fontSize: 11),
                         ),
-                      ),
-                    ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _accentGreen,
+                          foregroundColor: Colors.white,
+                          disabledBackgroundColor: _cardColor,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
+                        ),
+                      );
+                    }(),
                   ],
                   const SizedBox(width: 8),
                   IconButton(
@@ -4776,30 +4796,55 @@ class _FeatureHomeState extends State<FeatureHome>
             ),
           ),
 
-          // ── Batch workspace toolbar (skip prep toggle, subject limit, tabs/columns view switch) ──
+          // ── Batch workspace toolbar (skip prep toggle, resume batch, subject limit, tabs/columns view switch) ──
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
             child: Row(
               children: [
                 Expanded(
-                  child: SwitchListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text(
-                      'Already preprocessed: start with features',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                    value: _batchPreprocessedInput,
-                    onChanged: _running
-                        ? null
-                        : (v) => setState(() {
-                            _batchPreprocessedInput = v;
-                            _batchFeatUsePrep = !v;
-                            _batchPlotUseFeat = true;
-                            if (v && _batchActiveStage == 0) {
-                              _batchActiveStage = 1;
-                            }
-                          }),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: SwitchListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text(
+                            'Already preprocessed: start with features',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                          value: _batchPreprocessedInput,
+                          onChanged: _running
+                              ? null
+                              : (v) => setState(() {
+                                  _batchPreprocessedInput = v;
+                                  _batchFeatUsePrep = !v;
+                                  _batchPlotUseFeat = true;
+                                  if (v && _batchActiveStage == 0) {
+                                    _batchActiveStage = 1;
+                                  }
+                                }),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Tooltip(
+                          message:
+                              'Skip already processed files across Preprocessing, Feature Extraction, and Plotting to resume or re-run without re-computing existing outputs.',
+                          child: SwitchListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text(
+                              'Skip already processed files (resume batch)',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            value: _batchSkipExisting,
+                            onChanged: _running
+                                ? null
+                                : (v) => setState(() => _batchSkipExisting = v),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(width: 16),
@@ -4888,8 +4933,11 @@ class _FeatureHomeState extends State<FeatureHome>
         shortTitle: '1. Preprocessing',
         color: _accentPurple,
         icon: Icons.cleaning_services,
-        badge: '${_batchPrepFiles.length} files',
+        badge: !_batchStage1Enabled
+            ? 'Skipped'
+            : '${_batchPrepFiles.length} files',
         enabled: !_batchPreprocessedInput,
+        stageActive: _batchStage1Enabled && !_batchPreprocessedInput,
       ),
       (
         index: 1,
@@ -4897,10 +4945,13 @@ class _FeatureHomeState extends State<FeatureHome>
         shortTitle: '2. Features',
         color: _accentGreen,
         icon: Icons.analytics,
-        badge: _batchFeatUsePrep
-            ? 'Stage 1 output'
-            : '${_batchFeatFiles.length} files',
+        badge: !_batchStage2Enabled
+            ? 'Skipped'
+            : (_batchFeatUsePrep
+                ? 'Stage 1 output'
+                : '${_batchFeatFiles.length} files'),
         enabled: true,
+        stageActive: _batchStage2Enabled,
       ),
       (
         index: 2,
@@ -4908,10 +4959,13 @@ class _FeatureHomeState extends State<FeatureHome>
         shortTitle: '3. Plots',
         color: _accentAmber,
         icon: Icons.stacked_line_chart,
-        badge: _batchPlotUseFeat
-            ? 'Stage 2 CSVs'
-            : '${_batchPlotFiles.length} files',
+        badge: !_batchStage3Enabled
+            ? 'Skipped'
+            : (_batchPlotUseFeat
+                ? 'Stage 2 CSVs'
+                : '${_batchPlotFiles.length} files'),
         enabled: true,
+        stageActive: _batchStage3Enabled,
       ),
       (
         index: 3,
@@ -4921,6 +4975,7 @@ class _FeatureHomeState extends State<FeatureHome>
         icon: Icons.groups,
         badge: 'LMM / GLM',
         enabled: true,
+        stageActive: true,
       ),
     ];
 
@@ -5001,13 +5056,17 @@ class _FeatureHomeState extends State<FeatureHome>
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: stages[i].color.withOpacity(0.15),
+                          color: !stages[i].stageActive
+                              ? Colors.orange.withOpacity(0.18)
+                              : stages[i].color.withOpacity(0.15),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
                           stages[i].badge,
                           style: TextStyle(
-                            color: stages[i].color,
+                            color: !stages[i].stageActive
+                                ? Colors.orangeAccent
+                                : stages[i].color,
                             fontSize: 9.5,
                             fontWeight: FontWeight.w600,
                           ),
@@ -5028,6 +5087,8 @@ class _FeatureHomeState extends State<FeatureHome>
     title: 'Stage 1: Preprocessing',
     icon: Icons.cleaning_services,
     color: _accentPurple,
+    stageEnabled: _batchStage1Enabled,
+    onStageEnabledChanged: (v) => setState(() => _batchStage1Enabled = v),
     files: _batchPrepFiles,
     outputDir: _effectiveBatchPrepOutputDir,
     outputLabel: 'Output Directory',
@@ -5062,6 +5123,8 @@ class _FeatureHomeState extends State<FeatureHome>
     title: 'Stage 2: Feature Extraction',
     icon: Icons.analytics,
     color: _accentGreen,
+    stageEnabled: _batchStage2Enabled,
+    onStageEnabledChanged: (v) => setState(() => _batchStage2Enabled = v),
     files: _batchFeatFiles,
     outputDir: _effectiveBatchFeatOutputDir,
     outputLabel: 'Output Directory',
@@ -5157,6 +5220,8 @@ class _FeatureHomeState extends State<FeatureHome>
     title: 'Stage 3: Plots',
     icon: Icons.stacked_line_chart,
     color: _accentAmber,
+    stageEnabled: _batchStage3Enabled,
+    onStageEnabledChanged: (v) => setState(() => _batchStage3Enabled = v),
     files: _batchPlotFiles,
     outputDir: _effectiveBatchPlotOutputDir,
     outputLabel: 'Output Directory',
@@ -5349,6 +5414,8 @@ class _FeatureHomeState extends State<FeatureHome>
     bool runEnabled = true,
     VoidCallback? onPrevious,
     VoidCallback? onNext,
+    bool stageEnabled = true,
+    ValueChanged<bool>? onStageEnabledChanged,
   }) {
     final linked = usePrevious == true;
     return Material(
@@ -5371,19 +5438,70 @@ class _FeatureHomeState extends State<FeatureHome>
               ),
               child: Row(
                 children: [
-                  Icon(icon, size: 16, color: color),
+                  Icon(icon, size: 16, color: stageEnabled ? color : _textMuted),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       title,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: color,
+                        color: stageEnabled ? color : _textMuted,
                         fontSize: 13,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
+                  if (onStageEnabledChanged != null) ...[
+                    Tooltip(
+                      message: stageEnabled
+                          ? 'Disable/skip this stage when running pipeline'
+                          : 'Enable this stage when running pipeline',
+                      child: InkWell(
+                        onTap: _running
+                            ? null
+                            : () => onStageEnabledChanged(!stageEnabled),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: stageEnabled
+                                ? color.withOpacity(0.18)
+                                : Colors.white.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: stageEnabled
+                                  ? color.withOpacity(0.7)
+                                  : _borderColor,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                stageEnabled
+                                    ? Icons.check_circle
+                                    : Icons.do_not_disturb_on,
+                                size: 13,
+                                color: stageEnabled ? color : _textMuted,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                stageEnabled ? 'Enabled' : 'Skip Stage',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: stageEnabled ? color : _textMuted,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -5391,6 +5509,37 @@ class _FeatureHomeState extends State<FeatureHome>
               child: ListView(
                 padding: const EdgeInsets.all(12),
                 children: [
+                  if (!stageEnabled)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: Colors.amber.withOpacity(0.4),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.info_outline,
+                            size: 16,
+                            color: Colors.amber,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Stage Skipped: This stage will be bypassed when running the pipeline. You can still run it standalone below.',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.amber.shade200,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   if (usePrevious != null && onUsePreviousChanged != null) ...[
                     CheckboxListTile(
                       title: Text(
@@ -5612,7 +5761,10 @@ class _FeatureHomeState extends State<FeatureHome>
                       ),
                     ),
                     const SizedBox(height: 6),
-                    options,
+                    Opacity(
+                      opacity: stageEnabled ? 1.0 : 0.65,
+                      child: options,
+                    ),
                   ],
                 ],
               ),
@@ -5926,6 +6078,42 @@ class _FeatureHomeState extends State<FeatureHome>
       _log('[${i + 1}/${_batchPrepFiles.length}] ${_shortName(path)}');
       try {
         final dir = _effectiveBatchPrepOutputDir ?? File(path).parent.path;
+
+        if (_batchSkipExisting) {
+          final candClean =
+              '$dir${Platform.pathSeparator}${erpOutputName(path, extension: RecordingStorage.extension, epoched: false, cleaned: true)}';
+          final candEpo =
+              '$dir${Platform.pathSeparator}${erpOutputName(path, extension: RecordingStorage.extension, epoched: true, cleaned: true)}';
+          final candSrc =
+              '$dir${Platform.pathSeparator}${_stem(path)}_source.${RecordingStorage.extension}';
+          String? existing;
+          if (_cfg.sourceLocalization &&
+              File(candSrc).existsSync() &&
+              File(candSrc).lengthSync() > 0) {
+            existing = candSrc;
+          } else if (File(candEpo).existsSync() &&
+              File(candEpo).lengthSync() > 0) {
+            existing = candEpo;
+          } else if (File(candClean).existsSync() &&
+              File(candClean).lengthSync() > 0) {
+            existing = candClean;
+          }
+          if (existing != null) {
+            _log('  ↳ Skipping (already preprocessed): ${_shortName(existing)}');
+            written.add(existing);
+            _updateBatchFile(
+              path,
+              'Done (Skipped)',
+              progress: 1,
+              completed: true,
+            );
+            if (standalone) {
+              setState(() => _progress = (i + 1) / _batchPrepFiles.length);
+            }
+            continue;
+          }
+        }
+
         final rec = await _resolveBatchChannels(
           await _loadRecordingWithFeedback(path),
         );
@@ -6096,6 +6284,38 @@ class _FeatureHomeState extends State<FeatureHome>
         final jobCsv = _cfg.perFileCsv
             ? perFilePath
             : '${scratch.path}${Platform.pathSeparator}part_$i.csv';
+
+        if (_batchSkipExisting &&
+            File(perFilePath).existsSync() &&
+            File(perFilePath).lengthSync() > 0) {
+          _log(
+            '[${i + 1}/${kept.length}] ${_shortName(path)} ↳ Skipping (already extracted: ${_shortName(perFilePath)})',
+          );
+          if (combinedSink != null) {
+            var firstLine = true;
+            for (final line in await File(perFilePath).readAsLines()) {
+              if (firstLine) {
+                firstLine = false;
+                if (combinedHasHeader) continue;
+                combinedHasHeader = true;
+              }
+              combinedSink.writeln(line);
+            }
+          }
+          if (_cfg.perFileCsv) written.add(perFilePath);
+          succeeded++;
+          _updateBatchFile(
+            path,
+            'Done (Skipped)',
+            progress: 1,
+            completed: true,
+          );
+          if (mounted && standalone) {
+            setState(() => _progress = (i + 1) / kept.length);
+          }
+          continue;
+        }
+
         _updateBatchFile(path, 'Loading', progress: 0);
         _log('[${i + 1}/${kept.length}] Loading ${_shortName(path)}');
         try {
@@ -6265,11 +6485,45 @@ class _FeatureHomeState extends State<FeatureHome>
     }
     _log('── BATCH PLOTTING (${inputs.length} CSV(s)) ──');
     try {
-      final outDir = _effectiveBatchPlotOutputDir ?? File(inputs.first).parent.path;
-      for (final path in inputs) {
+      final outDir =
+          _effectiveBatchPlotOutputDir ?? File(inputs.first).parent.path;
+      final plotsDir = Directory(
+        '$outDir${Platform.pathSeparator}Figures_TopoStats',
+      );
+      var toPlot = inputs;
+      if (_batchSkipExisting && plotsDir.existsSync()) {
+        toPlot = inputs.where((path) {
+          final recId = _stem(path).replaceFirst(RegExp(r'\.features$'), '');
+          final recDir = Directory(
+            '${plotsDir.path}${Platform.pathSeparator}$recId',
+          );
+          final alreadyDone =
+              recDir.existsSync() && (recDir.listSync().isNotEmpty);
+          if (alreadyDone) {
+            _log(
+              '  ↳ Skipping plots for ${_shortName(path)} (already plotted in Figures_TopoStats/$recId)',
+            );
+            _updateBatchFile(
+              path,
+              'Done (Skipped)',
+              progress: 1,
+              completed: true,
+            );
+            return false;
+          }
+          return true;
+        }).toList();
+      }
+      for (final path in toPlot) {
         _updateBatchFile(path, 'Running', progress: 0);
       }
-      await _runPlotting(csvPaths: inputs, announce: false, outputDir: outDir);
+      if (toPlot.isNotEmpty) {
+        await _runPlotting(csvPaths: toPlot, announce: false, outputDir: outDir);
+      } else {
+        _log(
+          '✓ All requested plots already exist in Figures_TopoStats — skipping re-plotting.',
+        );
+      }
       if (mounted)
         setState(() => _batchResultCsvs = preferSessionFeatureCsvs(inputs));
       for (final path in inputs) {
@@ -6287,10 +6541,25 @@ class _FeatureHomeState extends State<FeatureHome>
     }
   }
 
-  /// Runs all three stages back to back, feeding each stage the files the
-  /// previous one actually produced.
+  /// Runs all enabled pipeline stages back to back.
   Future<void> _runFullBatch() async {
-    final queue = _batchPreprocessedInput ? _batchFeatFiles : _batchPrepFiles;
+    final bool runPrep = _batchStage1Enabled && !_batchPreprocessedInput;
+    final bool runFeat = _batchStage2Enabled;
+    final bool runPlot = _batchStage3Enabled;
+
+    if (!runPrep && !runFeat && !runPlot) {
+      _log('No pipeline stages are enabled.');
+      return;
+    }
+
+    final queue = runPrep
+        ? _batchPrepFiles
+        : (runFeat
+            ? (_batchFeatUsePrep
+                ? _resolveBatchExtractionInputs()
+                : _batchFeatFiles)
+            : _resolveBatchPlotInputs());
+
     if (queue.isEmpty) {
       _log('Queue is empty — add recordings in the active input stage.');
       return;
@@ -6302,32 +6571,59 @@ class _FeatureHomeState extends State<FeatureHome>
       _logVisible = true;
     });
     _startBatchProgress('Batch workflow', queue);
-    _log('══ BATCH WORKFLOW — ${queue.length} files ══');
+    final activeStagesDesc = [
+      if (runPrep) 'Stage 1 (Prep)',
+      if (runFeat) 'Stage 2 (Features)',
+      if (runPlot) 'Stage 3 (Plots)',
+    ].join(' → ');
+    _log('══ BATCH WORKFLOW ($activeStagesDesc) — ${queue.length} files ══');
     try {
-      final preprocessed = _batchPreprocessedInput
-          ? List<String>.of(_batchFeatFiles)
-          : await _runBatchPreprocessing(standalone: false);
-      if (preprocessed.isEmpty) {
-        _log('✗ Stage 1 produced nothing — aborting.');
-        return;
+      List<String> preprocessed = const [];
+      if (runPrep) {
+        preprocessed = await _runBatchPreprocessing(standalone: false);
+        if (preprocessed.isEmpty && !_batchSkipExisting) {
+          _log('✗ Stage 1 produced nothing — aborting.');
+          return;
+        }
+      } else {
+        preprocessed = _resolveBatchExtractionInputs();
       }
       setState(() => _progress = 1 / 3);
 
-      _batchFeatUsePrep = !_batchPreprocessedInput;
-      _resetBatchProgressStage(
-        'Full batch pipeline · feature extraction',
-        preprocessed,
-      );
-      final csvs = await _runBatchExtraction(standalone: false);
-      if (csvs.isEmpty || _batchCancelRequested) {
-        _log('Feature stage stopped or produced no output.');
-        return;
+      List<String> csvs = const [];
+      if (runFeat) {
+        _batchFeatUsePrep = runPrep;
+        final featInputs = preprocessed.isNotEmpty
+            ? preprocessed
+            : _resolveBatchExtractionInputs();
+        _resetBatchProgressStage(
+          'Full batch pipeline · feature extraction',
+          featInputs,
+        );
+        csvs = await _runBatchExtraction(standalone: false);
+        if ((csvs.isEmpty && !_batchSkipExisting) || _batchCancelRequested) {
+          _log('Feature stage stopped or produced no output.');
+          return;
+        }
+      } else {
+        csvs = _resolveBatchPlotInputs();
       }
       setState(() => _progress = 2 / 3);
 
-      _batchPlotUseFeat = true;
-      _resetBatchProgressStage('Full batch pipeline · plotting', csvs);
-      await _runBatchPlotting(standalone: false);
+      if (runPlot) {
+        _batchPlotUseFeat = runFeat;
+        final plotInputs = csvs.isNotEmpty ? csvs : _resolveBatchPlotInputs();
+        _resetBatchProgressStage('Full batch pipeline · plotting', plotInputs);
+        await _runBatchPlotting(standalone: false);
+        for (final path in plotInputs) {
+          _updateBatchFile(path, 'Done', progress: 1, completed: true);
+        }
+      }
+
+      _log('══ FULL BATCH PIPELINE COMPLETE ══');
+      if (_batchOpenGroupAfter && !_batchCancelRequested) {
+        await _openBatchGroupStatistics();
+      }
       for (final path in csvs) {
         _updateBatchFile(path, 'Done', progress: 1, completed: true);
       }

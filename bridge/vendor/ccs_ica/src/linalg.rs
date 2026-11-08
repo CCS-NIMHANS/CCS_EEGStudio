@@ -45,7 +45,7 @@ pub fn sym_eig_sorted_asc(a: &Mat) -> (Vec<f64>, Mat) {
     let e = nalgebra::SymmetricEigen::new(s);
     let n = e.eigenvalues.len();
     let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_by(|&i, &j| e.eigenvalues[i].partial_cmp(&e.eigenvalues[j]).unwrap());
+    idx.sort_by(|&i, &j| e.eigenvalues[i].total_cmp(&e.eigenvalues[j]));
     let vals: Vec<f64> = idx.iter().map(|&i| e.eigenvalues[i]).collect();
     let mut vecs = Mat::zeros(n, n);
     for (k, &i) in idx.iter().enumerate() {

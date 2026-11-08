@@ -87,8 +87,8 @@ fn matlab_round(x: f64) -> f64 {
 }
 
 fn median_of(v: &[f64]) -> f64 {
-    let mut s = v.to_vec();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut s: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
+    s.sort_by(|a, b| a.total_cmp(b));
     let n = s.len();
     if n == 0 {
         return f64::NAN;
@@ -105,9 +105,12 @@ pub fn fit_eeg_distribution(
     step_sizes: [f64; 2],
     betas: &[f64],
 ) -> (f64, f64, f64, f64) {
-    let mut x: Vec<f64> = x_in.to_vec();
-    x.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut x: Vec<f64> = x_in.iter().copied().filter(|v| v.is_finite()).collect();
+    x.sort_by(|a, b| a.total_cmp(b));
     let n = x.len();
+    if n == 0 {
+        return (0.0, 1.0, 0.0, 0.0);
+    }
     let mut zbounds: Vec<[f64; 2]> = vec![];
     let mut rescale: Vec<f64> = vec![];
     for &b in betas {
@@ -677,7 +680,7 @@ pub fn clean_windows(
     let mut remove = vec![false; nw];
     for w in 0..nw {
         let mut col: Vec<f64> = (0..c).map(|ch| wz[ch][w]).collect();
-        col.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        col.sort_by(|a, b| a.total_cmp(b));
         if zthresholds[0].max(zthresholds[1]) > 0.0 && col[c - 1 - mb] > zthresholds[0].max(zthresholds[1]) {
             remove[w] = true;
         }

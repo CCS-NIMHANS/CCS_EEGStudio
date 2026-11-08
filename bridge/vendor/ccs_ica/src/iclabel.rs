@@ -217,8 +217,12 @@ fn segment_starts(n_points: usize, cutoff: usize) -> Vec<usize> {
 }
 
 fn median(v: &mut Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.retain(|x| x.is_finite());
+    v.sort_by(|a, b| a.total_cmp(b));
     let n = v.len();
+    if n == 0 {
+        return f64::NAN;
+    }
     if n % 2 == 1 {
         v[n / 2]
     } else {
