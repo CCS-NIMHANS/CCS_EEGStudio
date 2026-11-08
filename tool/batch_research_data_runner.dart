@@ -1,3 +1,5 @@
+// ignore_for_file: avoid_print, unused_local_variable, unused_catch_stack
+
 import 'dart:convert';
 import 'dart:io';
 import 'package:ccs_eeg_app/src/recording_loader.dart';

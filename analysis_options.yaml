@@ -2,6 +2,8 @@
 # check for errors, warnings, and lints.
 
 analyzer:
+  exclude:
+    - tool/**
   errors:
     deprecated_member_use: ignore
     curly_braces_in_flow_control_structures: ignore
