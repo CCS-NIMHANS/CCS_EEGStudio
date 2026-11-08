@@ -281,7 +281,7 @@ class RecordingLoader {
       completedStages: (m['completed_stages'] as List? ?? []).cast<String>(),
       epochStartSeconds: [
         for (final v in m['epoch_start_seconds'] as List? ?? [])
-          (v as num).toDouble(),
+          (v as num?)?.toDouble() ?? 0.0,
       ],
       sourceDurationSeconds: (m['source_duration_seconds'] as num?)?.toDouble(),
     );
@@ -301,7 +301,8 @@ class RecordingLoader {
     final channels = [
       for (final channel in json['channels'] as List)
         Float32List.fromList([
-          for (final value in channel as List) (value as num).toDouble(),
+          for (final value in channel as List)
+            (value as num?)?.toDouble() ?? 0.0,
         ]),
     ];
     final sampleRate = (json['sample_rate'] as num).toDouble();
@@ -369,7 +370,7 @@ class RecordingLoader {
       completedStages: stages,
       provenance: provenance,
       epochStartSeconds:
-          onsets?.map((value) => (value as num).toDouble()).toList() ??
+          onsets?.map((value) => (value as num?)?.toDouble() ?? 0.0).toList() ??
           const [],
       sourceDurationSeconds:
           ((json['source_duration_seconds'] ??

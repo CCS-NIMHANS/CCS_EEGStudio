@@ -101,10 +101,10 @@ class EdfLoader {
           cursor = end;
           continue;
         }
-        final gain =
-            (physicalMax[channel] - physicalMin[channel]) /
-            (digitalMax[channel] - digitalMin[channel]);
-        final intercept = physicalMin[channel] - gain * digitalMin[channel];
+        final dDiff = digitalMax[channel] - digitalMin[channel];
+        final pDiff = physicalMax[channel] - physicalMin[channel];
+        final gain = (dDiff.abs() < 1e-9 || pDiff.abs() < 1e-9) ? 0.0 : pDiff / dDiff;
+        final intercept = (dDiff.abs() < 1e-9) ? physicalMin[channel] : (physicalMin[channel] - gain * digitalMin[channel]);
         final displayIndex = keptBySignalIndex[channel];
         for (var sample = 0; sample < samplesInRecord; sample++) {
           if (cursor + 2 > bytes.length) {
@@ -116,7 +116,9 @@ class EdfLoader {
             continue;
           }
           var physical = digital * gain + intercept;
-          if (scaleVoltsToMicrovolts ||
+          if (physical.isNaN || physical.isInfinite) {
+            physical = 0.0;
+          } else if (scaleVoltsToMicrovolts ||
               physicalDimensions[channel].toLowerCase() == 'v') {
             physical *= 1e6;
           }

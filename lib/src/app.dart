@@ -450,6 +450,12 @@ class _FeatureHomeState extends State<FeatureHome>
     RecordingStorage.loadPreferences().then((_) {
       if (mounted) setState(() {});
     });
+    _cfg.loadDefaultPipeline().then((loaded) {
+      if (loaded && mounted) {
+        _syncControllersFromConfig();
+        setState(() {});
+      }
+    });
     _pipeline = List.of(_presets['continuous']!.modules);
     _selectedModule = _Module.loadRaw;
     _preLow.addListener(_syncConfigFromControllers);
@@ -506,6 +512,72 @@ class _FeatureHomeState extends State<FeatureHome>
           .where((x) => x.isNotEmpty)
           .toList();
     setState(() {});
+  }
+
+  void _syncControllersFromConfig() {
+    _preLow.text = _cfg.lowHz == _cfg.lowHz.roundToDouble()
+        ? _cfg.lowHz.toStringAsFixed(1)
+        : _cfg.lowHz.toString();
+    _preHigh.text = _cfg.highHz == _cfg.highHz.roundToDouble()
+        ? _cfg.highHz.toStringAsFixed(0)
+        : _cfg.highHz.toString();
+    _preNotch.text = _cfg.notchHz == _cfg.notchHz.roundToDouble()
+        ? _cfg.notchHz.toStringAsFixed(0)
+        : _cfg.notchHz.toString();
+    _preDownsample.text = _cfg.downsampleFreq.round().toString();
+    _dfaWindow.text = _cfg.dfaFeiWindowSeconds.round().toString();
+    _epoch.text = _cfg.epochSeconds.toString();
+    _epochOverlap.text = _cfg.epochOverlapSeconds.toString();
+    _prepOverlap.text = _cfg.preprocessingOverlapSeconds.toString();
+    _prepWindow.text = _cfg.preprocessingEpochSeconds.toString();
+    _gedaiEpoch.text = _cfg.gedaiEpochSeconds.toString();
+    _gedaiThreshold.text = _cfg.gedaiThreshold;
+    _start.text = _cfg.startSeconds.toString();
+    _end.text = _cfg.endSeconds.toString();
+    _bin.text = _cfg.binSeconds.toString();
+    _topoWindows.text = _cfg.nTopoWindows.toString();
+    _smoothing.text = _cfg.smoothingWindow.toString();
+    _exclude.text = _cfg.exclusions.join(', ');
+  }
+
+  Future<void> _savePreprocessingPipeline() async {
+    final path = await FilePicker.saveFile(
+      dialogTitle: 'Save preprocessing pipeline settings',
+      fileName: 'preprocessing_pipeline.ccspipeline',
+    );
+    if (path == null) return;
+    try {
+      final file = File(path);
+      await file.writeAsString(
+        const JsonEncoder.withIndent('  ').convert(_cfg.toPreprocessingJson()),
+      );
+      await _cfg.saveDefaultPipeline();
+      _log('Saved preprocessing pipeline to ${_shortName(path)}');
+    } catch (e) {
+      _log('Failed to save pipeline: $e');
+    }
+  }
+
+  Future<void> _loadPreprocessingPipeline() async {
+    final pick = await pickFilteredFiles(
+      context,
+      dialogTitle: 'Select preprocessing pipeline settings',
+      allowedExtensions: ['ccspipeline', 'json'],
+    );
+    final path = pick?.files.single.path;
+    if (path == null) return;
+    try {
+      final file = File(path);
+      final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      setState(() {
+        _cfg.applyPreprocessingJson(json);
+        _syncControllersFromConfig();
+      });
+      await _cfg.saveDefaultPipeline();
+      _log('Loaded preprocessing pipeline from ${_shortName(path)}');
+    } catch (e) {
+      _log('Failed to load pipeline: $e');
+    }
   }
 
   EegRecording? _batchPrepEpochPreview;
@@ -5089,6 +5161,56 @@ class _FeatureHomeState extends State<FeatureHome>
     color: _accentPurple,
     stageEnabled: _batchStage1Enabled,
     onStageEnabledChanged: (v) => setState(() => _batchStage1Enabled = v),
+    headerActions: [
+      Tooltip(
+        message: 'Load pipeline configuration (.ccspipeline / .json)',
+        child: InkWell(
+          onTap: _running ? null : _loadPreprocessingPipeline,
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: _accentPurple.withValues(alpha: 0.4)),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.folder_open, size: 12, color: _accentPurple),
+                SizedBox(width: 4),
+                Text('Load', style: TextStyle(fontSize: 10, color: Colors.white70)),
+              ],
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(width: 4),
+      Tooltip(
+        message: 'Save current pipeline configuration (.ccspipeline)',
+        child: InkWell(
+          onTap: _running ? null : _savePreprocessingPipeline,
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: _accentPurple.withValues(alpha: 0.4)),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.save_outlined, size: 12, color: _accentPurple),
+                SizedBox(width: 4),
+                Text('Save', style: TextStyle(fontSize: 10, color: Colors.white70)),
+              ],
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(width: 6),
+    ],
     files: _batchPrepFiles,
     outputDir: _effectiveBatchPrepOutputDir,
     outputLabel: 'Output Directory',
@@ -5416,6 +5538,7 @@ class _FeatureHomeState extends State<FeatureHome>
     VoidCallback? onNext,
     bool stageEnabled = true,
     ValueChanged<bool>? onStageEnabledChanged,
+    List<Widget> headerActions = const [],
   }) {
     final linked = usePrevious == true;
     return Material(
@@ -5451,6 +5574,7 @@ class _FeatureHomeState extends State<FeatureHome>
                       ),
                     ),
                   ),
+                  ...headerActions,
                   if (onStageEnabledChanged != null) ...[
                     Tooltip(
                       message: stageEnabled
@@ -6070,6 +6194,14 @@ class _FeatureHomeState extends State<FeatureHome>
       });
     }
     _log('── BATCH PREPROCESSING (${_batchPrepFiles.length} files) ──');
+    final batchDestDir = _effectiveBatchPrepOutputDir ?? File(_batchPrepFiles.first).parent.path;
+    try {
+      final pipelineFile = File('$batchDestDir${Platform.pathSeparator}Preprocessing_Pipeline.json');
+      pipelineFile.writeAsStringSync(
+        const JsonEncoder.withIndent('  ').convert(_cfg.toPreprocessingJson()),
+      );
+    } catch (_) {}
+    _cfg.saveDefaultPipeline();
     final written = <String>[];
     for (var i = 0; i < _batchPrepFiles.length; i++) {
       if (_batchCancelRequested) break;

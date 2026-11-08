@@ -183,6 +183,26 @@ fn single_channel_variants_refuse_many_channels() {
 }
 
 #[test]
+fn gedai_synthetic_no_nans() {
+    let mut rec = synthetic(30, 250.0);
+    let out = std::env::temp_dir().join("ccs_gedai_test.ccseeg.json");
+    let _s = preprocessing::run(
+        &mut rec,
+        "synthetic",
+        out.to_str().unwrap(),
+        &options(serde_json::json!({"gedai": true})),
+    ).unwrap();
+    let text = std::fs::read_to_string(&out).unwrap();
+    let d: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let channels = d["channels"].as_array().unwrap();
+    for ch in channels {
+        for v in ch.as_array().unwrap() {
+            assert!(!v.is_null(), "Channel contains null!");
+        }
+    }
+}
+
+#[test]
 fn muscle_cleaners_run() {
     for method in ["bss_cca", "icanclean", "wica"] {
         let mut rec = synthetic(40, 250.0);

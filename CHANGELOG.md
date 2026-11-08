@@ -4,6 +4,20 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.35]
+
+### GEDAI performance acceleration, pipeline persistence and batch resume
+
+- **High-speed GEDAI Rust optimization**: Precomputed generalized eigenvalue inverse reconstruction with BLAS GEMM matrix operations, regularized diagonal covariance to eliminate non-converging QR eigensolver loops on rank-deficient/zero-variance noise, parallelized Brent optimization evaluations across CPU cores using Rayon, and subsampled reference template projection. Full GEDAI cleaning on real EDF recordings dropped from >15 minutes down to ~3-4 seconds.
+- **EDF auxiliary channel protection**: Fixed division-by-zero when reading EDF files containing auxiliary or flat non-EEG channels where physical or digital min/max are identical (such as SpO2, Pulse, CO2Wave). Channels with zero or invalid range are safely zeroed out instead of generating NaNs.
+- **Preprocessing pipeline save/load & auto-persistence**:
+  - Automatically persist user preprocessing configurations across app restarts (`~/.config/ccs-eeg-studio/preprocessing_pipeline.json`).
+  - Added dedicated **Save** and **Load** buttons in the Stage 1 Preprocessing card header to export and reuse `.ccspipeline` configuration files.
+  - Automatically write `Preprocessing_Pipeline.json` into batch destination directories during batch runs to guarantee complete parameter provenance and scientific reproducibility.
+- **Batch skip & resume**: Enabled one-click resume across batch stages (`Stage 1: Preprocessing`, `Stage 2: Feature Extraction`, and `Stage 3: Plots`). Existing cleaned recordings, feature CSVs, and plot PDFs in the output directory are automatically skipped when requested.
+- **Robust recording deserialization**: Fixed type cast exceptions during `.ccseeg` and `.ccsmeta` loading by enforcing null-safe numeric casting across all channel sample lists and epoch onset metadata.
+- **CI/CD workflow validation**: Fixed release note extraction and shell regex quoting in GitHub Actions build automation.
+
 ## [1.2.33]
 
 ### Pipeline sequence alignment and batch workspace redesign

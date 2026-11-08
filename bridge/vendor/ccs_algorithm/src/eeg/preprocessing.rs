@@ -1029,7 +1029,8 @@ fn gedai(
         }
     }
     let artifacts = subtract(&data, &clean_sum);
-    let score = sensai_basic(&clean_sum, &artifacts, rate, epoch_seconds, &ref_cov, 1.0)
+    let template = make_template(&ref_cov, 3);
+    let score = sensai_basic(&clean_sum, &artifacts, rate, epoch_seconds, &template, 1.0)
         .unwrap_or(broad_score);
     Ok(GedaiResult {
         clean: clean_sum,
@@ -1056,8 +1057,8 @@ pub fn gedai_per_band(
     let len = epochs * epoch;
     let stream1 = epoch_view(data, 0, epoch, epochs);
     let stream2 = epoch_view(data, epoch / 2, epoch, epochs - 1);
-    let (evals1, evecs1) = gevd_epochs(&stream1, ref_cov)?;
-    let (evals2, evecs2) = gevd_epochs(&stream2, ref_cov)?;
+    let gevd1 = gevd_epochs(&stream1, ref_cov)?;
+    let gevd2 = gevd_epochs(&stream2, ref_cov)?;
     let threshold = match threshold_type {
         "auto+" | "auto" | "auto-" if optimize => {
             let noise = if threshold_type == "auto+" {
@@ -1072,8 +1073,7 @@ pub fn gedai_per_band(
                 rate,
                 epoch_seconds,
                 ref_cov,
-                &evals1,
-                &evecs1,
+                &gevd1,
                 noise,
             )
         }
@@ -1082,8 +1082,8 @@ pub fn gedai_per_band(
         "auto-" => 9.0,
         other => other.parse().unwrap_or(6.0),
     };
-    let (mut clean1, art1) = clean_eeg(&stream1, threshold, &evals1, &evecs1);
-    let (mut clean2, mut art2) = clean_eeg(&stream2, threshold, &evals2, &evecs2);
+    let (mut clean1, art1) = clean_eeg(&stream1, threshold, &gevd1);
+    let (mut clean2, mut art2) = clean_eeg(&stream2, threshold, &gevd2);
     let shift = epoch / 2;
     let weights = cosine_weights(epoch);
     let len2 = clean2[0].len();
@@ -1104,7 +1104,8 @@ pub fn gedai_per_band(
         &data.iter().map(|ch| ch[..len].to_vec()).collect::<Vec<_>>(),
         &clean1,
     );
-    let score = sensai_basic(&clean1, &artifacts, rate, epoch_seconds, ref_cov, 1.0).unwrap_or(0.0);
+    let template = make_template(ref_cov, 3);
+    let score = sensai_basic(&clean1, &artifacts, rate, epoch_seconds, &template, 1.0).unwrap_or(0.0);
     Ok((clean1, art1, score, threshold))
 }
 
@@ -1114,19 +1115,27 @@ fn epoch_view(data: &[Vec<f64>], offset: usize, epoch: usize, epochs: usize) -> 
         .collect()
 }
 
+#[derive(Clone)]
+struct EpochGevd {
+    evals: Vec<f64>,
+    evecs: DMatrix<f64>,
+    inv_t: DMatrix<f64>,
+}
+
 fn gevd_epochs(
     epochs: &[DMatrix<f64>],
     ref_cov: &DMatrix<f64>,
-) -> Result<(Vec<Vec<f64>>, Vec<DMatrix<f64>>), String> {
+) -> Result<Vec<EpochGevd>, String> {
     let n = ref_cov.nrows();
     let eig_ref = SymmetricEigen::new(ref_cov.clone());
     let mean = eig_ref.eigenvalues.iter().sum::<f64>() / n as f64;
     let b = ref_cov * 0.95 + DMatrix::identity(n, n) * (0.05 * mean.max(1e-12));
     let chol = b
+        .clone()
         .cholesky()
         .ok_or("reference covariance is not positive definite")?;
     let l_inv = chol.l().try_inverse().ok_or("Failed to invert L")?;
-    let (evals_all, evecs_all): (Vec<Vec<f64>>, Vec<DMatrix<f64>>) = epochs
+    let gevd_all: Vec<EpochGevd> = epochs
         .par_iter()
         .map(|epoch| {
             let cov = covariance(epoch);
@@ -1134,35 +1143,40 @@ fn gevd_epochs(
             let eig = SymmetricEigen::new((&z + z.transpose()) * 0.5);
             let mut order: Vec<usize> = (0..n).collect();
             order.sort_by(|a, b| eig.eigenvalues[*b].total_cmp(&eig.eigenvalues[*a]));
-            let vals: Vec<f64> = order.iter().map(|i| eig.eigenvalues[*i]).collect();
-            let vecs = DMatrix::from_fn(n, n, |r, c| {
+            let evals: Vec<f64> = order.iter().map(|i| eig.eigenvalues[*i]).collect();
+            let evecs = DMatrix::from_fn(n, n, |r, c| {
                 (l_inv.transpose() * eig.eigenvectors.column(order[c]))[r]
             });
-            (vals, vecs)
+            let inv_t = evecs
+                .transpose()
+                .try_inverse()
+                .unwrap_or_else(|| &b * &evecs);
+            EpochGevd { evals, evecs, inv_t }
         })
-        .unzip();
-    Ok((evals_all, evecs_all))
+        .collect();
+    Ok(gevd_all)
 }
 
 fn clean_eeg(
     epochs: &[DMatrix<f64>],
     threshold: f64,
-    evals: &[Vec<f64>],
-    evecs: &[DMatrix<f64>],
+    gevd: &[EpochGevd],
 ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
     let n = epochs[0].nrows();
     let epoch_len = epochs[0].ncols();
-    let mut log_vals: Vec<f64> = evals
+    let mut log_vals: Vec<f64> = gevd
         .iter()
-        .flat_map(|v| v.iter())
+        .flat_map(|g| g.evals.iter())
         .filter(|v| v.abs() > 0.0)
         .map(|v| v.abs().ln() + 100.0)
         .collect();
     log_vals.sort_by(|a, b| a.total_cmp(b));
-    let threshold_exp = if log_vals.is_empty() {f64::INFINITY} else {
+    let threshold_exp = if log_vals.is_empty() {
+        f64::INFINITY
+    } else {
         let idx = ((log_vals.len() as f64) * 0.95).floor() as usize;
-        let t1 = (105.0-threshold)/100.0;
-        (t1*log_vals[idx.min(log_vals.len()-1)]-100.0).exp()
+        let t1 = (105.0 - threshold) / 100.0;
+        (t1 * log_vals[idx.min(log_vals.len() - 1)] - 100.0).exp()
     };
     let weights = cosine_weights(epoch_len);
     let mut clean = vec![vec![0.0; epochs.len() * epoch_len]; n];
@@ -1171,20 +1185,17 @@ fn clean_eeg(
         .par_iter()
         .enumerate()
         .map(|(i, epoch)| {
-            let mut w = evecs[i].clone();
+            let g = &gevd[i];
+            let mut w = g.evecs.clone();
             for c in 0..n {
-                if evals[i][c].abs() < threshold_exp {
+                if g.evals[c].abs() < threshold_exp {
                     for r in 0..n {
                         w[(r, c)] = 0.0;
                     }
                 }
             }
             let sources = w.transpose() * epoch;
-            let recon = evecs[i]
-                .transpose()
-                .lu()
-                .solve(&sources)
-                .unwrap_or_else(|| DMatrix::zeros(n, epoch_len));
+            let recon = &g.inv_t * &sources;
             let mut cleaned = epoch - &recon;
             let half = epoch_len / 2;
             if i == 0 {
@@ -1221,12 +1232,23 @@ fn clean_eeg(
     (clean, artifacts)
 }
 
+fn make_template(ref_cov: &DMatrix<f64>, top: usize) -> DMatrix<f64> {
+    let n = ref_cov.nrows();
+    let ref_eig = SymmetricEigen::new(ref_cov.clone());
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|a, b| ref_eig.eigenvalues[*a].total_cmp(&ref_eig.eigenvalues[*b]));
+    let top_actual = top.min(n);
+    DMatrix::from_fn(n, top_actual, |r, c| {
+        ref_eig.eigenvectors[(r, order[n - top_actual + c])]
+    })
+}
+
 fn sensai_basic(
     signal: &[Vec<f64>],
     noise: &[Vec<f64>],
     rate: f64,
     epoch_seconds: f64,
-    ref_cov: &DMatrix<f64>,
+    template: &DMatrix<f64>,
     noise_mult: f64,
 ) -> Option<f64> {
     let n = signal.len();
@@ -1235,25 +1257,42 @@ fn sensai_basic(
     if epochs == 0 {
         return None;
     }
-    let ref_eig = SymmetricEigen::new(ref_cov.clone());
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|a, b| ref_eig.eigenvalues[*a].total_cmp(&ref_eig.eigenvalues[*b]));
-    let top = 3.min(n);
-    let template = DMatrix::from_fn(n, top, |r, c| ref_eig.eigenvectors[(r, order[n - top + c])]);
-    let mut sig = Vec::new();
-    let mut noi = Vec::new();
-    for e in 0..epochs {
-        let sm = DMatrix::from_fn(n, epoch, |c, s| signal[c][e * epoch + s]);
-        let nm = DMatrix::from_fn(n, epoch, |c, s| noise[c][e * epoch + s]);
-        sig.push(subspace_similarity(&covariance(&sm), &template, top));
-        noi.push(subspace_similarity(&covariance(&nm), &template, top));
-    }
+    let top = template.ncols();
+    let max_eval_epochs = 16;
+    let eval_epochs: Vec<usize> = if epochs > max_eval_epochs {
+        let step = epochs as f64 / max_eval_epochs as f64;
+        (0..max_eval_epochs)
+            .map(|i| ((i as f64 * step).floor() as usize).min(epochs - 1))
+            .collect()
+    } else {
+        (0..epochs).collect()
+    };
+    let (sig, noi): (Vec<f64>, Vec<f64>) = eval_epochs
+        .into_par_iter()
+        .map(|e| {
+            let sm = DMatrix::from_fn(n, epoch, |c, s| signal[c][e * epoch + s]);
+            let nm = DMatrix::from_fn(n, epoch, |c, s| noise[c][e * epoch + s]);
+            (
+                subspace_similarity(&covariance(&sm), template, top),
+                subspace_similarity(&covariance(&nm), template, top),
+            )
+        })
+        .unzip();
     Some(100.0 * mean(&sig) - noise_mult * 100.0 * mean(&noi))
 }
 
 fn subspace_similarity(cov: &DMatrix<f64>, template: &DMatrix<f64>, top: usize) -> f64 {
-    let eig = SymmetricEigen::new(cov.clone());
     let n = cov.nrows();
+    let trace: f64 = (0..n).map(|i| cov[(i, i)]).sum();
+    if trace < 1e-12 || !trace.is_finite() {
+        return 0.0;
+    }
+    let mut c = cov.clone();
+    let reg = (trace / n as f64) * 1e-6;
+    for i in 0..n {
+        c[(i, i)] += reg;
+    }
+    let eig = SymmetricEigen::new(c);
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|a, b| eig.eigenvalues[*a].total_cmp(&eig.eigenvalues[*b]));
     let basis = DMatrix::from_fn(n, top, |r, c| eig.eigenvectors[(r, order[n - top + c])]);
@@ -1269,16 +1308,31 @@ fn optimize_threshold(
     rate: f64,
     epoch_seconds: f64,
     ref_cov: &DMatrix<f64>,
-    evals: &[Vec<f64>],
-    evecs: &[DMatrix<f64>],
+    gevd: &[EpochGevd],
     noise: f64,
 ) -> f64 {
+    let template = make_template(ref_cov, 3);
+    let max_sample_epochs = 12;
+    let (sample_epochs, sample_gevd) = if epochs.len() > max_sample_epochs {
+        let step = epochs.len() as f64 / max_sample_epochs as f64;
+        let mut se = Vec::with_capacity(max_sample_epochs);
+        let mut sg = Vec::with_capacity(max_sample_epochs);
+        for i in 0..max_sample_epochs {
+            let idx = ((i as f64 * step).floor() as usize).min(epochs.len() - 1);
+            se.push(epochs[idx].clone());
+            sg.push(gevd[idx].clone());
+        }
+        (se, sg)
+    } else {
+        (epochs.to_vec(), gevd.to_vec())
+    };
+
     let mut f = |t: f64| -> f64 {
-        let (clean, art) = clean_eeg(epochs, t, evals, evecs);
-        -sensai_basic(&clean, &art, rate, epoch_seconds, ref_cov, noise)
+        let (clean, art) = clean_eeg(&sample_epochs, t, &sample_gevd);
+        -sensai_basic(&clean, &art, rate, epoch_seconds, &template, noise)
             .unwrap_or(f64::NEG_INFINITY)
     };
-    brent_minimize(&mut f, 0.0, 12.0, 1e-3)
+    brent_minimize(&mut f, 0.0, 12.0, 0.15)
 }
 
 fn brent_minimize<F: FnMut(f64) -> f64>(f: &mut F, a: f64, b: f64, tol: f64) -> f64 {

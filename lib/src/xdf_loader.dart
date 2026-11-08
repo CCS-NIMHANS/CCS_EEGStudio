@@ -287,7 +287,7 @@ class XdfLoader {
             ?.findElements('channel')
             .toList() ??
         [];
-    final rawLabels = [
+    final rawLabels = <String>[
       for (var c = 0; c < stream.count; c++)
         c < channelXml.length
             ? channelXml[c].getElement('label')?.innerText.trim() ??
