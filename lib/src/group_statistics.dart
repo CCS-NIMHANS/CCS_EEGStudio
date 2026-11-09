@@ -46,10 +46,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   final Set<String> _selectedMetrics = {};
 
   // Modelling preferences
-  String _channelScope = 'mean';
+  String _channelScope = 'roi';
   String _preferredModel = 'auto'; // 'auto', 'lmm', 'glm'
   String _posthocMethod = 'fdr'; // 'fdr', 'tukey', 'bonferroni'
   String _reportFormat = 'both'; // 'both', 'docx', 'pdf'
+  final TextEditingController _excludeChannelsController =
+      TextEditingController();
+  final TextEditingController _includeChannelsController =
+      TextEditingController();
 
   // Analysis Results
   Map<String, dynamic>? _analysisResults;
@@ -75,6 +79,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     _csvPathController.dispose();
     _metadataPathController.dispose();
     _metadataKeyController.dispose();
+    _excludeChannelsController.dispose();
+    _includeChannelsController.dispose();
     super.dispose();
   }
 
@@ -470,6 +476,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         ],
         '--channel',
         _channelScope,
+        if (_excludeChannelsController.text.trim().isNotEmpty) ...[
+          '--exclude-channels',
+          _excludeChannelsController.text.trim(),
+        ],
+        if (_includeChannelsController.text.trim().isNotEmpty) ...[
+          '--include-channels',
+          _includeChannelsController.text.trim(),
+        ],
         '--metrics',
         _selectedMetrics.join(','),
         '--model',
@@ -603,23 +617,53 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             DropdownButtonFormField<String>(
               value: _channelScope,
               decoration: const InputDecoration(
-                labelText: 'Channel scope',
+                labelText: 'Channel Scope & Grouping',
                 helperText:
-                    'Mean produces one observation per recording/condition; all channels retains separate channel rows.',
+                    'ROIs groups standard scalp electrodes into Frontal, Central, Temporal, Parietal, Occipital. All channels retains genuine EEG derivations. Mean averages whole scalp.',
               ),
               items: const [
                 DropdownMenuItem(
+                  value: 'roi',
+                  child: Text('Neurophysiological ROIs (Frontal, Central, Temporal, Parietal, Occipital)'),
+                ),
+                DropdownMenuItem(
                   value: 'mean',
-                  child: Text('Average EEG channels per recording'),
+                  child: Text('Global Scalp Average (1 observation per recording)'),
                 ),
                 DropdownMenuItem(
                   value: 'all',
                   child: Text(
-                    'Analyze channels separately (choose Chan as a factor)',
+                    'Analyze all channels separately (genuine EEG only; non-EEG excluded)',
                   ),
                 ),
               ],
-              onChanged: (v) => setState(() => _channelScope = v ?? 'mean'),
+              onChanged: (v) => setState(() => _channelScope = v ?? 'roi'),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _excludeChannelsController,
+                    decoration: const InputDecoration(
+                      labelText: 'Exclude channels (optional)',
+                      hintText: 'e.g. Cz, Pz, POL \$A1 (comma separated)',
+                      isDense: true,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _includeChannelsController,
+                    decoration: const InputDecoration(
+                      labelText: 'Include only channels (optional)',
+                      hintText: 'e.g. F3, F4, C3, C4 (comma separated)',
+                      isDense: true,
+                    ),
+                  ),
+                ),
+              ],
             ),
             _buildConfigurationCard(),
             const SizedBox(height: 12),

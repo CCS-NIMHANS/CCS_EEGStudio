@@ -7,6 +7,8 @@ pub fn default_true() -> bool {
 }
 
 fn default_reference_mode()->String {"average".into()}
+fn default_psd_method() -> String { "welch".into() }
+fn default_multitaper_nw() -> f64 { 3.0 }
 fn default_psd_window() -> f64 { 1.0 }
 fn default_psd_average() -> String { "median".into() }
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -30,6 +32,12 @@ pub struct Options {
     pub mode: String,
     #[serde(default)]
     pub advanced_parameters:AdvancedParameters,
+    #[serde(default="default_psd_method")]
+    pub psd_method: String,
+    #[serde(default="default_multitaper_nw")]
+    pub psd_multitaper_nw: f64,
+    #[serde(default="default_true")]
+    pub psd_multitaper_adaptive: bool,
     #[serde(default="default_psd_window")]
     pub psd_window_seconds: f64,
     #[serde(default="default_psd_average")]
@@ -93,6 +101,9 @@ impl Options {
         Self {
             mode: "full".into(),
             advanced_parameters:AdvancedParameters::default(),
+            psd_method: "welch".into(),
+            psd_multitaper_nw: 3.0,
+            psd_multitaper_adaptive: true,
             psd_window_seconds: 1.0,
             psd_average: "median".into(),
             psd_bands: Vec::new(),

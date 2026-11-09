@@ -179,13 +179,27 @@ const List<_Rule> _rules = [
       'DC2',
       'DC3',
       'DC4',
+      'DC03',
+      'DC04',
+      'DC05',
+      'DC06',
     ],
     prefixes: ['STI', 'TRIG', 'DC'],
+  ),
+  _Rule(
+    ChannelKind.reference,
+    ['REF', 'A1', 'A2', 'M1', 'M2', 'CMS', 'DRL', 'LM', 'RM', 'EARREF', r'$A1', r'$A2'],
+    prefixes: ['REF'],
+  ),
+  _Rule(
+    ChannelKind.other,
+    ['E', 'PG1', 'PG2', 'T1', 'T2', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'CO2WAVE'],
+    prefixes: ['POL', 'AUX', 'X'],
   ),
 ];
 
 final RegExp _modalityPrefix = RegExp(
-  r'^(EEG|EOG|ECG|EKG|EMG|RESP|PPG|MISC)\s+(.+)$',
+  r'^(EEG|EOG|ECG|EKG|EMG|RESP|PPG|MISC|POL|AUX)\s+(.+)$',
 );
 
 /// The modality word an EDF-style label declares about itself, if any.
@@ -201,7 +215,8 @@ ChannelKind? _declaredModality(String raw) {
     'EMG' => ChannelKind.emg,
     'RESP' => ChannelKind.resp,
     'PPG' => ChannelKind.ppg,
-    'MISC' => ChannelKind.other,
+    'MISC' || 'AUX' => ChannelKind.other,
+    'POL' => ChannelKind.other,
     _ => null, // 'EEG' or no prefix — fall through to name rules.
   };
 }
@@ -230,6 +245,9 @@ List<String> _tokens(String norm) =>
 
 /// Classifies a single channel label.
 ChannelKind classifyChannel(String rawLabel) {
+  final upper = rawLabel.trim().toUpperCase();
+  final declared = _declaredModality(rawLabel);
+
   final norm = normaliseLabel(rawLabel);
   if (norm.isEmpty) return ChannelKind.other;
   final tokens = _tokens(norm);
@@ -250,10 +268,16 @@ ChannelKind classifyChannel(String rawLabel) {
     }
   }
 
-  // No name rule fired.  Fall back to what the label declared about itself,
-  // e.g. "EOG LOC-A2" where the electrode pair is unrecognisable but the
-  // modality is stated explicitly.
-  return _declaredModality(rawLabel) ?? ChannelKind.eeg;
+  // If label declared an auxiliary modality (e.g. "POL", "EOG", "ECG"), honour it.
+  if (declared != null && declared != ChannelKind.eeg) {
+    return declared;
+  }
+  if (upper.startsWith('POL') || upper.startsWith('AUX') || upper.contains(r'$')) {
+    return ChannelKind.other;
+  }
+
+  // No name rule fired. Fall back to what the label declared about itself.
+  return declared ?? ChannelKind.eeg;
 }
 
 /// Auto-detected, user-overridable channel type assignment for one recording.

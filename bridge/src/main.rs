@@ -382,16 +382,28 @@ fn main() -> Result<(), String> {
         .unwrap_or_else(|| (job.epoch_seconds * recording.rate).round() as usize)
         .max(4);
     if job.options.psd {
-        if !job.options.psd_window_seconds.is_finite()
-            || job.options.psd_window_seconds <= 0.0
-            || job.options.psd_window_seconds * recording.rate > epoch_samples as f64
-        {
-            return Err(
-                "PSD window must be positive and no longer than each analysis epoch".into(),
-            );
-        }
-        if !["median", "mean"].contains(&job.options.psd_average.as_str()) {
-            return Err("PSD average must be median or mean".into());
+        let is_multitaper = job.options.psd_method.eq_ignore_ascii_case("multitaper");
+        if is_multitaper {
+            if !job.options.psd_multitaper_nw.is_finite()
+                || job.options.psd_multitaper_nw < 1.0
+                || job.options.psd_multitaper_nw > 20.0
+            {
+                return Err(
+                    "Multitaper NW time-halfbandwidth product must be between 1.0 and 20.0".into(),
+                );
+            }
+        } else {
+            if !job.options.psd_window_seconds.is_finite()
+                || job.options.psd_window_seconds <= 0.0
+                || job.options.psd_window_seconds * recording.rate > epoch_samples as f64
+            {
+                return Err(
+                    "PSD window must be positive and no longer than each analysis epoch".into(),
+                );
+            }
+            if !["median", "mean"].contains(&job.options.psd_average.as_str()) {
+                return Err("PSD average must be median or mean".into());
+            }
         }
         for band in &job.options.psd_bands {
             if band.label.is_empty()
@@ -873,8 +885,11 @@ fn features(x: &[f32], rate: f64, o: &Options, dfa_context: &[f32]) -> Vec<f64> 
         let values = features::bandpowers_with_options(
             &signal,
             rate,
+            &o.psd_method,
             o.psd_window_seconds,
             o.psd_average == "mean",
+            o.psd_multitaper_nw,
+            o.psd_multitaper_adaptive,
             &bands,
         );
         out.extend(bands.iter().map(|band| values[&format!("{}_PSD", band.2)]));
@@ -1640,6 +1655,9 @@ mod tests {
     fn modes_validate() {
         let o = Options {
             advanced_parameters: AdvancedParameters::default(),
+            psd_method: "welch".into(),
+            psd_multitaper_nw: 3.0,
+            psd_multitaper_adaptive: true,
             psd_window_seconds: 1.0,
             psd_average: "median".into(),
             psd_bands: Vec::new(),

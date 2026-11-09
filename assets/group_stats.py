@@ -125,7 +125,8 @@ GROUP_CANDIDATE_NAMES = [
     "cohort", "arm", "treatment", "diagnosis", "dx", "slept_well"
 ]
 
-SUBGROUP_CANDIDATE_NAMES = ["epoch_condition", "state", "session", "sessn",
+SUBGROUP_CANDIDATE_NAMES = [
+    "roi", "region", "epoch_condition", "state", "session", "sessn",
     "chan", "channel", "electrode", "derivation", "eeg channel", "ageid", "age_id",
     "session", "session_id", "visit", "time_point", "timepoint", "epoch"
 ]
@@ -201,14 +202,79 @@ def check_topoplot_suitability(channels: list[str]) -> tuple[bool, dict[str, tup
     return True, matched
 
 
+# Auxiliary and polygraphy non-EEG channel detection regex
+NON_EEG_PATTERN = re.compile(
+    r"^(POL|AUX|DC\d*|EOG|ECG|EKG|EMG|RESP|PPG|PULSE|SPO2|CO2|ETCO2|FLOW|THOR|ABDO|GSR|EDA|STATUS|TRIG|MARKER|EVENT)\b",
+    re.IGNORECASE,
+)
+
+
+def is_non_eeg_channel(ch: str) -> bool:
+    """Returns True if the channel name is recognized as auxiliary / non-EEG."""
+    raw = str(ch).strip()
+    upper = raw.upper()
+    if NON_EEG_PATTERN.match(upper):
+        return True
+    if upper.startswith("POL ") or upper.startswith("POL_") or upper.startswith("POL$") or upper.startswith("POL:"):
+        return True
+    if "$" in upper:
+        return True
+    norm = normalize_channel_name(raw)
+    if norm in (
+        "A1", "A2", "M1", "M2", "REF", "E", "PG1", "PG2", "T1", "T2",
+        "X1", "X2", "X3", "X4", "X5", "X6", "X7", "SPO2", "ETCO2", "PULSE", "CO2WAVE"
+    ):
+        return True
+    if norm not in ELECTRODE_COORDS_2D:
+        return True
+    return False
+
+
+def filter_eeg_channels(df: pd.DataFrame, include_non_eeg: bool = False) -> pd.DataFrame:
+    """Removes non-EEG channels from the dataframe."""
+    if include_non_eeg or "Chan" not in df.columns:
+        return df
+    mask = ~df["Chan"].apply(is_non_eeg_channel)
+    filtered = df[mask].copy()
+    if filtered.empty:
+        return df
+    return filtered
+
+
+# 10-20 to Anatomical / Functional Region of Interest (ROI) mapping
+CHANNEL_TO_ROI: dict[str, str] = {
+    # Frontal
+    "FP1": "Frontal", "FP2": "Frontal", "FPZ": "Frontal",
+    "AF3": "Frontal", "AF4": "Frontal", "AF7": "Frontal", "AF8": "Frontal", "AFZ": "Frontal",
+    "F7": "Frontal", "F5": "Frontal", "F3": "Frontal", "F1": "Frontal", "FZ": "Frontal", "F2": "Frontal", "F4": "Frontal", "F6": "Frontal", "F8": "Frontal",
+    # Central
+    "FC5": "Central", "FC3": "Central", "FC1": "Central", "FCZ": "Central", "FC2": "Central", "FC4": "Central", "FC6": "Central",
+    "C5": "Central", "C3": "Central", "C1": "Central", "CZ": "Central", "C2": "Central", "C4": "Central", "C6": "Central",
+    # Temporal
+    "T3": "Temporal", "T4": "Temporal", "T7": "Temporal", "T8": "Temporal",
+    "FT7": "Temporal", "FT8": "Temporal", "TP7": "Temporal", "TP8": "Temporal",
+    "T5": "Temporal", "T6": "Temporal",
+    # Parietal
+    "CP5": "Parietal", "CP3": "Parietal", "CP1": "Parietal", "CPZ": "Parietal", "CP2": "Parietal", "CP4": "Parietal", "CP6": "Parietal",
+    "P3": "Parietal", "P4": "Parietal", "PZ": "Parietal", "P1": "Parietal", "P2": "Parietal", "P5": "Parietal", "P6": "Parietal",
+    "P7": "Temporal", "P8": "Temporal",
+    # Occipital
+    "PO7": "Occipital", "PO3": "Occipital", "POZ": "Occipital", "PO4": "Occipital", "PO8": "Occipital",
+    "O1": "Occipital", "O2": "Occipital", "OZ": "Occipital", "IZ": "Occipital",
+}
+
+
 def recording_key(value):
     value = Path(str(value)).name.lower()
     value = re.sub(r"\.(features\.csv|ccseeg\.json|edf|set|fif|vhdr|mat|orb|signal|csv)$", "", value)
     return re.sub(r"(_clean|_preprocessed|_prepared|_cropped|_subepochs|_epoched)+$", "", value)
 
 
-def prepare_eeg_table(df, metadata_path=None, metadata_key=None):
+def prepare_eeg_table(df, metadata_path=None, metadata_key=None, include_non_eeg=False):
     df = df.copy()
+    if "Chan" in df.columns and not include_non_eeg:
+        df = filter_eeg_channels(df, include_non_eeg=include_non_eeg)
+
     if metadata_path:
         csv_metadata = str(metadata_path).lower().endswith('.csv')
         metadata_columns = pd.read_csv(metadata_path,nrows=0).columns if csv_metadata else pd.read_excel(metadata_path,nrows=0).columns
@@ -267,20 +333,73 @@ def prepare_eeg_table(df, metadata_path=None, metadata_key=None):
     return df
 
 
-def apply_channel_scope(df, scope="all"):
-    if scope == "all" or "Chan" not in df: return df
-    if scope != "mean":
-        selected = df[df["Chan"].astype(str).str.lower() == str(scope).lower()].copy()
-        if selected.empty: raise ValueError(f"Channel {scope!r} is not present")
+def apply_channel_scope(
+    df: pd.DataFrame,
+    scope: str = "roi",
+    include_non_eeg: bool = False,
+    include_channels: list[str] | None = None,
+    exclude_channels: list[str] | None = None,
+) -> pd.DataFrame:
+    """Applies channel scoping, ROI aggregation, or global averaging."""
+    if "Chan" not in df.columns:
+        return df
+
+    # Filter out non-EEG channels by default
+    df = filter_eeg_channels(df, include_non_eeg=include_non_eeg)
+
+    # Exclude user-specified channels
+    if exclude_channels:
+        ex_set = {normalize_channel_name(c) for c in exclude_channels}
+        df = df[~df["Chan"].apply(lambda c: normalize_channel_name(c) in ex_set)].copy()
+
+    # Include user-specified channels
+    if include_channels:
+        in_set = {normalize_channel_name(c) for c in include_channels}
+        df = df[df["Chan"].apply(lambda c: normalize_channel_name(c) in in_set)].copy()
+
+    scope_str = str(scope).lower().strip()
+    id_key = "filename" if "filename" in df.columns else ("Subject" if "Subject" in df.columns else ("subjid" if "subjid" in df.columns else None))
+    keys = ([id_key] if id_key else []) + (["epoch_condition"] if "epoch_condition" in df.columns else [])
+    metrics = [
+        c for c in df.columns
+        if c.lower().endswith(("_psd", "_fooof", "_irasa", "_nonlinear", "_dfa", "_fei", "_dfa_short", "_fei_short", "_erp"))
+        or c.lower().startswith(("conn_", "graph_", "acw"))
+    ]
+
+    # Mode A: Regional ROIs (Frontal, Central, Temporal, Parietal, Occipital)
+    if scope_str in ("roi", "rois", "regions", "regional"):
+        if not id_key:
+            raise ValueError("ROI grouping requires a filename or Subject column")
+        df["_norm_ch"] = df["Chan"].apply(normalize_channel_name)
+        df["ROI"] = df["_norm_ch"].map(CHANNEL_TO_ROI)
+        df = df.dropna(subset=["ROI"]).copy()
+
+        agg = {c: "mean" if c in metrics else "first" for c in df.columns if c not in keys and c not in ("Chan", "_norm_ch", "ROI")}
+        result = df.groupby(keys + ["ROI"], dropna=False, sort=False).agg(agg).reset_index()
+        result["Chan"] = result["ROI"]
+        result.attrs.update(df.attrs)
+        return result
+
+    # Mode B: Global Scalp Mean
+    elif scope_str in ("mean", "global", "average"):
+        if not id_key:
+            raise ValueError("Channel averaging needs a recording filename or Subject column")
+        agg = {c: "mean" if c in metrics else "first" for c in df.columns if c not in keys and c != "Chan"}
+        result = df.groupby(keys, dropna=False, sort=False).agg(agg).reset_index()
+        result["Chan"] = "Global Mean"
+        result.attrs.update(df.attrs)
+        return result
+
+    # Mode C: Specific single channel or comma-separated channels
+    elif scope_str not in ("all", "*"):
+        targets = [normalize_channel_name(x.strip()) for x in scope_str.split(",") if x.strip()]
+        selected = df[df["Chan"].apply(lambda c: normalize_channel_name(c) in targets)].copy()
+        if selected.empty:
+            raise ValueError(f"Channel {scope!r} is not present in scalp EEG derivations")
         return selected
-    if "filename" not in df: raise ValueError("Channel averaging needs a recording filename column")
-    keys=["filename"]+(["epoch_condition"] if "epoch_condition" in df else [])
-    metrics=[c for c in df if c.lower().endswith(("_psd","_fooof","_irasa","_nonlinear","_dfa","_fei","_dfa_short","_fei_short", "_erp")) or c.lower().startswith(("conn_","graph_","acw"))]
-    agg={c:"mean" if c in metrics else "first" for c in df if c not in keys and c!="Chan"}
-    result=df.groupby(keys,dropna=False,sort=False).agg(agg).reset_index()
-    result["Chan"]="Mean"
-    result.attrs.update(df.attrs)
-    return result
+
+    # Mode D: "all" genuine EEG channels
+    return df
 
 
 def detect_columns(df: pd.DataFrame) -> dict[str, Any]:
@@ -996,7 +1115,7 @@ def generate_publication_plot(
 
     plt.tight_layout()
     output_png_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_png_path, dpi=300)
+    plt.savefig(output_png_path, dpi=150)
     plt.close(fig)
     return output_png_path
 
@@ -1014,7 +1133,7 @@ def compute_etfce(
     h_param: float = 2.0,
     dh_steps: int = 50,
 ) -> dict[str, Any] | None:
-    """Computes electrode-adjacency Threshold-Free Cluster Enhancement (eTFCE).
+    """Computes electrode-adjacency Threshold-Free Cluster Enhancement (eTFCE) across all pairwise group contrasts.
 
     References:
     - Smith & Nichols (2009) NeuroImage: Threshold-free cluster enhancement.
@@ -1022,11 +1141,11 @@ def compute_etfce(
 
     Algorithm:
     1. Constructs electrode adjacency graph from 10-20 spherical scalp coordinates.
-    2. Calculates two-sample t-statistic for each electrode between the two primary groups.
+    2. Calculates two-sample t-statistic for each electrode between each pair of groups.
     3. Integrates cluster extent across thresholds:
        TFCE(s) = sum_{h} (cluster_size(s, h))^E * h^H * dh
     4. Evaluates permutation distribution of max-TFCE by permuting subject group labels (n_perm iterations).
-    5. Yields non-parametric FWER cluster-corrected p-values for all electrodes.
+    5. Yields non-parametric FWER cluster-corrected p-values for all electrodes and contrasts.
     """
     needed = [metric, group_col, channel_col] + ([subject_id] if subject_id else [])
     clean = raw_df[needed].dropna().copy()
@@ -1035,7 +1154,6 @@ def compute_etfce(
     groups = sorted([str(g) for g in clean[group_col].dropna().unique()])
     if len(groups) < 2:
         return None
-    g1, g2 = groups[0], groups[1]
 
     channels = sorted([str(c) for c in clean[channel_col].unique()])
     is_ok, matched = check_topoplot_suitability(channels)
@@ -1059,39 +1177,6 @@ def compute_etfce(
         subj_df = clean.groupby([subject_id, group_col, channel_col])[metric].mean().reset_index()
     else:
         subj_df = clean
-
-    s_g1 = subj_df[subj_df[group_col].astype(str) == g1]
-    s_g2 = subj_df[subj_df[group_col].astype(str) == g2]
-
-    subjects_g1 = sorted(s_g1[subject_id].unique()) if (subject_id and subject_id in s_g1.columns) else list(range(len(s_g1)))
-    subjects_g2 = sorted(s_g2[subject_id].unique()) if (subject_id and subject_id in s_g2.columns) else list(range(len(s_g2)))
-    if len(subjects_g1) < 2 or len(subjects_g2) < 2:
-        return None
-
-    mat_g1 = np.full((len(subjects_g1), n_ch), np.nan)
-    mat_g2 = np.full((len(subjects_g2), n_ch), np.nan)
-
-    for i, s in enumerate(subjects_g1):
-        sdf = s_g1[s_g1[subject_id] == s] if (subject_id and subject_id in s_g1.columns) else s_g1.iloc[[i]]
-        for c_idx, ch in enumerate(ch_list):
-            v = sdf[sdf[channel_col].astype(str) == ch][metric].values
-            if len(v) > 0:
-                mat_g1[i, c_idx] = v[0]
-
-    for i, s in enumerate(subjects_g2):
-        sdf = s_g2[s_g2[subject_id] == s] if (subject_id and subject_id in s_g2.columns) else s_g2.iloc[[i]]
-        for c_idx, ch in enumerate(ch_list):
-            v = sdf[sdf[channel_col].astype(str) == ch][metric].values
-            if len(v) > 0:
-                mat_g2[i, c_idx] = v[0]
-
-    for c_idx in range(n_ch):
-        col1 = mat_g1[:, c_idx]
-        col2 = mat_g2[:, c_idx]
-        m1 = float(np.nanmean(col1)) if np.any(~np.isnan(col1)) else 0.0
-        m2 = float(np.nanmean(col2)) if np.any(~np.isnan(col2)) else 0.0
-        mat_g1[np.isnan(col1), c_idx] = m1
-        mat_g2[np.isnan(col2), c_idx] = m2
 
     def calc_t(m1: np.ndarray, m2: np.ndarray) -> np.ndarray:
         n1_sub, n2_sub = m1.shape[0], m2.shape[0]
@@ -1149,42 +1234,90 @@ def compute_etfce(
 
         return scores
 
-    obs_t = calc_t(mat_g1, mat_g2)
-    obs_tfce = tfce_score(obs_t)
+    # Prepare group matrices
+    group_mats: dict[str, np.ndarray] = {}
+    for g in groups:
+        s_g = subj_df[subj_df[group_col].astype(str) == g]
+        subjs = sorted(s_g[subject_id].unique()) if (subject_id and subject_id in s_g.columns) else list(range(len(s_g)))
+        if len(subjs) < 2:
+            continue
+        mat = np.full((len(subjs), n_ch), np.nan)
+        for i, s in enumerate(subjs):
+            sdf = s_g[s_g[subject_id] == s] if (subject_id and subject_id in s_g.columns) else s_g.iloc[[i]]
+            for c_idx, ch in enumerate(ch_list):
+                v = sdf[sdf[channel_col].astype(str) == ch][metric].values
+                if len(v) > 0:
+                    mat[i, c_idx] = v[0]
+        for c_idx in range(n_ch):
+            col = mat[:, c_idx]
+            m = float(np.nanmean(col)) if np.any(~np.isnan(col)) else 0.0
+            mat[np.isnan(col), c_idx] = m
+        group_mats[g] = mat
 
-    combined = np.vstack([mat_g1, mat_g2])
-    n1_len = mat_g1.shape[0]
-    n_tot = combined.shape[0]
-    max_null = np.zeros(n_perm)
-
+    pairwise_results: dict[str, Any] = {}
     rng = np.random.default_rng(42)
-    for p in range(n_perm):
-        perm_idx = rng.permutation(n_tot)
-        perm_g1 = combined[perm_idx[:n1_len]]
-        perm_g2 = combined[perm_idx[n1_len:]]
-        perm_t = calc_t(perm_g1, perm_g2)
-        perm_tfce = tfce_score(perm_t)
-        max_null[p] = float(np.max(perm_tfce))
+    all_sig_channels: set[str] = set()
 
-    p_etfce = np.array([
-        float(np.sum(max_null >= obs_tfce[i]) + 1) / (n_perm + 1)
-        for i in range(n_ch)
-    ])
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            g1, g2 = groups[i], groups[j]
+            if g1 not in group_mats or g2 not in group_mats:
+                continue
+            mat_g1 = group_mats[g1]
+            mat_g2 = group_mats[g2]
+            obs_t = calc_t(mat_g1, mat_g2)
+            obs_tfce = tfce_score(obs_t)
 
-    dof = len(subjects_g1) + len(subjects_g2) - 2
-    p_uncorr = 2 * (1 - stats.t.cdf(np.abs(obs_t), df=dof))
-    sig_channels = [ch_list[i] for i in range(n_ch) if p_etfce[i] < 0.05]
+            combined = np.vstack([mat_g1, mat_g2])
+            n1_len = mat_g1.shape[0]
+            n_tot = combined.shape[0]
+            max_null = np.zeros(n_perm)
 
+            for p in range(n_perm):
+                perm_idx = rng.permutation(n_tot)
+                perm_g1 = combined[perm_idx[:n1_len]]
+                perm_g2 = combined[perm_idx[n1_len:]]
+                perm_t = calc_t(perm_g1, perm_g2)
+                perm_tfce = tfce_score(perm_t)
+                max_null[p] = float(np.max(perm_tfce))
+
+            p_etfce = np.array([
+                float(np.sum(max_null >= obs_tfce[c]) + 1) / (n_perm + 1)
+                for c in range(n_ch)
+            ])
+            dof = mat_g1.shape[0] + mat_g2.shape[0] - 2
+            p_uncorr = 2 * (1 - stats.t.cdf(np.abs(obs_t), df=dof))
+            sig_channels = [ch_list[c] for c in range(n_ch) if p_etfce[c] < 0.05]
+            all_sig_channels.update(sig_channels)
+
+            pair_key = f"{g2} - {g1}"
+            pairwise_results[pair_key] = {
+                "pair_key": pair_key,
+                "group1": g1,
+                "group2": g2,
+                "channels": ch_list,
+                "t_stats": [float(x) for x in obs_t],
+                "tfce_scores": [float(x) for x in obs_tfce],
+                "p_uncorrected": [float(x) for x in p_uncorr],
+                "p_etfce": [float(x) for x in p_etfce],
+                "min_p_etfce": float(np.min(p_etfce)),
+                "sig_channels_etfce": sig_channels,
+            }
+
+    primary_pair = next(iter(pairwise_results.values())) if pairwise_results else {}
     return {
         "channels": ch_list,
-        "t_stats": [float(x) for x in obs_t],
-        "tfce_scores": [float(x) for x in obs_tfce],
-        "p_uncorrected": [float(x) for x in p_uncorr],
-        "p_etfce": [float(x) for x in p_etfce],
-        "sig_channels_etfce": sig_channels,
+        "groups": groups,
+        "pairwise": pairwise_results,
+        "sig_channels_etfce": sorted(list(all_sig_channels)),
         "n_perm": n_perm,
-        "group1": str(g1),
-        "group2": str(g2),
+        "group1": str(groups[0]),
+        "group2": str(groups[1]) if len(groups) > 1 else "",
+        "t_stats": primary_pair.get("t_stats", []),
+        "tfce_scores": primary_pair.get("tfce_scores", []),
+        "p_uncorrected": primary_pair.get("p_uncorrected", []),
+        "p_etfce": primary_pair.get("p_etfce", []),
+        "min_p_etfce": min((p.get("min_p_etfce", 1.0) for p in pairwise_results.values()), default=1.0),
         "e_param": e_param,
         "h_param": h_param,
     }
@@ -1201,7 +1334,13 @@ def generate_topoplot(
     output_png_path: Path,
     etfce_result: dict[str, Any] | None = None,
 ) -> Path | None:
-    """Renders 2D EEG topographic scalp distribution map (Topoplot) across channels for each group and differences."""
+    """Renders 2D EEG topographic scalp distribution map (Topoplot) across channels for each group and differences.
+
+    For 2 groups: 1 row with [Group 1, Group 2, Difference G2-G1].
+    For 3+ groups: 2 rows:
+      Row 1: Group Means for each cohort (shared viridis colormap).
+      Row 2: Pairwise Differences between cohorts with robust eTFCE significance overlays.
+    """
     needed = [metric, group_col, channel_col]
     clean = raw_df[needed].dropna().copy()
     clean[metric] = pd.to_numeric(clean[metric], errors="coerce")
@@ -1214,7 +1353,8 @@ def generate_topoplot(
     if not is_ok or len(matched) < 4:
         return None
 
-    clean = clean[clean[channel_col].astype(str).isin(matched.keys())].copy()
+    ch_list = list(matched.keys())
+    clean = clean[clean[channel_col].astype(str).isin(ch_list)].copy()
     groups = sorted([str(g) for g in clean[group_col].unique()])
     if len(groups) < 1:
         return None
@@ -1224,121 +1364,211 @@ def generate_topoplot(
     for g in groups:
         g_df = clean[clean[group_col].astype(str) == g]
         means = g_df.groupby(channel_col)[metric].mean()
-        group_means[g] = {ch: float(means.get(ch, np.nan)) for ch in matched.keys()}
+        group_means[g] = {ch: float(means.get(ch, np.nan)) for ch in ch_list}
 
-    # Check for significant channels in post-hoc contrasts
-    sig_channels = set()
-    for c in posthoc_contrasts:
-        p_val = c.get("p_adj", c.get("p_raw", 1.0))
-        if p_val < 0.05 and c.get("contrast_type") == "Group within Subgroup":
-            level = str(c.get("level", ""))
-            if level in matched:
-                sig_channels.add(level)
-
-    if etfce_result and etfce_result.get("sig_channels_etfce"):
-        for ch in etfce_result["sig_channels_etfce"]:
-            if ch in matched:
-                sig_channels.add(ch)
-
-    # Grid for interpolation
+    # Grid for spherical interpolation
     r = 0.5
     xi, yi = np.mgrid[-0.55:0.55:120j, -0.55:0.55:120j]
     mask = (xi**2 + yi**2) <= r**2
+    pts = np.array([matched[ch] for ch in ch_list])
 
-    # Global min and max across groups for shared color scale
-    all_vals = [v for g in groups for v in group_means[g].values() if not math.isnan(v)]
-    if not all_vals:
+    # Global min and max across group means for shared colormap
+    all_mean_vals = [v for g in groups for v in group_means[g].values() if not math.isnan(v)]
+    if not all_mean_vals:
         return None
-    g_min, g_max = min(all_vals), max(all_vals)
+    g_min, g_max = min(all_mean_vals), max(all_mean_vals)
     if g_min == g_max:
         g_min -= 0.1
         g_max += 0.1
 
-    show_diff = len(groups) == 2
-    n_plots = 3 if show_diff else len(groups)
-
-    fig_w = max(3.8 * n_plots, 8.0)
-    fig, axes = plt.subplots(1, n_plots, figsize=(fig_w, 4.2), dpi=300)
-    if n_plots == 1:
-        axes = [axes]
-
-    pts = np.array([matched[ch] for ch in matched.keys()])
-
-    # Plot groups
-    for idx, g in enumerate(groups[:2] if show_diff else groups):
-        ax = axes[idx]
-        vals = np.array([group_means[g][ch] for ch in matched.keys()])
-
-        try:
-            rbf = scipy.interpolate.Rbf(pts[:, 0], pts[:, 1], vals, function="multiquadric", smooth=0.01)
-            zi = rbf(xi, yi)
-        except Exception:
-            zi = scipy.interpolate.griddata(pts, vals, (xi, yi), method="nearest")
-
-        zi[~mask] = np.nan
-        cf = ax.contourf(xi, yi, zi, levels=25, cmap="viridis", vmin=g_min, vmax=g_max)
-        ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.4, alpha=0.3)
-
-        # Head outline
-        circle = plt.Circle((0, 0), r, color="black", fill=False, linewidth=2.0)
+    def draw_head_outline(ax):
+        circle = plt.Circle((0, 0), r, color="black", fill=False, linewidth=1.8)
         ax.add_patch(circle)
         # Nose
-        ax.plot([-0.05, 0.0, 0.05], [0.49, 0.54, 0.49], color="black", linewidth=2.0)
+        ax.plot([-0.05, 0.0, 0.05], [0.49, 0.54, 0.49], color="black", linewidth=1.8)
         # Ears
-        ax.plot([-0.505, -0.525, -0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.5)
-        ax.plot([0.505, 0.525, 0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.5)
+        ax.plot([-0.505, -0.525, -0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.4)
+        ax.plot([0.505, 0.525, 0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.4)
 
-        # Electrode dots and labels
-        ax.scatter(pts[:, 0], pts[:, 1], color="black", s=28, zorder=5)
-        for ch, (x, y) in matched.items():
-            ax.text(x, y + 0.035, normalize_channel_name(ch), fontsize=8, ha="center", va="bottom", fontweight="bold")
+    # Extract pairwise comparisons
+    pairwise_info = etfce_result.get("pairwise", {}) if etfce_result else {}
+    pairs = []
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            pairs.append((groups[i], groups[j]))
 
-        ax.set_title(f"{g} (Mean)", fontsize=11, fontweight="bold", pad=8)
-        ax.set_xlim(-0.6, 0.6)
-        ax.set_ylim(-0.6, 0.6)
-        ax.set_aspect("equal")
-        ax.axis("off")
-        cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-        cbar.ax.tick_params(labelsize=8)
+    # Calculate max difference magnitude for symmetric divergent colormap
+    all_diff_vals = []
+    for g1, g2 in pairs:
+        for ch in ch_list:
+            d = group_means[g2][ch] - group_means[g1][ch]
+            if not math.isnan(d):
+                all_diff_vals.append(d)
+    max_abs_diff = max(1e-4, float(np.max(np.abs(all_diff_vals)))) if all_diff_vals else 0.1
 
-    # Difference plot if 2 groups
-    if show_diff:
-        ax = axes[2]
+    # ── CASE A: 2 GROUPS (1 Row: G1, G2, Diff) ─────────────────────────────
+    if len(groups) == 2:
         g1, g2 = groups[0], groups[1]
-        diff_vals = np.array([group_means[g2][ch] - group_means[g1][ch] for ch in matched.keys()])
+        fig, axes = plt.subplots(1, 3, figsize=(11.0, 4.0), dpi=180)
 
-        max_abs = max(1e-4, float(np.max(np.abs(diff_vals))))
+        # G1 and G2 means
+        for idx, g in enumerate([g1, g2]):
+            ax = axes[idx]
+            vals = np.array([group_means[g][ch] for ch in ch_list])
+            try:
+                rbf = scipy.interpolate.Rbf(pts[:, 0], pts[:, 1], vals, function="multiquadric", smooth=0.01)
+                zi = rbf(xi, yi)
+            except Exception:
+                zi = scipy.interpolate.griddata(pts, vals, (xi, yi), method="nearest")
+            zi[~mask] = np.nan
+            cf = ax.contourf(xi, yi, zi, levels=25, cmap="viridis", vmin=g_min, vmax=g_max)
+            ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.35, alpha=0.3)
+            draw_head_outline(ax)
+            ax.scatter(pts[:, 0], pts[:, 1], color="black", s=24, zorder=5)
+            for ch in ch_list:
+                x, y = matched[ch]
+                ax.text(x, y + 0.035, normalize_channel_name(ch), fontsize=7.5, ha="center", va="bottom", fontweight="bold")
+            ax.set_title(f"{g} (Mean)", fontsize=11, fontweight="bold", pad=7)
+            ax.set_xlim(-0.6, 0.6)
+            ax.set_ylim(-0.6, 0.6)
+            ax.set_aspect("equal")
+            ax.axis("off")
+            cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+            cbar.ax.tick_params(labelsize=8)
+
+        # Difference G2 - G1
+        ax = axes[2]
+        diff_vals = np.array([group_means[g2][ch] - group_means[g1][ch] for ch in ch_list])
         try:
             rbf = scipy.interpolate.Rbf(pts[:, 0], pts[:, 1], diff_vals, function="multiquadric", smooth=0.01)
             zi = rbf(xi, yi)
         except Exception:
             zi = scipy.interpolate.griddata(pts, diff_vals, (xi, yi), method="nearest")
-
         zi[~mask] = np.nan
-        cf = ax.contourf(xi, yi, zi, levels=25, cmap="RdBu_r", vmin=-max_abs, vmax=max_abs)
-        ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.4, alpha=0.3)
+        cf = ax.contourf(xi, yi, zi, levels=25, cmap="RdBu_r", vmin=-max_abs_diff, vmax=max_abs_diff)
+        ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.35, alpha=0.3)
+        draw_head_outline(ax)
+        ax.scatter(pts[:, 0], pts[:, 1], color="black", s=24, zorder=5)
 
-        circle = plt.Circle((0, 0), r, color="black", fill=False, linewidth=2.0)
-        ax.add_patch(circle)
-        ax.plot([-0.05, 0.0, 0.05], [0.49, 0.54, 0.49], color="black", linewidth=2.0)
-        ax.plot([-0.505, -0.525, -0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.5)
-        ax.plot([0.505, 0.525, 0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.5)
+        pair_key = f"{g2} - {g1}"
+        p_res = pairwise_info.get(pair_key, {})
+        sig_channels = set(p_res.get("sig_channels_etfce", []))
 
-        ax.scatter(pts[:, 0], pts[:, 1], color="black", s=28, zorder=5)
-        for ch, (x, y) in matched.items():
+        for ch in ch_list:
+            x, y = matched[ch]
             norm_ch = normalize_channel_name(ch)
             is_sig = ch in sig_channels or norm_ch in sig_channels
-            label = f"{norm_ch} *" if is_sig else norm_ch
-            color = "#d95f02" if is_sig else "black"
-            ax.text(x, y + 0.035, label, fontsize=8, ha="center", va="bottom", fontweight="bold", color=color)
+            if is_sig:
+                ax.scatter(x, y, s=110, facecolors="none", edgecolors="#e65100", linewidths=2.2, zorder=6)
+                ax.text(x, y + 0.035, f"{norm_ch} *", fontsize=8, ha="center", va="bottom", fontweight="bold", color="#b71c1c")
+            else:
+                ax.text(x, y + 0.035, norm_ch, fontsize=7.5, ha="center", va="bottom", color="#333333")
 
-        ax.set_title(f"Difference ({g2} - {g1})", fontsize=11, fontweight="bold", pad=8)
+        min_p = p_res.get("min_p_etfce", 1.0)
+        title_str = f"Diff: {pair_key}\n(p_TFCE < {min_p:.3f}*)" if sig_channels else f"Diff: {pair_key}\n(TFCE ns, p={min_p:.3f})"
+        ax.set_title(title_str, fontsize=10.5, fontweight="bold", pad=7, color="#b71c1c" if sig_channels else "#263238")
         ax.set_xlim(-0.6, 0.6)
         ax.set_ylim(-0.6, 0.6)
         ax.set_aspect("equal")
         ax.axis("off")
         cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
         cbar.ax.tick_params(labelsize=8)
+
+    # ── CASE B: 3+ GROUPS (2 Rows: Means on top, Pairwise Differences on bottom)
+    else:
+        n_cols = max(len(groups), len(pairs))
+        fig_w = max(3.8 * n_cols, 10.5)
+        fig, axes = plt.subplots(2, n_cols, figsize=(fig_w, 7.5), dpi=180)
+
+        # Row 1: Cohort Means
+        cf_means = None
+        for col_idx in range(n_cols):
+            ax = axes[0, col_idx]
+            if col_idx < len(groups):
+                g = groups[col_idx]
+                vals = np.array([group_means[g][ch] for ch in ch_list])
+                try:
+                    rbf = scipy.interpolate.Rbf(pts[:, 0], pts[:, 1], vals, function="multiquadric", smooth=0.01)
+                    zi = rbf(xi, yi)
+                except Exception:
+                    zi = scipy.interpolate.griddata(pts, vals, (xi, yi), method="nearest")
+                zi[~mask] = np.nan
+                cf_means = ax.contourf(xi, yi, zi, levels=25, cmap="viridis", vmin=g_min, vmax=g_max)
+                ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.35, alpha=0.3)
+                draw_head_outline(ax)
+                ax.scatter(pts[:, 0], pts[:, 1], color="black", s=22, zorder=5)
+                for ch in ch_list:
+                    x, y = matched[ch]
+                    ax.text(x, y + 0.035, normalize_channel_name(ch), fontsize=7.5, ha="center", va="bottom", fontweight="bold")
+                ax.set_title(f"{g} (Mean)", fontsize=11, fontweight="bold", pad=7)
+                ax.set_xlim(-0.6, 0.6)
+                ax.set_ylim(-0.6, 0.6)
+                ax.set_aspect("equal")
+            ax.axis("off")
+
+        if cf_means is not None:
+            cbar1 = fig.colorbar(cf_means, ax=axes[0, :].ravel().tolist(), fraction=0.018, pad=0.02)
+            cbar1.ax.tick_params(labelsize=8)
+            cbar1.set_label("Group Mean", fontsize=9, fontweight="bold")
+
+        # Row 2: Pairwise Differences with eTFCE
+        cf_diffs = None
+        for col_idx in range(n_cols):
+            ax = axes[1, col_idx]
+            if col_idx < len(pairs):
+                g1, g2 = pairs[col_idx]
+                pair_key = f"{g2} - {g1}"
+                p_res = pairwise_info.get(pair_key, pairwise_info.get(f"{g1} - {g2}", {}))
+                sig_channels = set(p_res.get("sig_channels_etfce", []))
+
+                diff_vals = np.array([group_means[g2][ch] - group_means[g1][ch] for ch in ch_list])
+                try:
+                    rbf = scipy.interpolate.Rbf(pts[:, 0], pts[:, 1], diff_vals, function="multiquadric", smooth=0.01)
+                    zi = rbf(xi, yi)
+                except Exception:
+                    zi = scipy.interpolate.griddata(pts, diff_vals, (xi, yi), method="nearest")
+                zi[~mask] = np.nan
+                cf_diffs = ax.contourf(xi, yi, zi, levels=25, cmap="RdBu_r", vmin=-max_abs_diff, vmax=max_abs_diff)
+                ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.35, alpha=0.3)
+                draw_head_outline(ax)
+                ax.scatter(pts[:, 0], pts[:, 1], color="black", s=22, zorder=5)
+
+                for ch in ch_list:
+                    x, y = matched[ch]
+                    norm_ch = normalize_channel_name(ch)
+                    is_sig = ch in sig_channels or norm_ch in sig_channels
+                    if is_sig:
+                        ax.scatter(x, y, s=110, facecolors="none", edgecolors="#e65100", linewidths=2.2, zorder=6)
+                        ax.text(x, y + 0.035, f"{norm_ch} *", fontsize=8, ha="center", va="bottom", fontweight="bold", color="#b71c1c")
+                    else:
+                        ax.text(x, y + 0.035, norm_ch, fontsize=7.5, ha="center", va="bottom", color="#333333")
+
+                min_p = p_res.get("min_p_etfce", 1.0)
+                if sig_channels:
+                    title_str = f"Diff: {pair_key}\n(p_TFCE < {min_p:.3f}*)"
+                    title_color = "#b71c1c"
+                else:
+                    title_str = f"Diff: {pair_key}\n(TFCE ns, p={min_p:.3f})"
+                    title_color = "#263238"
+
+                ax.set_title(title_str, fontsize=10.5, fontweight="bold", pad=7, color=title_color)
+                ax.set_xlim(-0.6, 0.6)
+                ax.set_ylim(-0.6, 0.6)
+                ax.set_aspect("equal")
+            ax.axis("off")
+
+        if cf_diffs is not None:
+            cbar2 = fig.colorbar(cf_diffs, ax=axes[1, :].ravel().tolist(), fraction=0.018, pad=0.02)
+            cbar2.ax.tick_params(labelsize=8)
+            cbar2.set_label("Pairwise Difference (\u0394)", fontsize=9, fontweight="bold")
+
+    clean_metric_title = metric.replace("_", " ")
+    plt.suptitle(f"Topographic Scalp Distribution (Topoplot) with Pairwise Robust eTFCE: {clean_metric_title}", fontsize=12.5, fontweight="bold", y=0.98)
+    plt.tight_layout()
+    output_png_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(str(output_png_path), dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return output_png_path
 
     clean_metric_title = metric.replace("_", " ")
     plt.suptitle(f"Topographic Scalp Distribution (Topoplot): {clean_metric_title}", fontsize=12, fontweight="bold", y=0.98)
@@ -1425,6 +1655,63 @@ def generate_docx_report(
         f"{', '.join(sig_metrics[:8]) if sig_metrics else 'None reached statistical significance'}"
         f"{'...' if len(sig_metrics) > 8 else ''}."
     )
+
+    # Executive Summary Overview Table
+    t_sum_p = doc.add_paragraph()
+    t_sum_p.paragraph_format.space_before = Pt(6)
+    t_sum_p.paragraph_format.space_after = Pt(3)
+    t_sum_run = t_sum_p.add_run("Table 1: Executive Summary of Analyzed Metrics & Findings")
+    t_sum_run.font.bold = True
+    t_sum_run.font.size = Pt(10)
+    t_sum_run.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
+
+    t_summary = doc.add_table(rows=len(analysis_results) + 1, cols=5)
+    t_summary.alignment = WD_TABLE_ALIGNMENT.CENTER
+    sum_headers = ["Metric", "Model", "Omnibus Group Effect", "Key Pairwise Contrasts", "Scalp Cluster (eTFCE)"]
+    for c_idx, h_text in enumerate(sum_headers):
+        cell = t_summary.cell(0, c_idx)
+        cell.text = h_text
+        if cell.paragraphs[0].runs:
+            cell.paragraphs[0].runs[0].font.bold = True
+            cell.paragraphs[0].runs[0].font.size = Pt(9)
+            cell.paragraphs[0].runs[0].font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
+
+    for r_idx, res in enumerate(analysis_results, start=1):
+        clean_name = res["metric"].replace("_", " ")
+        model_str = "LMM" if "Mixed" in res.get("model_type", "") else "GLM"
+
+        grp_effects = [e for e in res.get("model_effects", []) if "group" in str(e.get("term", "")).lower() and ":" not in str(e.get("term", ""))]
+        if grp_effects:
+            eff = grp_effects[0]
+            omni_str = f"{eff.get('stat_type','') }={eff.get('statistic',0):.2f}, p={format_p_value(eff.get('p_value',1.0))} ({eff.get('significance','ns')})"
+        else:
+            omni_str = "—"
+
+        sig_ph = [p for p in res.get("posthoc_contrasts", []) if p.get("p_adj", p.get("p_raw", 1.0)) < 0.05]
+        if sig_ph:
+            ph_strs = [f"{p['group1']} vs {p['group2']}: d={p.get('cohen_d',0):.2f}, p={format_p_value(p.get('p_adj', p.get('p_raw',1.0)))}" for p in sig_ph[:2]]
+            ph_summary = "; ".join(ph_strs)
+            if len(sig_ph) > 2:
+                ph_summary += f" (+{len(sig_ph)-2} more)"
+        else:
+            ph_summary = "None (ns)"
+
+        etfce = res.get("etfce")
+        if etfce and etfce.get("sig_channels_etfce"):
+            etfce_summary = ", ".join(etfce["sig_channels_etfce"][:5])
+            if len(etfce["sig_channels_etfce"]) > 5:
+                etfce_summary += f" (+{len(etfce['sig_channels_etfce'])-5})"
+            etfce_summary += " (p<0.05)"
+        else:
+            etfce_summary = "No cluster" if etfce else "N/A"
+
+        for c_idx, val in enumerate([clean_name, model_str, omni_str, ph_summary, etfce_summary]):
+            cell = t_summary.cell(r_idx, c_idx)
+            cell.text = val
+            if cell.paragraphs[0].runs:
+                cell.paragraphs[0].runs[0].font.size = Pt(8.5)
+
+    doc.add_paragraph().paragraph_format.space_after = Pt(8)
 
     # ── 2. Statistical Methodology ─────────────────────────────────────────
     h2 = doc.add_paragraph()
@@ -1681,6 +1968,43 @@ def generate_pdf_report(
         body_style,
     ))
 
+    # Executive Summary Table
+    sum_data = [["Metric", "Model", "Omnibus Group Effect", "Key Contrasts", "Scalp Cluster (eTFCE)"]]
+    for res in analysis_results:
+        clean_name = res["metric"].replace("_", " ")
+        model_str = "LMM" if "Mixed" in res.get("model_type", "") else "GLM"
+        grp_effects = [e for e in res.get("model_effects", []) if "group" in str(e.get("term", "")).lower() and ":" not in str(e.get("term", ""))]
+        if grp_effects:
+            eff = grp_effects[0]
+            omni_str = f"{eff.get('stat_type','')}={eff.get('statistic',0):.2f}, p={format_p_value(eff.get('p_value',1.0))}"
+        else:
+            omni_str = "—"
+        sig_ph = [p for p in res.get("posthoc_contrasts", []) if p.get("p_adj", p.get("p_raw", 1.0)) < 0.05]
+        if sig_ph:
+            ph_summary = f"{len(sig_ph)} contrast(s) sig."
+        else:
+            ph_summary = "None (ns)"
+        etfce = res.get("etfce")
+        if etfce and etfce.get("sig_channels_etfce"):
+            etfce_summary = f"{len(etfce['sig_channels_etfce'])} channels (p<0.05)"
+        else:
+            etfce_summary = "None" if etfce else "N/A"
+        sum_data.append([clean_name, model_str, omni_str, ph_summary, etfce_summary])
+
+    t_summary_pdf = Table(sum_data, colWidths=[120, 45, 130, 110, 115])
+    t_summary_pdf.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E79")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+    ]))
+    story.append(t_summary_pdf)
+    story.append(Spacer(1, 10))
+
     # Methodology
     story.append(Paragraph("2. Statistical Methodology", h1_style))
     story.append(Paragraph(
@@ -1709,7 +2033,7 @@ def generate_pdf_report(
         # Topoplot Image (if available)
         topo_path = res.get("topoplot_path")
         if topo_path and Path(topo_path).exists():
-            story.append(RLImage(str(topo_path), width=5.2 * inch, height=2.2 * inch))
+            story.append(RLImage(str(topo_path), width=5.5 * inch, height=3.0 * inch))
             story.append(Paragraph(f"Figure {idx}B: Topographic scalp distribution (Topoplot) across EEG derivations for {clean_name}.", caption_style))
 
         # Model Effects Table
@@ -1761,15 +2085,31 @@ def run_group_analysis(
     preferred_model: str = "auto",
     posthoc_method: str = "fdr",
     report_format: str = "both",  # 'docx', 'pdf', 'both'
-    channel_scope: str = "all",
+    channel_scope: str = "roi",
+    include_channels: list[str] | None = None,
+    exclude_channels: list[str] | None = None,
     emit_json: bool = True,
 ) -> dict[str, Any]:
     """Runs the complete group-level analysis pipeline."""
-    df = pd.read_csv(csv_path, low_memory=False)
-    if df.columns.duplicated().any(): raise ValueError("Feature table contains duplicate column names")
-    df = df.copy()
+    raw_csv = pd.read_csv(csv_path, low_memory=False)
+    if raw_csv.columns.duplicated().any(): raise ValueError("Feature table contains duplicate column names")
+    raw_table = prepare_eeg_table(raw_csv.copy(), metadata_csv_path, metadata_key_col)
 
-    df = apply_channel_scope(prepare_eeg_table(df, metadata_csv_path, metadata_key_col), channel_scope)
+    # Genuine scalp EEG dataset for topoplots and eTFCE (non-EEG channels strictly removed)
+    raw_eeg_df = filter_eeg_channels(raw_table, include_non_eeg=False)
+    if include_channels and "Chan" in raw_eeg_df.columns:
+        raw_eeg_df = raw_eeg_df[raw_eeg_df["Chan"].astype(str).str.upper().isin([c.upper() for c in include_channels])]
+    if exclude_channels and "Chan" in raw_eeg_df.columns:
+        raw_eeg_df = raw_eeg_df[~raw_eeg_df["Chan"].astype(str).str.upper().isin([c.upper() for c in exclude_channels])]
+
+    # Modeling dataset (clean ROIs, Mean, or individual channels)
+    df = apply_channel_scope(
+        raw_table,
+        scope=channel_scope,
+        include_non_eeg=False,
+        include_channels=include_channels,
+        exclude_channels=exclude_channels,
+    )
     if sm is None:
         raise RuntimeError("Group modeling requires statsmodels. Install numpy pandas scipy matplotlib statsmodels python-docx reportlab openpyxl.")
 
@@ -1816,11 +2156,14 @@ def run_group_analysis(
     all_posthoc_contrasts: list[dict[str, Any]] = []
     all_descriptives: list[dict[str, Any]] = []
 
-    # Check topoplot feasibility once across the whole dataset
+    # Check topoplot feasibility on genuine scalp EEG channels
     is_topo_feasible = False
-    if final_subgroup_col and final_subgroup_col in df.columns:
-        channels_in_df = [str(c) for c in df[final_subgroup_col].dropna().unique()]
-        is_topo_feasible, _ = check_topoplot_suitability(channels_in_df)
+    raw_channel_col = None
+    if "Chan" in raw_eeg_df.columns:
+        channels_in_raw = [str(c) for c in raw_eeg_df["Chan"].dropna().unique()]
+        is_topo_feasible, _ = check_topoplot_suitability(channels_in_raw)
+        if is_topo_feasible:
+            raw_channel_col = "Chan"
 
     total_metrics = len(target_metrics)
     for idx, m in enumerate(target_metrics):
@@ -1852,10 +2195,10 @@ def run_group_analysis(
                 etfce_res = None
                 try:
                     etfce_res = compute_etfce(
-                        raw_df=df,
+                        raw_df=raw_eeg_df,
                         metric=m,
                         group_col=final_group_col,
-                        channel_col=final_subgroup_col,
+                        channel_col=raw_channel_col,
                         subject_id=final_subject_id,
                     )
                     if etfce_res:
@@ -1864,10 +2207,10 @@ def run_group_analysis(
                     sys.stderr.write(f"eTFCE notice for {m}: {e}\n")
 
                 topo_res = generate_topoplot(
-                    raw_df=df,
+                    raw_df=raw_eeg_df,
                     metric=m,
                     group_col=final_group_col,
-                    channel_col=final_subgroup_col,
+                    channel_col=raw_channel_col,
                     posthoc_contrasts=res.get("posthoc_contrasts", []),
                     output_png_path=topo_file,
                     etfce_result=etfce_res,
@@ -1893,7 +2236,15 @@ def run_group_analysis(
     for result in analysis_results:
         generate_publication_plot(result,df,plot_paths[result["metric"]])
         if result.get("topoplot_path"):
-            generate_topoplot(raw_df=df,metric=result["metric"],group_col=final_group_col,channel_col=final_subgroup_col,posthoc_contrasts=result.get("posthoc_contrasts",[]),output_png_path=Path(result["topoplot_path"]))
+            generate_topoplot(
+                raw_df=raw_eeg_df,
+                metric=result["metric"],
+                group_col=final_group_col,
+                channel_col=raw_channel_col,
+                posthoc_contrasts=result.get("posthoc_contrasts", []),
+                output_png_path=Path(result["topoplot_path"]),
+                etfce_result=result.get("etfce"),
+            )
 
     # Correct omnibus and coefficient tests in separate selected-outcome families.
     for family in [("F","Chi2"),("z","t")]:
@@ -1977,7 +2328,9 @@ def main() -> None:
     parser.add_argument("--posthoc", choices=["fdr", "bonferroni"], default="fdr")
     parser.add_argument("--report-format", choices=["docx", "pdf", "both"], default="both")
     parser.add_argument("--inspect-only", action="store_true", help="Only inspect columns and return JSON")
-    parser.add_argument("--channel", default="all", help="all, mean, or a channel name")
+    parser.add_argument("--channel", default="all", help="all, mean, roi, or a channel name")
+    parser.add_argument("--include-channels", help="Comma-separated channel names to include")
+    parser.add_argument("--exclude-channels", help="Comma-separated channel names to exclude")
     parser.add_argument("--config", help="Path to JSON configuration file")
 
     args = parser.parse_args()
@@ -1998,6 +2351,9 @@ def main() -> None:
         model = cfg.get("model", "auto")
         posthoc = cfg.get("posthoc", "fdr")
         rep_fmt = cfg.get("report_format", "both")
+        chan_scope = cfg.get("channel", "all")
+        inc_chans = cfg.get("include_channels")
+        exc_chans = cfg.get("exclude_channels")
     else:
         if not args.csv:
             parser.print_help()
@@ -2015,6 +2371,9 @@ def main() -> None:
         model = args.model
         posthoc = args.posthoc
         rep_fmt = args.report_format
+        chan_scope = args.channel
+        inc_chans = [c.strip() for c in args.include_channels.split(",") if c.strip()] if getattr(args, "include_channels", None) else None
+        exc_chans = [c.strip() for c in args.exclude_channels.split(",") if c.strip()] if getattr(args, "exclude_channels", None) else None
 
     if not csv_file.exists():
         sys.stderr.write(f"Error: CSV file not found: {csv_file}\n")
@@ -2041,7 +2400,9 @@ def main() -> None:
         preferred_model=model,
         posthoc_method=posthoc,
         report_format=rep_fmt,
-        channel_scope=args.channel,
+        channel_scope=chan_scope,
+        include_channels=inc_chans,
+        exclude_channels=exc_chans,
         emit_json=True,
     )
     print(json.dumps(payload, indent=2))

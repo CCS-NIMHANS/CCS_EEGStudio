@@ -26,13 +26,29 @@ fn mean_psd_is_more_sensitive_to_an_outlier_than_median() {
     let bands = features::bandpowers_with_options(
         &signal,
         250.0,
+        "welch",
         1.0,
         false,
+        3.0,
+        true,
         &[(12.0, 15.0, "SMR"), (1.0, 4.0, "Slow")],
     );
     assert!(bands.contains_key("SMR_PSD"));
     assert!(!bands.contains_key("Alpha_PSD"));
     assert!(bands.values().all(|v| *v >= 0.0 && *v <= 1.0));
+
+    let mt_bands = features::bandpowers_with_options(
+        &signal,
+        250.0,
+        "multitaper",
+        1.0,
+        false,
+        3.0,
+        true,
+        &[(12.0, 15.0, "SMR"), (1.0, 4.0, "Slow")],
+    );
+    assert!(mt_bands.contains_key("SMR_PSD"));
+    assert!(mt_bands.values().all(|v| *v >= 0.0 && *v <= 1.0));
 }
 #[test]
 fn butterworth_filter_preserves_alpha_and_attenuates_high_frequency() {

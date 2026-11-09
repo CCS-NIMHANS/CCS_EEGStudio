@@ -404,6 +404,9 @@ class ExtractionOptions {
     this.dfaFei = false,
     this.dfaFeiWindowSeconds = 0,
     this.dfaFeiShortEpoch = false,
+    this.psdMethod = 'welch',
+    this.psdMultitaperNw = 3.0,
+    this.psdMultitaperAdaptive = true,
     this.psdWindowSeconds = 1,
     this.psdAverage = 'median',
     this.psdBands = const [],
@@ -439,6 +442,9 @@ class ExtractionOptions {
   final bool dfaFei;
   final double dfaFeiWindowSeconds;
   final bool dfaFeiShortEpoch;
+  final String psdMethod;
+  final double psdMultitaperNw;
+  final bool psdMultitaperAdaptive;
   final double psdWindowSeconds;
   final String psdAverage;
   final List<Map<String, dynamic>> psdBands;
@@ -464,6 +470,9 @@ class ExtractionOptions {
     'end_seconds': endSeconds,
     'bin_seconds': binSeconds,
     'psd': psd,
+    'psd_method': psdMethod,
+    'psd_multitaper_nw': psdMultitaperNw,
+    'psd_multitaper_adaptive': psdMultitaperAdaptive,
     'psd_window_seconds': psdWindowSeconds,
     'psd_average': psdAverage,
     'psd_bands': psdBands,
@@ -608,6 +617,9 @@ class AnalysisConfig {
 
   // ── Feature families ─────────────────────────────────────────────────────
   bool psd = true;
+  String psdMethod = 'welch';
+  double psdMultitaperNw = 3.0;
+  bool psdMultitaperAdaptive = true;
   double psdWindowSeconds = 1;
   String psdAverage = 'median';
   List<Map<String, dynamic>> psdBands = [];
@@ -818,6 +830,9 @@ class AnalysisConfig {
       'te_history_step': teHistoryStep,
       'te_estimator': 'time_copula_cmi',
     },
+    psdMethod: psdMethod,
+    psdMultitaperNw: psdMultitaperNw,
+    psdMultitaperAdaptive: psdMultitaperAdaptive,
     psdWindowSeconds: psdWindowSeconds,
     psdAverage: psdAverage,
     psdBands: psdBands,

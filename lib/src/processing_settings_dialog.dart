@@ -37,7 +37,10 @@ Future<bool> showProcessingSettings(
   final order = TextEditingController(text: '${config.iirOrder}');
   var filterType = config.filterType,
       reference = config.referenceMode,
-      average = config.psdAverage;
+      average = config.psdAverage,
+      psdMethod = config.psdMethod,
+      psdMultitaperAdaptive = config.psdMultitaperAdaptive;
+  final psdMultitaperNw = TextEditingController(text: '${config.psdMultitaperNw}');
   final definitions = <String, (String, String, double, double, bool)>{
     'fooof_max_peaks': ('FOOOF maximum peaks', '20', 0, 20, true),
     'fooof_peak_threshold': ('FOOOF peak threshold (SD)', '2', 0.01, 10, false),
@@ -594,27 +597,65 @@ Future<bool> showProcessingSettings(
                     field(featureRefs, 'Feature reference channels'),
                   DropdownButtonFormField<String>(
                     isExpanded: true,
-                    initialValue: average,
+                    initialValue: psdMethod,
                     decoration: const InputDecoration(
-                      labelText: 'Welch PSD estimator',
+                      labelText: 'PSD estimation method',
                     ),
                     items: const [
                       DropdownMenuItem(
-                        value: 'median',
-                        child: Text('Median average (robust)'),
+                        value: 'welch',
+                        child: Text("Welch's modified periodogram"),
                       ),
                       DropdownMenuItem(
-                        value: 'mean',
-                        child: Text('Mean average'),
+                        value: 'multitaper',
+                        child: Text("Adaptive Multitaper (Thomson / Slepian DPSS)"),
                       ),
                     ],
-                    onChanged: (v) => setState(() => average = v!),
+                    onChanged: (v) => setState(() => psdMethod = v!),
                   ),
-                  field(
-                    window,
-                    'PSD window (s)',
-                    help: '50% overlap; cannot exceed the analysis epoch.',
-                  ),
+                  if (psdMethod == 'welch') ...[
+                    DropdownButtonFormField<String>(
+                      isExpanded: true,
+                      initialValue: average,
+                      decoration: const InputDecoration(
+                        labelText: 'Welch segment averaging',
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'median',
+                          child: Text('Median average (robust against transients)'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'mean',
+                          child: Text('Mean average'),
+                        ),
+                      ],
+                      onChanged: (v) => setState(() => average = v!),
+                    ),
+                    field(
+                      window,
+                      'PSD window (s)',
+                      help: '50% overlap; cannot exceed the analysis epoch.',
+                    ),
+                  ] else ...[
+                    field(
+                      psdMultitaperNw,
+                      'Multitaper time-bandwidth product (NW)',
+                      help:
+                          'Standard NW=3.0 (K=5 tapers). Half-bandwidth W = NW / epoch duration.',
+                    ),
+                    CheckboxListTile(
+                      title: const Text('Adaptive spectral weighting'),
+                      subtitle: const Text(
+                        'Iterative Thomson weighting to minimize broadband spectral leakage',
+                      ),
+                      value: psdMultitaperAdaptive,
+                      onChanged: (v) =>
+                          setState(() => psdMultitaperAdaptive = v ?? true),
+                      controlAffinity: ListTileControlAffinity.leading,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ],
                   for (final entry in definitions.entries)
                     field(advanced[entry.key]!, entry.value.$1),
                   field(
@@ -794,9 +835,17 @@ Future<bool> showProcessingSettings(
                         .where((s) => s.isNotEmpty)
                         .toList();
                 } else {
-                  final value = double.parse(window.text);
-                  if (!value.isFinite || value <= 0)
-                    throw const FormatException('PSD window must be positive.');
+                  double psdWinVal = config.psdWindowSeconds;
+                  if (psdMethod == 'welch') {
+                    final value = double.parse(window.text);
+                    if (!value.isFinite || value <= 0)
+                      throw const FormatException('PSD window must be positive.');
+                    psdWinVal = value;
+                  } else {
+                    final nw = double.parse(psdMultitaperNw.text);
+                    if (!nw.isFinite || nw < 1.0 || nw > 20.0)
+                      throw const FormatException('Multitaper NW must be between 1.0 and 20.0.');
+                  }
                   final parsed = <Map<String, dynamic>>[];
                   for (final line
                       in bands.text
@@ -859,8 +908,11 @@ Future<bool> showProcessingSettings(
                   config
                     ..featureReferenceMode = featureReference
                     ..featureReferenceChannels = refs
+                    ..psdMethod = psdMethod
                     ..psdAverage = average
-                    ..psdWindowSeconds = value
+                    ..psdWindowSeconds = psdWinVal
+                    ..psdMultitaperNw = double.tryParse(psdMultitaperNw.text) ?? 3.0
+                    ..psdMultitaperAdaptive = psdMultitaperAdaptive
                     ..psdBands = parsed
                     ..featureParameters = advancedValues;
                 }
@@ -891,6 +943,7 @@ Future<bool> showProcessingSettings(
     sourceModel,
     regions,
     window,
+    psdMultitaperNw,
     bands,
     order,
     featureRefs,
