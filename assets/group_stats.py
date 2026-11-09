@@ -28,10 +28,19 @@ os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "ccs-eeg
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+import matplotlib.cm as cm
+from matplotlib.colors import Normalize
+import matplotlib.patheffects as path_effects
 import numpy as np
 import pandas as pd
 from scipy import stats
 import scipy.interpolate
+
+try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
 
 try:
     import statsmodels.api as sm
@@ -585,6 +594,32 @@ def clean_var_name(name: str) -> str:
     return clean
 
 
+def clean_term_label(term: str, group_col: str, subgroup_col: str | None) -> str:
+    """Translates Patsy dummy formula syntax into clear scientific terminology."""
+    t = str(term).strip()
+    if t.lower() == "intercept":
+        return "Intercept"
+    is_roi = (subgroup_col is not None and subgroup_col.upper() in ("ROI", "SUBGROUP"))
+    sub_label = "ROI" if is_roi else (subgroup_col or "Region")
+    t = re.sub(r"C\(GRP_VAR\)", "Group", t)
+    t = re.sub(r"C\(SUBGRP_VAR\)", sub_label, t)
+    t = re.sub(r"C\(" + re.escape(group_col) + r"\)", "Group", t)
+    if subgroup_col:
+        t = re.sub(r"C\(" + re.escape(subgroup_col) + r"\)", sub_label, t)
+    t = re.sub(r"C\(SUBGroup\)", "ROI", t)
+    t = re.sub(r"C\(Subgroup\)", "ROI", t)
+    t = t.replace(":", " × ")
+    if t == "Group":
+        return f"Group ({group_col})"
+    if t in ("ROI", "Region", "Subgroup", "SUBGroup", subgroup_col):
+        return "ROI (Brain Region)" if is_roi else f"{subgroup_col or 'Region'} (Subgroup)"
+    if "Group ×" in t or "× Group" in t:
+        if is_roi or "ROI" in t or "SUBGroup" in t or "Subgroup" in t:
+            return "Group × ROI (Interaction)"
+        return f"{t} (Interaction)"
+    return t
+
+
 def fit_statistical_model(
     df: pd.DataFrame,
     metric: str,
@@ -711,7 +746,7 @@ def fit_statistical_model(
                 raise RuntimeError("Mixed model did not converge")
             model_summary_text = str(lmm_fit.summary())
 
-            # Wald test terms
+            # Wald test terms (Omnibus ANOVA-style hypothesis tests)
             try:
                 wald = lmm_fit.wald_test_terms()
                 w_frame = wald.summary_frame()
@@ -723,33 +758,37 @@ def fit_statistical_model(
                     term_name = str(term_idx).replace("GRP_VAR", group_col).replace("SUBGRP_VAR", subgroup_col or "Subgroup")
                     for orig, safe in rename_map.items():
                         term_name = term_name.replace(safe, orig)
+                    clean_name = clean_term_label(term_name, group_col, subgroup_col)
                     model_effects.append({
-                        "term": term_name,
+                        "term": clean_name,
+                        "raw_term": term_name,
                         "statistic": val,
                         "stat_type": "Chi2",
                         "df": df_val,
                         "p_value": p_val,
                         "significance": p_to_star(p_val),
+                        "is_omnibus": True,
                     })
             except Exception:
                 pass
 
-            # Coefficients table
-            for param_name, coef in lmm_fit.params.items():
-                if param_name in ("Group Var", "Intercept"):
-                    continue
-                se = float(lmm_fit.bse.get(param_name, np.nan))
-                z = float(lmm_fit.tvalues.get(param_name, np.nan))
-                p = float(lmm_fit.pvalues.get(param_name, np.nan))
-                ci = lmm_fit.conf_int().loc[param_name]
-                ci_low, ci_high = float(ci[0]), float(ci[1])
-                t_name = param_name.replace("GRP_VAR", group_col).replace("SUBGRP_VAR", subgroup_col or "Subgroup")
-                for orig, safe in rename_map.items():
-                    t_name = t_name.replace(safe, orig)
-                # If Wald didn't capture effects, populate from coefficients
-                if not any(e["term"] == t_name for e in model_effects):
+            # Only fallback to coefficients if Wald test terms was completely empty
+            if not model_effects:
+                for param_name, coef in lmm_fit.params.items():
+                    if param_name in ("Group Var", "Intercept"):
+                        continue
+                    se = float(lmm_fit.bse.get(param_name, np.nan))
+                    z = float(lmm_fit.tvalues.get(param_name, np.nan))
+                    p = float(lmm_fit.pvalues.get(param_name, np.nan))
+                    ci = lmm_fit.conf_int().loc[param_name]
+                    ci_low, ci_high = float(ci[0]), float(ci[1])
+                    t_name = param_name.replace("GRP_VAR", group_col).replace("SUBGRP_VAR", subgroup_col or "Subgroup")
+                    for orig, safe in rename_map.items():
+                        t_name = t_name.replace(safe, orig)
+                    clean_name = clean_term_label(t_name, group_col, subgroup_col)
                     model_effects.append({
-                        "term": t_name,
+                        "term": clean_name,
+                        "raw_term": t_name,
                         "estimate": float(coef),
                         "std_error": se,
                         "statistic": z,
@@ -759,6 +798,7 @@ def fit_statistical_model(
                         "ci_lower": ci_low,
                         "ci_upper": ci_high,
                         "significance": p_to_star(p),
+                        "is_omnibus": False,
                     })
         except Exception as exc:
             raise RuntimeError(f"LMM fit failed for {metric}: {exc}. Review design and subject IDs; no independent-observation fallback was used.") from exc
@@ -789,8 +829,10 @@ def fit_statistical_model(
                     t_name = str(term_idx).replace("GRP_VAR", group_col).replace("SUBGRP_VAR", subgroup_col or "Subgroup")
                     for orig, safe in rename_map.items():
                         t_name = t_name.replace(safe, orig)
+                    clean_name = clean_term_label(t_name, group_col, subgroup_col)
                     model_effects.append({
-                        "term": t_name,
+                        "term": clean_name,
+                        "raw_term": t_name,
                         "statistic": f_val,
                         "stat_type": "F",
                         "df": df_val,
@@ -799,24 +841,27 @@ def fit_statistical_model(
                         "effect_size": partial_eta,
                         "effect_size_type": "partial_eta_sq",
                         "significance": p_to_star(p_val),
+                        "is_omnibus": True,
                     })
             except Exception:
                 pass
 
-            for param_name, coef in ols_fit.params.items():
-                if param_name == "Intercept":
-                    continue
-                se = float(ols_fit.bse.get(param_name, np.nan))
-                t = float(ols_fit.tvalues.get(param_name, np.nan))
-                p = float(ols_fit.pvalues.get(param_name, np.nan))
-                ci = ols_fit.conf_int().loc[param_name]
-                ci_low, ci_high = float(ci[0]), float(ci[1])
-                t_name = param_name.replace("GRP_VAR", group_col).replace("SUBGRP_VAR", subgroup_col or "Subgroup")
-                for orig, safe in rename_map.items():
-                    t_name = t_name.replace(safe, orig)
-                if not any(e["term"] == t_name for e in model_effects):
+            if not model_effects:
+                for param_name, coef in ols_fit.params.items():
+                    if param_name == "Intercept":
+                        continue
+                    se = float(ols_fit.bse.get(param_name, np.nan))
+                    t = float(ols_fit.tvalues.get(param_name, np.nan))
+                    p = float(ols_fit.pvalues.get(param_name, np.nan))
+                    ci = ols_fit.conf_int().loc[param_name]
+                    ci_low, ci_high = float(ci[0]), float(ci[1])
+                    t_name = param_name.replace("GRP_VAR", group_col).replace("SUBGRP_VAR", subgroup_col or "Subgroup")
+                    for orig, safe in rename_map.items():
+                        t_name = t_name.replace(safe, orig)
+                    clean_name = clean_term_label(t_name, group_col, subgroup_col)
                     model_effects.append({
-                        "term": t_name,
+                        "term": clean_name,
+                        "raw_term": t_name,
                         "estimate": float(coef),
                         "std_error": se,
                         "statistic": t,
@@ -826,6 +871,7 @@ def fit_statistical_model(
                         "ci_lower": ci_low,
                         "ci_upper": ci_high,
                         "significance": p_to_star(p),
+                        "is_omnibus": False,
                     })
         except Exception as e:
             return None
@@ -962,10 +1008,21 @@ def generate_publication_plot(
     color_map = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
 
     has_subgroup = subgroup_col is not None and subgroup_col in clean.columns and clean[subgroup_col].nunique() > 1
-    subgroups = sorted([str(sg) for sg in clean[subgroup_col].unique()]) if has_subgroup else [None]
+    if has_subgroup:
+        unique_sgs = list(clean[subgroup_col].unique())
+        standard_roi_order = ["Frontal", "Central", "Temporal", "Parietal", "Occipital"]
+        if any(str(s).capitalize() in standard_roi_order for s in unique_sgs):
+            subgroups = sorted(
+                [str(sg) for sg in unique_sgs],
+                key=lambda x: standard_roi_order.index(x.capitalize()) if x.capitalize() in standard_roi_order else 99
+            )
+        else:
+            subgroups = sorted([str(sg) for sg in unique_sgs])
+    else:
+        subgroups = [None]
 
     # Plot dimensions
-    fig_width = max(6.0, 2.5 * len(subgroups) if has_subgroup else 2.0 * len(groups))
+    fig_width = max(6.5, 2.6 * len(subgroups) if has_subgroup else 2.0 * len(groups))
     fig, ax = plt.subplots(figsize=(fig_width, 5.0), dpi=300)
 
     # Style
@@ -998,7 +1055,7 @@ def generate_publication_plot(
             x_labels.append(grp)
             # Jittered scatter points
             jitter = np.random.normal(0, 0.05, size=len(vals))
-            ax.scatter(pos + jitter, vals, color=color_map[grp], alpha=0.45, s=26, zorder=3, edgecolors="none")
+            ax.scatter(pos + jitter, vals, color=color_map[grp], alpha=0.55, s=26, zorder=3, edgecolors="#333333", linewidths=0.35)
 
         bp = ax.boxplot(
             box_data, positions=positions, widths=0.45, patch_artist=True,
@@ -1036,12 +1093,13 @@ def generate_publication_plot(
         ax.set_ylim(y_min - y_span * 0.08, bracket_y + step * 0.3)
 
     else:
-        # Two factors: grouped by Subgroup (e.g. Channel) with hue for Group
+        # Two factors: grouped by Subgroup (e.g. ROI) with hue for Group
         n_grps = len(groups)
         width = 0.8 / n_grps
         x_center = []
         bracket_y = y_max + y_span * 0.05
         step = y_span * 0.12
+        max_y_bracket = bracket_y
 
         for s_idx, sg in enumerate(subgroups):
             sg_center = (s_idx + 1) * 1.5
@@ -1065,7 +1123,7 @@ def generate_publication_plot(
                     bp["boxes"][0].set_facecolor(matplotlib.colors.to_rgba(color_map[grp], alpha=0.35))
                     bp["boxes"][0].set_edgecolor(color_map[grp])
                     jitter = np.random.normal(0, width * 0.08, size=len(vals))
-                    ax.scatter(pos + jitter, vals, color=color_map[grp], alpha=0.5, s=22, zorder=3, edgecolors="none")
+                    ax.scatter(pos + jitter, vals, color=color_map[grp], alpha=0.55, s=24, zorder=3, edgecolors="#333333", linewidths=0.35)
 
             # Mini significance brackets within this subgroup
             sg_contrasts = [c for c in contrasts if c.get("factor") == subgroup_col and c.get("level") == sg]
@@ -1083,7 +1141,9 @@ def generate_publication_plot(
                         ax.plot([pos1, pos1, pos2, pos2], [local_y, local_y + step * 0.25, local_y + step * 0.25, local_y], color="#d95f02", lw=1.1)
                         ax.text((pos1 + pos2) / 2.0, local_y + step * 0.3, f"{sig}", ha="center", va="bottom", fontsize=10, fontweight="bold", color="#d95f02")
                         local_y += step * 0.6
+                        max_y_bracket = max(max_y_bracket, local_y)
 
+        ax.set_ylim(y_min - y_span * 0.08, max_y_bracket + step * 0.35)
         ax.set_xticks(x_center)
         ax.set_xticklabels(subgroups, fontsize=11, fontweight="bold")
         ax.set_xlabel(subgroup_col, fontsize=11, fontweight="bold", labelpad=8)
@@ -1115,7 +1175,7 @@ def generate_publication_plot(
 
     plt.tight_layout()
     output_png_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_png_path, dpi=150)
+    plt.savefig(output_png_path, dpi=300)
     plt.close(fig)
     return output_png_path
 
@@ -1336,10 +1396,9 @@ def generate_topoplot(
 ) -> Path | None:
     """Renders 2D EEG topographic scalp distribution map (Topoplot) across channels for each group and differences.
 
-    For 2 groups: 1 row with [Group 1, Group 2, Difference G2-G1].
-    For 3+ groups: 2 rows:
-      Row 1: Group Means for each cohort (shared viridis colormap).
-      Row 2: Pairwise Differences between cohorts with robust eTFCE significance overlays.
+    Uses dedicated GridSpec colorbar axes to completely eliminate overlap:
+      Row 1: Group Means for each cohort (standard EEG Spectral_r colormap, shared range [vmin, vmax]).
+      Row 2: Pairwise Differences with robust eTFCE significance overlays (symmetric RdBu_r divergent colormap).
     """
     needed = [metric, group_col, channel_col]
     clean = raw_df[needed].dropna().copy()
@@ -1366,9 +1425,9 @@ def generate_topoplot(
         means = g_df.groupby(channel_col)[metric].mean()
         group_means[g] = {ch: float(means.get(ch, np.nan)) for ch in ch_list}
 
-    # Grid for spherical interpolation
+    # High-resolution grid for spherical interpolation
     r = 0.5
-    xi, yi = np.mgrid[-0.55:0.55:120j, -0.55:0.55:120j]
+    xi, yi = np.mgrid[-0.55:0.55:200j, -0.55:0.55:200j]
     mask = (xi**2 + yi**2) <= r**2
     pts = np.array([matched[ch] for ch in ch_list])
 
@@ -1382,13 +1441,13 @@ def generate_topoplot(
         g_max += 0.1
 
     def draw_head_outline(ax):
-        circle = plt.Circle((0, 0), r, color="black", fill=False, linewidth=1.8)
+        circle = plt.Circle((0, 0), r, color="black", fill=False, linewidth=1.8, zorder=4)
         ax.add_patch(circle)
         # Nose
-        ax.plot([-0.05, 0.0, 0.05], [0.49, 0.54, 0.49], color="black", linewidth=1.8)
+        ax.plot([-0.05, 0.0, 0.05], [0.49, 0.54, 0.49], color="black", linewidth=1.8, zorder=4)
         # Ears
-        ax.plot([-0.505, -0.525, -0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.4)
-        ax.plot([0.505, 0.525, 0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.4)
+        ax.plot([-0.505, -0.525, -0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.4, zorder=4)
+        ax.plot([0.505, 0.525, 0.505], [0.05, 0.0, -0.05], color="black", linewidth=1.4, zorder=4)
 
     # Extract pairwise comparisons
     pairwise_info = etfce_result.get("pairwise", {}) if etfce_result else {}
@@ -1406,14 +1465,28 @@ def generate_topoplot(
                 all_diff_vals.append(d)
     max_abs_diff = max(1e-4, float(np.max(np.abs(all_diff_vals)))) if all_diff_vals else 0.1
 
-    # ── CASE A: 2 GROUPS (1 Row: G1, G2, Diff) ─────────────────────────────
-    if len(groups) == 2:
-        g1, g2 = groups[0], groups[1]
-        fig, axes = plt.subplots(1, 3, figsize=(11.0, 4.0), dpi=180)
+    n_cols = max(len(groups), len(pairs))
+    fig_w = max(4.0 * n_cols + 1.2, 10.5)
+    fig_h = 7.5 if len(pairs) > 0 else 4.2
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=300)
 
-        # G1 and G2 means
-        for idx, g in enumerate([g1, g2]):
-            ax = axes[idx]
+    if len(pairs) > 0:
+        # Two rows: Row 0 = Means, Row 1 = Pairwise Differences, Column n_cols = Dedicated Colorbars
+        gs = GridSpec(2, n_cols + 1, width_ratios=[1.0] * n_cols + [0.055], wspace=0.18, hspace=0.28)
+        cax_means = fig.add_subplot(gs[0, n_cols])
+        cax_diffs = fig.add_subplot(gs[1, n_cols])
+    else:
+        # Single row if only 1 group
+        gs = GridSpec(1, n_cols + 1, width_ratios=[1.0] * n_cols + [0.055], wspace=0.18)
+        cax_means = fig.add_subplot(gs[0, n_cols])
+        cax_diffs = None
+
+    # ── Row 1: Group Means ──────────────────────────────────────────────────
+    cf_means = None
+    for col_idx in range(n_cols):
+        ax = fig.add_subplot(gs[0, col_idx])
+        if col_idx < len(groups):
+            g = groups[col_idx]
             vals = np.array([group_means[g][ch] for ch in ch_list])
             try:
                 rbf = scipy.interpolate.Rbf(pts[:, 0], pts[:, 1], vals, function="multiquadric", smooth=0.01)
@@ -1421,100 +1494,37 @@ def generate_topoplot(
             except Exception:
                 zi = scipy.interpolate.griddata(pts, vals, (xi, yi), method="nearest")
             zi[~mask] = np.nan
-            cf = ax.contourf(xi, yi, zi, levels=25, cmap="viridis", vmin=g_min, vmax=g_max)
-            ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.35, alpha=0.3)
+
+            cf_means = ax.contourf(xi, yi, zi, levels=35, cmap="Spectral_r", vmin=g_min, vmax=g_max)
+            ax.contour(xi, yi, zi, levels=7, colors="k", linewidths=0.35, alpha=0.3)
             draw_head_outline(ax)
-            ax.scatter(pts[:, 0], pts[:, 1], color="black", s=24, zorder=5)
+
+            # Electrodes
+            ax.scatter(pts[:, 0], pts[:, 1], color="#37474F", s=20, zorder=6)
             for ch in ch_list:
                 x, y = matched[ch]
-                ax.text(x, y + 0.035, normalize_channel_name(ch), fontsize=7.5, ha="center", va="bottom", fontweight="bold")
-            ax.set_title(f"{g} (Mean)", fontsize=11, fontweight="bold", pad=7)
+                norm_ch = normalize_channel_name(ch)
+                txt = ax.text(x, y + 0.042, norm_ch, fontsize=7.5, ha="center", va="bottom", color="#263238", fontweight="bold", zorder=7)
+                txt.set_path_effects([path_effects.withStroke(linewidth=2.0, foreground="white")])
+
+            ax.set_title(f"{g} (Mean)", fontsize=11.5, fontweight="bold", pad=8)
             ax.set_xlim(-0.6, 0.6)
             ax.set_ylim(-0.6, 0.6)
-            ax.set_aspect("equal")
-            ax.axis("off")
-            cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-            cbar.ax.tick_params(labelsize=8)
-
-        # Difference G2 - G1
-        ax = axes[2]
-        diff_vals = np.array([group_means[g2][ch] - group_means[g1][ch] for ch in ch_list])
-        try:
-            rbf = scipy.interpolate.Rbf(pts[:, 0], pts[:, 1], diff_vals, function="multiquadric", smooth=0.01)
-            zi = rbf(xi, yi)
-        except Exception:
-            zi = scipy.interpolate.griddata(pts, diff_vals, (xi, yi), method="nearest")
-        zi[~mask] = np.nan
-        cf = ax.contourf(xi, yi, zi, levels=25, cmap="RdBu_r", vmin=-max_abs_diff, vmax=max_abs_diff)
-        ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.35, alpha=0.3)
-        draw_head_outline(ax)
-        ax.scatter(pts[:, 0], pts[:, 1], color="black", s=24, zorder=5)
-
-        pair_key = f"{g2} - {g1}"
-        p_res = pairwise_info.get(pair_key, {})
-        sig_channels = set(p_res.get("sig_channels_etfce", []))
-
-        for ch in ch_list:
-            x, y = matched[ch]
-            norm_ch = normalize_channel_name(ch)
-            is_sig = ch in sig_channels or norm_ch in sig_channels
-            if is_sig:
-                ax.scatter(x, y, s=110, facecolors="none", edgecolors="#e65100", linewidths=2.2, zorder=6)
-                ax.text(x, y + 0.035, f"{norm_ch} *", fontsize=8, ha="center", va="bottom", fontweight="bold", color="#b71c1c")
-            else:
-                ax.text(x, y + 0.035, norm_ch, fontsize=7.5, ha="center", va="bottom", color="#333333")
-
-        min_p = p_res.get("min_p_etfce", 1.0)
-        title_str = f"Diff: {pair_key}\n(p_TFCE < {min_p:.3f}*)" if sig_channels else f"Diff: {pair_key}\n(TFCE ns, p={min_p:.3f})"
-        ax.set_title(title_str, fontsize=10.5, fontweight="bold", pad=7, color="#b71c1c" if sig_channels else "#263238")
-        ax.set_xlim(-0.6, 0.6)
-        ax.set_ylim(-0.6, 0.6)
-        ax.set_aspect("equal")
+            ax.set_aspect("equal", adjustable="box")
         ax.axis("off")
-        cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-        cbar.ax.tick_params(labelsize=8)
 
-    # ── CASE B: 3+ GROUPS (2 Rows: Means on top, Pairwise Differences on bottom)
-    else:
-        n_cols = max(len(groups), len(pairs))
-        fig_w = max(3.8 * n_cols, 10.5)
-        fig, axes = plt.subplots(2, n_cols, figsize=(fig_w, 7.5), dpi=180)
+    if cf_means is not None and cax_means is not None:
+        cbar1 = fig.colorbar(cf_means, cax=cax_means)
+        cbar1.ax.tick_params(labelsize=8)
+        cbar1.set_label("Group Mean", fontsize=9.5, fontweight="bold")
 
-        # Row 1: Cohort Means
-        cf_means = None
+    # ── Row 2: Pairwise Differences with eTFCE ──────────────────────────────
+    if len(pairs) > 0 and cax_diffs is not None:
+        diff_norm = Normalize(vmin=-max_abs_diff, vmax=max_abs_diff)
+        diff_sm = cm.ScalarMappable(norm=diff_norm, cmap="RdBu_r")
+
         for col_idx in range(n_cols):
-            ax = axes[0, col_idx]
-            if col_idx < len(groups):
-                g = groups[col_idx]
-                vals = np.array([group_means[g][ch] for ch in ch_list])
-                try:
-                    rbf = scipy.interpolate.Rbf(pts[:, 0], pts[:, 1], vals, function="multiquadric", smooth=0.01)
-                    zi = rbf(xi, yi)
-                except Exception:
-                    zi = scipy.interpolate.griddata(pts, vals, (xi, yi), method="nearest")
-                zi[~mask] = np.nan
-                cf_means = ax.contourf(xi, yi, zi, levels=25, cmap="viridis", vmin=g_min, vmax=g_max)
-                ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.35, alpha=0.3)
-                draw_head_outline(ax)
-                ax.scatter(pts[:, 0], pts[:, 1], color="black", s=22, zorder=5)
-                for ch in ch_list:
-                    x, y = matched[ch]
-                    ax.text(x, y + 0.035, normalize_channel_name(ch), fontsize=7.5, ha="center", va="bottom", fontweight="bold")
-                ax.set_title(f"{g} (Mean)", fontsize=11, fontweight="bold", pad=7)
-                ax.set_xlim(-0.6, 0.6)
-                ax.set_ylim(-0.6, 0.6)
-                ax.set_aspect("equal")
-            ax.axis("off")
-
-        if cf_means is not None:
-            cbar1 = fig.colorbar(cf_means, ax=axes[0, :].ravel().tolist(), fraction=0.018, pad=0.02)
-            cbar1.ax.tick_params(labelsize=8)
-            cbar1.set_label("Group Mean", fontsize=9, fontweight="bold")
-
-        # Row 2: Pairwise Differences with eTFCE
-        cf_diffs = None
-        for col_idx in range(n_cols):
-            ax = axes[1, col_idx]
+            ax = fig.add_subplot(gs[1, col_idx])
             if col_idx < len(pairs):
                 g1, g2 = pairs[col_idx]
                 pair_key = f"{g2} - {g1}"
@@ -1528,53 +1538,52 @@ def generate_topoplot(
                 except Exception:
                     zi = scipy.interpolate.griddata(pts, diff_vals, (xi, yi), method="nearest")
                 zi[~mask] = np.nan
-                cf_diffs = ax.contourf(xi, yi, zi, levels=25, cmap="RdBu_r", vmin=-max_abs_diff, vmax=max_abs_diff)
-                ax.contour(xi, yi, zi, levels=6, colors="k", linewidths=0.35, alpha=0.3)
+
+                ax.contourf(xi, yi, zi, levels=35, cmap="RdBu_r", norm=diff_norm)
+                ax.contour(xi, yi, zi, levels=7, colors="k", linewidths=0.35, alpha=0.3)
                 draw_head_outline(ax)
-                ax.scatter(pts[:, 0], pts[:, 1], color="black", s=22, zorder=5)
 
                 for ch in ch_list:
                     x, y = matched[ch]
                     norm_ch = normalize_channel_name(ch)
                     is_sig = ch in sig_channels or norm_ch in sig_channels
                     if is_sig:
-                        ax.scatter(x, y, s=110, facecolors="none", edgecolors="#e65100", linewidths=2.2, zorder=6)
-                        ax.text(x, y + 0.035, f"{norm_ch} *", fontsize=8, ha="center", va="bottom", fontweight="bold", color="#b71c1c")
+                        # Highly prominent yellow star with black border
+                        ax.scatter(x, y, marker="*", s=140, facecolor="#FFEE58", edgecolor="#000000", linewidths=1.0, zorder=10)
+                        txt = ax.text(x, y + 0.042, f"{norm_ch}*", fontsize=8.5, ha="center", va="bottom", fontweight="bold", color="#b71c1c", zorder=11)
+                        txt.set_path_effects([path_effects.withStroke(linewidth=2.5, foreground="white")])
                     else:
-                        ax.text(x, y + 0.035, norm_ch, fontsize=7.5, ha="center", va="bottom", color="#333333")
+                        ax.scatter(x, y, s=18, facecolor="#37474F", edgecolor="#212121", linewidths=0.5, zorder=6)
+                        txt = ax.text(x, y + 0.042, norm_ch, fontsize=7.5, ha="center", va="bottom", color="#263238", zorder=7)
+                        txt.set_path_effects([path_effects.withStroke(linewidth=2.0, foreground="white")])
 
                 min_p = p_res.get("min_p_etfce", 1.0)
                 if sig_channels:
-                    title_str = f"Diff: {pair_key}\n(p_TFCE < {min_p:.3f}*)"
+                    title_str = f"Diff: {pair_key}\n(p_eTFCE < {min_p:.3f}*)"
                     title_color = "#b71c1c"
                 else:
-                    title_str = f"Diff: {pair_key}\n(TFCE ns, p={min_p:.3f})"
+                    title_str = f"Diff: {pair_key}\n(eTFCE ns, p={min_p:.3f})"
                     title_color = "#263238"
 
-                ax.set_title(title_str, fontsize=10.5, fontweight="bold", pad=7, color=title_color)
+                ax.set_title(title_str, fontsize=10.5, fontweight="bold", pad=8, color=title_color)
                 ax.set_xlim(-0.6, 0.6)
                 ax.set_ylim(-0.6, 0.6)
-                ax.set_aspect("equal")
+                ax.set_aspect("equal", adjustable="box")
             ax.axis("off")
 
-        if cf_diffs is not None:
-            cbar2 = fig.colorbar(cf_diffs, ax=axes[1, :].ravel().tolist(), fraction=0.018, pad=0.02)
-            cbar2.ax.tick_params(labelsize=8)
-            cbar2.set_label("Pairwise Difference (\u0394)", fontsize=9, fontweight="bold")
+        cbar2 = fig.colorbar(diff_sm, cax=cax_diffs)
+        cbar2.ax.tick_params(labelsize=8)
+        cbar2.set_label("Pairwise Difference (\u0394)", fontsize=9.5, fontweight="bold")
 
     clean_metric_title = metric.replace("_", " ")
-    plt.suptitle(f"Topographic Scalp Distribution (Topoplot) with Pairwise Robust eTFCE: {clean_metric_title}", fontsize=12.5, fontweight="bold", y=0.98)
-    plt.tight_layout()
+    fig.suptitle(
+        f"Topographic Scalp Distribution (Topoplot) with Pairwise Robust eTFCE: {clean_metric_title}",
+        fontsize=13,
+        fontweight="bold",
+        y=0.98,
+    )
     output_png_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(str(output_png_path), dpi=180, bbox_inches="tight")
-    plt.close(fig)
-    return output_png_path
-
-    clean_metric_title = metric.replace("_", " ")
-    plt.suptitle(f"Topographic Scalp Distribution (Topoplot): {clean_metric_title}", fontsize=12, fontweight="bold", y=0.98)
-    plt.tight_layout()
-    output_png_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(str(output_png_path), dpi=300, bbox_inches="tight")
+    fig.savefig(str(output_png_path), dpi=300, bbox_inches="tight")
     plt.close(fig)
     return output_png_path
 
@@ -1815,27 +1824,32 @@ def generate_docx_report(
             t_cap_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
 
         # Model Effects Table (APA Style)
-        if effects:
+        omnibus_effects = [e for e in effects if e.get("is_omnibus", True)]
+        if not omnibus_effects and effects:
+            omnibus_effects = effects
+
+        if omnibus_effects:
             t_p = doc.add_paragraph()
             t_p.paragraph_format.space_before = Pt(6)
             t_p.paragraph_format.space_after = Pt(2)
-            t_run = t_p.add_run(f"Table {idx}A: Model Fixed Effects for {clean_name}")
+            t_run = t_p.add_run(f"Table {idx}A: Model Omnibus Fixed Effects for {clean_name}")
             t_run.font.bold = True
             t_run.font.size = Pt(9.5)
 
-            table = doc.add_table(rows=len(effects) + 1, cols=6)
+            table = doc.add_table(rows=len(omnibus_effects) + 1, cols=7)
             table.alignment = WD_TABLE_ALIGNMENT.CENTER
-            headers = ["Factor / Term", "Stat Type", "Statistic", "df", "p-value", "Sig."]
+            headers = ["Factor / Effect", "Stat Type", "Statistic", "df", "p (raw)", "p (FDR-adj)", "Sig."]
             for c_idx, h_text in enumerate(headers):
                 cell = table.cell(0, c_idx)
                 cell.text = h_text
                 cell.paragraphs[0].runs[0].font.bold = True
                 cell.paragraphs[0].runs[0].font.size = Pt(9)
 
-            for r_idx, eff in enumerate(effects, start=1):
+            for r_idx, eff in enumerate(omnibus_effects, start=1):
                 stat_val = f"{eff.get('statistic', 0.0):.3f}"
                 df_val = f"{eff.get('df', 1)}" + (f", {eff.get('df_resid')}" if eff.get("df_resid") else "")
-                p_val_str = format_p_value(eff.get("p_value", 1.0))
+                p_raw_str = format_p_value(eff.get("p_value", 1.0))
+                p_adj_str = format_p_value(eff.get("q_value", eff.get("p_value", 1.0)))
                 sig_str = eff.get("significance", "ns")
 
                 row_data = [
@@ -1843,11 +1857,54 @@ def generate_docx_report(
                     eff.get("stat_type", ""),
                     stat_val,
                     df_val,
-                    p_val_str,
+                    p_raw_str,
+                    p_adj_str,
                     sig_str,
                 ]
                 for c_idx, val in enumerate(row_data):
                     cell = table.cell(r_idx, c_idx)
+                    cell.text = val
+                    if cell.paragraphs[0].runs:
+                        cell.paragraphs[0].runs[0].font.size = Pt(8.5)
+
+            doc.add_paragraph().paragraph_format.space_after = Pt(8)
+
+        # Post-hoc pairwise comparisons table
+        contrasts = res.get("posthoc_contrasts", [])
+        sig_contrasts = [c for c in contrasts if c.get("significance", "ns") != "ns"]
+        display_contrasts = contrasts if len(contrasts) <= 8 else sig_contrasts
+
+        if display_contrasts:
+            c_p = doc.add_paragraph()
+            c_p.paragraph_format.space_before = Pt(4)
+            c_p.paragraph_format.space_after = Pt(2)
+            c_title = f"Table {idx}B: Post-Hoc Pairwise Contrasts for {clean_name}" + (" (Significant Only)" if len(contrasts) > 8 else "")
+            c_run = c_p.add_run(c_title)
+            c_run.font.bold = True
+            c_run.font.size = Pt(9.5)
+
+            c_table = doc.add_table(rows=len(display_contrasts) + 1, cols=7)
+            c_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            c_headers = ["Comparison", "Region / Level", "Mean Diff", "Cohen's d", "p (raw)", "p (FDR-adj)", "Sig."]
+            for c_idx, h_text in enumerate(c_headers):
+                cell = c_table.cell(0, c_idx)
+                cell.text = h_text
+                cell.paragraphs[0].runs[0].font.bold = True
+                cell.paragraphs[0].runs[0].font.size = Pt(9)
+
+            for r_idx, c in enumerate(display_contrasts, start=1):
+                comp_str = f"{c.get('group1')} vs {c.get('group2')}"
+                lvl_str = str(c.get("level") or c.get("factor") or "Overall")
+                md_str = f"{c.get('mean_diff', 0.0):.3f}"
+                cd_val = c.get("cohens_d")
+                cd_str = f"{cd_val:.2f}" if cd_val is not None and not math.isnan(cd_val) else "—"
+                p_raw_str = format_p_value(c.get("p_raw", 1.0))
+                p_adj_str = format_p_value(c.get("p_adj", 1.0))
+                sig_str = c.get("significance", "ns")
+
+                row_data = [comp_str, lvl_str, md_str, cd_str, p_raw_str, p_adj_str, sig_str]
+                for c_idx, val in enumerate(row_data):
+                    cell = c_table.cell(r_idx, c_idx)
                     cell.text = val
                     if cell.paragraphs[0].runs:
                         cell.paragraphs[0].runs[0].font.size = Pt(8.5)
@@ -2027,29 +2084,56 @@ def generate_pdf_report(
         # Plot Image
         plot_path = plot_paths.get(metric)
         if plot_path and plot_path.exists():
-            story.append(RLImage(str(plot_path), width=5.2 * inch, height=3.0 * inch))
+            pw_pt, ph_pt = 5.5 * inch, 3.2 * inch
+            if PILImage is not None:
+                try:
+                    with PILImage.open(str(plot_path)) as img:
+                        pw, ph = img.size
+                    aspect = ph / pw
+                    pw_pt = 6.2 * inch
+                    ph_pt = min(3.8 * inch, pw_pt * aspect)
+                    pw_pt = ph_pt / aspect
+                except Exception:
+                    pass
+            story.append(RLImage(str(plot_path), width=pw_pt, height=ph_pt))
             story.append(Paragraph(f"Figure {idx}A: Distribution and post-hoc pairwise significance for {clean_name}.", caption_style))
 
         # Topoplot Image (if available)
         topo_path = res.get("topoplot_path")
         if topo_path and Path(topo_path).exists():
-            story.append(RLImage(str(topo_path), width=5.5 * inch, height=3.0 * inch))
-            story.append(Paragraph(f"Figure {idx}B: Topographic scalp distribution (Topoplot) across EEG derivations for {clean_name}.", caption_style))
+            tw_pt, th_pt = 5.8 * inch, 3.5 * inch
+            if PILImage is not None:
+                try:
+                    with PILImage.open(str(topo_path)) as img:
+                        tpw, tph = img.size
+                    aspect = tph / tpw
+                    tw_pt = 6.5 * inch
+                    th_pt = min(4.2 * inch, tw_pt * aspect)
+                    tw_pt = th_pt / aspect
+                except Exception:
+                    pass
+            story.append(RLImage(str(topo_path), width=tw_pt, height=th_pt))
+            story.append(Paragraph(f"Figure {idx}B: Topographic scalp distribution (Topoplot) with pairwise robust eTFCE for {clean_name}.", caption_style))
 
-        # Model Effects Table
+        # Model Omnibus Effects Table
         effects = res.get("model_effects", [])
-        if effects:
-            table_data = [["Factor / Term", "Stat Type", "Statistic", "df", "p-value", "Sig."]]
-            for eff in effects:
+        omnibus_effects = [e for e in effects if e.get("is_omnibus", True)]
+        if not omnibus_effects and effects:
+            omnibus_effects = effects
+
+        if omnibus_effects:
+            table_data = [["Factor / Effect", "Stat Type", "Statistic", "df", "p (raw)", "p (FDR-adj)", "Sig."]]
+            for eff in omnibus_effects:
                 table_data.append([
                     eff.get("term", ""),
                     eff.get("stat_type", ""),
                     f"{eff.get('statistic', 0.0):.3f}",
                     f"{eff.get('df', 1)}" + (f", {eff.get('df_resid')}" if eff.get("df_resid") else ""),
                     format_p_value(eff.get("p_value", 1.0)),
+                    format_p_value(eff.get("q_value", eff.get("p_value", 1.0))),
                     eff.get("significance", "ns"),
                 ])
-            t = Table(table_data, colWidths=[160, 60, 65, 55, 65, 45])
+            t = Table(table_data, colWidths=[150, 55, 55, 45, 60, 65, 40])
             t.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f4f8")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1F4E79")),
@@ -2063,6 +2147,46 @@ def generate_pdf_report(
                 ("LINEBELOW", (0, -1), (-1, -1), 1.0, colors.HexColor("#1F4E79")),
             ]))
             story.append(t)
+            story.append(Spacer(1, 6))
+
+        # Post-hoc pairwise comparisons table
+        contrasts = res.get("posthoc_contrasts", [])
+        sig_contrasts = [c for c in contrasts if c.get("significance", "ns") != "ns"]
+        display_contrasts = contrasts if len(contrasts) <= 8 else sig_contrasts
+
+        if display_contrasts:
+            c_title = f"Post-Hoc Pairwise Contrasts: {clean_name}" + (" (Significant Only)" if len(contrasts) > 8 else "")
+            story.append(Paragraph(f"<b>{c_title}</b>", caption_style))
+            c_data = [["Comparison", "Region / Level", "Mean Diff", "Cohen's d", "p (raw)", "p (FDR-adj)", "Sig."]]
+            for c in display_contrasts:
+                comp_str = f"{c.get('group1')} vs {c.get('group2')}"
+                lvl_str = str(c.get("level") or c.get("factor") or "Overall")
+                md_str = f"{c.get('mean_diff', 0.0):.3f}"
+                cd_val = c.get("cohens_d")
+                cd_str = f"{cd_val:.2f}" if cd_val is not None and not math.isnan(cd_val) else "—"
+                c_data.append([
+                    comp_str,
+                    lvl_str,
+                    md_str,
+                    cd_str,
+                    format_p_value(c.get("p_raw", 1.0)),
+                    format_p_value(c.get("p_adj", 1.0)),
+                    c.get("significance", "ns"),
+                ])
+            ct = Table(c_data, colWidths=[120, 85, 60, 50, 55, 60, 40])
+            ct.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8fafc")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("LINEABOVE", (0, 0), (-1, 0), 0.8, colors.HexColor("#BDC3C7")),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.HexColor("#BDC3C7")),
+                ("LINEBELOW", (0, -1), (-1, -1), 0.8, colors.HexColor("#BDC3C7")),
+            ]))
+            story.append(ct)
             story.append(Spacer(1, 10))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
