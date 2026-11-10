@@ -1201,12 +1201,21 @@ class _FeatureHomeState extends State<FeatureHome>
         _channels = _channels.rebaseOnto(cleaned.labels);
         _selection = const ViewerSelection.empty();
       });
-      if (_presetKey == 'erp')
-        setState(
-          () => _selectedModule = cleaned.isEpoched
-              ? _Module.erpAnalysis
-              : _Module.epochs,
-        );
+      final hasErpOrEpochs = _presetKey == 'erp' ||
+          _pipeline.contains(_Module.epochs) ||
+          _pipeline.contains(_Module.erpAnalysis);
+      if (hasErpOrEpochs) {
+        final nextMod = cleaned.isEpoched ? _Module.erpAnalysis : _Module.epochs;
+        setState(() => _selectedModule = nextMod);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✓ Preprocessing complete. Advanced to ${_moduleLabel(nextMod)}.'),
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+      }
       _log(
         '${recordingWarnings(cleaned).isEmpty ? '✓ Preprocessed' : '⚠ Saved with processing warnings'}: ${cleaned.path}',
       );
@@ -2418,6 +2427,26 @@ class _FeatureHomeState extends State<FeatureHome>
     if (nextExample != null && mounted) await _editBatchChannels(nextExample);
   }
 
+  bool _isModuleCompleted(_Module m) {
+    final rec = _activeRecording;
+    switch (m) {
+      case _Module.loadRaw:
+        return rec != null || _raw != null;
+      case _Module.preprocess:
+        return _preprocessed != null ||
+            (rec?.completedStages.contains('preprocessing') ?? false) ||
+            (rec?.path.contains('_clean') ?? false);
+      case _Module.epochs:
+        return (rec?.isEpoched ?? false) || (_directInput?.isEpoched ?? false);
+      case _Module.sourceSpace:
+        return rec?.path.contains('_source') ?? false;
+      case _Module.featureExtraction:
+        return _batchFeatOutputs.isNotEmpty;
+      default:
+        return false;
+    }
+  }
+
   Widget _buildPipelineSidebar() => Material(
     color: const Color(0xFF0A1628),
     child: SizedBox(
@@ -2439,20 +2468,35 @@ class _FeatureHomeState extends State<FeatureHome>
               child: Row(
                 children: [
                   for (var i = 0; i < _orderedPipeline.length; i++) ...[
-                    if (i > 0) const Icon(Icons.chevron_right, size: 16),
+                    if (i > 0)
+                      Icon(
+                        Icons.chevron_right,
+                        size: 16,
+                        color: _isModuleCompleted(_orderedPipeline[i - 1])
+                            ? Colors.greenAccent.withValues(alpha: 0.7)
+                            : Colors.white24,
+                      ),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: ChoiceChip(
-                        avatar: Icon(
-                          _moduleIcon(_orderedPipeline[i]),
-                          size: 16,
-                        ),
-                        label: Text(_moduleLabel(_orderedPipeline[i])),
-                        selected: _selectedModule == _orderedPipeline[i],
-                        onSelected: (_) => setState(
-                          () => _selectedModule = _orderedPipeline[i],
-                        ),
-                      ),
+                      child: () {
+                        final mod = _orderedPipeline[i];
+                        final done = _isModuleCompleted(mod);
+                        return Tooltip(
+                          message: 'Step ${i + 1}: ${_moduleSubtitle(mod)}',
+                          child: ChoiceChip(
+                            avatar: Icon(
+                              done ? Icons.check_circle_rounded : _moduleIcon(mod),
+                              size: 16,
+                              color: done ? Colors.greenAccent : null,
+                            ),
+                            label: Text(_moduleLabel(mod)),
+                            selected: _selectedModule == mod,
+                            onSelected: (_) => setState(
+                              () => _selectedModule = mod,
+                            ),
+                          ),
+                        );
+                      }(),
                     ),
                   ],
                 ],
@@ -3173,7 +3217,9 @@ class _FeatureHomeState extends State<FeatureHome>
             _step1OptsExpanded,
             () => setState(() => _step1OptsExpanded = !_step1OptsExpanded),
           ),
-          if (_presetKey == 'erp') ...[
+          if (_presetKey == 'erp' ||
+              _pipeline.contains(_Module.epochs) ||
+              _pipeline.contains(_Module.erpAnalysis)) ...[
             _infoBox(
               _activeRecording?.isEpoched == true
                   ? '${_activeRecording!.epochCount} saved trials · boundaries retained'

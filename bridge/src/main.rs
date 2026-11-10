@@ -72,6 +72,15 @@ fn main() -> Result<(), String> {
         println!("{}", serde_json::to_string(&result).map_err(err)?);
         return Ok(());
     }
+    if erp_value["job_type"]
+        .as_str()
+        .is_some_and(|t| t == "state_dynamics")
+    {
+        let sda_job: state_dynamics::Job = serde_json::from_value(erp_value.clone()).map_err(err)?;
+        let result = state_dynamics::run(&sda_job).map_err(err)?;
+        println!("{}", serde_json::to_string(&result).map_err(err)?);
+        return Ok(());
+    }
     let job: Job = serde_json::from_slice(&fs::read(&job_path).map_err(err)?).map_err(err)?;
     eprintln!("PROGRESS 0 Loading {}", job.input);
     if job.job_type == "microstates" {

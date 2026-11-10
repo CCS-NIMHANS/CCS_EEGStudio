@@ -17,3 +17,4 @@ pub mod erp_workbench;
 pub mod recording_metadata;
 
 pub mod microstate_syntax;
+pub mod state_dynamics;

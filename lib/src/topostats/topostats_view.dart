@@ -24,6 +24,7 @@ import 'topostats_engine.dart';
 import 'topostats_batch.dart' show prepareSessionFeatureCsvs, groupByRecording;
 import 'topostats_figure.dart';
 import 'topostats_runner.dart';
+import '../state_dynamics/state_dynamics_view.dart';
 
 // Design tokens (match app.dart)
 const _bg = Color(0xFF0F172A);
@@ -1872,6 +1873,19 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       );
     }
     if (active.isEmpty) {
+      if (_activeFiles.isNotEmpty) {
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              StateDynamicsView(
+                featureFilePaths: _activeFiles,
+              ),
+            ],
+          ),
+        );
+      }
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1920,6 +1934,16 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             children: [
               for (final g in active)
                 _buildGroupCard(g, ppi, active.length > 1),
+              if (_activeFiles.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: SizedBox(
+                    width: math.max(900.0, c.maxWidth - 40),
+                    child: StateDynamicsView(
+                      featureFilePaths: _activeFiles,
+                    ),
+                  ),
+                ),
             ],
           ),
         );

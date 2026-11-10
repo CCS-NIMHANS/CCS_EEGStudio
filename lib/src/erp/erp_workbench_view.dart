@@ -130,16 +130,61 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   bool get _isPrepared =>
       !widget.batchMode && (widget.activeRecording?.isEpoched ?? false) ||
       _scanFiles.isNotEmpty && _scanFiles.every((f) => f['is_epoched'] == true);
+
+  int _conditionTrialCount(ErpConditionConfig c) {
+    if (_isPrepared) {
+      return _scanFiles.fold<int>(
+        0,
+        (n, f) =>
+            n +
+            c.savedGroups.fold<int>(
+              0,
+              (sum, g) =>
+                  sum + (erpMap(f['marker_counts'])[g] as num? ?? 0).toInt(),
+            ),
+      );
+    } else {
+      final codes = c.codesController.text
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      return _scanFiles.fold<int>(
+        0,
+        (n, f) =>
+            n +
+            codes.fold<int>(
+              0,
+              (sum, code) =>
+                  sum + (erpMap(f['marker_counts'])[code] as num? ?? 0).toInt(),
+            ),
+      );
+    }
+  }
+
+  int _savedGroupTrialCount(String group) => _scanFiles.fold<int>(
+        0,
+        (n, f) => n + (erpMap(f['marker_counts'])[group] as num? ?? 0).toInt(),
+      );
+
+  bool _isConditionEmpty(ErpConditionConfig c) =>
+      _isPrepared
+          ? (c.savedGroups.isEmpty || _conditionTrialCount(c) == 0)
+          : (c.codesController.text.trim().isEmpty || _conditionTrialCount(c) == 0);
+
+  List<ErpConditionConfig> get _emptyConditions =>
+      _conditions.where(_isConditionEmpty).toList();
+
+  List<ErpConditionConfig> get _validConditions =>
+      _conditions.where((c) => !_isConditionEmpty(c)).toList();
+
   bool get _canRun =>
       !_busy &&
       _selectedPaths.isNotEmpty &&
       _inspection != null &&
       (widget.batchMode || _isPrepared) &&
       (!_isPrepared || _profile != null) &&
-      !(_isPrepared &&
-          _profile != null &&
-          (_conditions.isEmpty ||
-              _conditions.any((c) => c.savedGroups.isEmpty))) &&
+      _validConditions.isNotEmpty &&
       _timingIssue == null;
   String? get _timingIssue {
     if (!_isPrepared || _profile == null) return null;
@@ -338,8 +383,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           .toList();
       double number(TextEditingController c) => double.parse(c.text) / 1000;
       p['component_name'] = _componentLabel.text.trim();
+      final valid = _validConditions;
       p['conditions'] = [
-        for (final c in _conditions)
+        for (final c in (valid.isNotEmpty ? valid : _conditions))
           {
             'name': c.nameController.text.trim().isNotEmpty
                 ? c.nameController.text.trim()
@@ -353,8 +399,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       .toList(),
           },
       ];
-      if (_conditions.isNotEmpty) {
-        final c0 = _conditions[0];
+      if (valid.isNotEmpty) {
+        final c0 = valid[0];
         p['a_name'] = c0.nameController.text.trim().isNotEmpty
             ? c0.nameController.text.trim()
             : c0.name;
@@ -365,8 +411,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         p['saved_a_groups'] = p['a_codes'];
         if (_isPrepared) p['a_name'] = _savedA.join(' + ');
       }
-      if (_conditions.length > 1) {
-        final c1 = _conditions[1];
+      if (valid.length > 1) {
+        final c1 = valid[1];
         p['b_name'] = c1.nameController.text.trim().isNotEmpty
             ? c1.nameController.text.trim()
             : c1.name;
@@ -633,6 +679,57 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   }
 
   Future<void> _run() async {
+    final empty = _emptyConditions;
+    if (empty.isNotEmpty) {
+      final valid = _validConditions;
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Missing epochs in protocol'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'The following ${empty.length} condition(s) have 0 matching epochs in this recording:',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              for (final ec in empty)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8, bottom: 4),
+                  child: Text(
+                    '• ${ec.name.isNotEmpty ? ec.name : "Condition"} (0 trials; expected: ${ec.codes.isNotEmpty ? ec.codes.join(", ") : "no groups assigned"})',
+                    style: const TextStyle(color: Colors.amber),
+                  ),
+                ),
+              const SizedBox(height: 12),
+              Text(
+                'Analysis will proceed with the available ${valid.length} condition(s):\n'
+                '${valid.map((v) => "• ${v.name} (${_conditionTrialCount(v)} trials)").join("\n")}',
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Review Conditions'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Skip & Run'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) return;
+      setState(() {
+        for (final ec in empty) {
+          _conditions.remove(ec);
+          ec.dispose();
+        }
+      });
+    }
     if (_output.text.trim().isEmpty) {
       final path = await FilePicker.getDirectoryPath(
         dialogTitle: 'Choose ERP results folder',
@@ -1330,10 +1427,19 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       ),
                       if (_busy) LinearProgressIndicator(value: _progress),
                       Text(
-                        _status,
+                        _busy
+                            ? _status
+                            : (_emptyConditions.isNotEmpty
+                                ? 'Ready: ${_validConditions.length} active condition(s) (${_emptyConditions.length} empty condition(s) can be skipped).'
+                                : _status),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 10),
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: _emptyConditions.isNotEmpty && !_busy
+                              ? Colors.amber.shade300
+                              : null,
+                        ),
                       ),
                     ],
                   ),
@@ -1574,6 +1680,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   }
 
   Widget _buildConditionEditor() {
+    final emptyConditions = _emptyConditions;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1604,6 +1711,83 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             ),
           ],
         ),
+        if (emptyConditions.isNotEmpty) ...[
+          Container(
+            margin: const EdgeInsets.only(top: 4, bottom: 8),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.amber.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.amber.shade700.withValues(alpha: 0.5)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.warning_amber_rounded, size: 18, color: Colors.amber.shade400),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '${emptyConditions.length} condition(s) have 0 matching epochs in this recording:',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.amber.shade300,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                for (final ec in emptyConditions)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 24, bottom: 2),
+                    child: Text(
+                      '• ${ec.name.isNotEmpty ? ec.name : "Condition"} (0 epochs)',
+                      style: const TextStyle(fontSize: 11, color: Colors.white70),
+                    ),
+                  ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      ),
+                      onPressed: _busy
+                          ? null
+                          : () {
+                              setState(() {
+                                for (final ec in emptyConditions) {
+                                  _conditions.remove(ec);
+                                  ec.dispose();
+                                }
+                              });
+                            },
+                      icon: const Icon(Icons.playlist_remove, size: 14),
+                      label: Text(
+                        'Skip empty (${emptyConditions.length}) & proceed',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ),
+                    if (_savedGroups.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Available in recording: ${_savedGroups.map((g) => "$g (×${_savedGroupTrialCount(g)})").join(", ")}',
+                          style: const TextStyle(fontSize: 10, color: Colors.white60),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
         for (var i = 0; i < _conditions.length; i++) _buildConditionCard(i),
         if (!_isPrepared)
           Padding(
@@ -1614,14 +1798,13 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               label: const Text('Assign from detected markers…'),
             ),
           ),
-        if (_conditions.any(
-          (c) => _isPrepared
-              ? c.savedGroups.isEmpty
-              : c.codesController.text.trim().isEmpty,
-        ))
-          const Text(
-            'Ensure every condition has at least one event code or saved group selected.',
-            style: TextStyle(color: Colors.orangeAccent, fontSize: 11),
+        if (_conditions.isEmpty || _validConditions.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text(
+              'Add at least one condition with epochs to run analysis.',
+              style: TextStyle(color: Colors.orangeAccent, fontSize: 11),
+            ),
           ),
       ],
     );
@@ -1629,30 +1812,67 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
 
   Widget _buildConditionCard(int index) {
     final c = _conditions[index];
-    final count = _scanFiles.fold<int>(
-      0,
-      (n, f) =>
-          n +
-          c.savedGroups.fold<int>(
-            0,
-            (sum, g) =>
-                sum + (erpMap(f['marker_counts'])[g] as num? ?? 0).toInt(),
-          ),
-    );
+    final count = _conditionTrialCount(c);
+    final isEmpty = _isConditionEmpty(c);
     return Card(
       key: ValueKey(c),
       margin: const EdgeInsets.symmetric(vertical: 4),
       elevation: 0,
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      color: isEmpty
+          ? Colors.amber.withValues(alpha: 0.05)
+          : Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(6),
-        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+        side: BorderSide(
+          color: isEmpty
+              ? Colors.amber.shade700
+              : Theme.of(context).colorScheme.outlineVariant,
+          width: isEmpty ? 1.5 : 1.0,
+        ),
       ),
       child: Padding(
         padding: const EdgeInsets.all(8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (isEmpty)
+              Container(
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.warning_amber_rounded, size: 14, color: Colors.amber.shade300),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '0 matching epochs in recording',
+                        style: TextStyle(fontSize: 10, color: Colors.amber.shade200, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    if (_conditions.length > 1)
+                      InkWell(
+                        onTap: _busy
+                            ? null
+                            : () {
+                                setState(() {
+                                  _conditions.removeAt(index).dispose();
+                                });
+                              },
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 4),
+                          child: Text(
+                            'Skip condition',
+                            style: TextStyle(fontSize: 10, color: Colors.amber, decoration: TextDecoration.underline),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             Row(
               children: [
                 Expanded(
@@ -1682,7 +1902,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                             );
                           }),
                   ),
-                if (_conditions.length > 2)
+                if (_conditions.length > 1)
                   IconButton(
                     icon: const Icon(Icons.close, size: 18),
                     tooltip: 'Remove condition',
@@ -1714,11 +1934,25 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 tilePadding: EdgeInsets.zero,
                 title: Text(
                   c.savedGroups.isEmpty
-                      ? 'Choose saved groups'
+                      ? 'Choose saved groups (0 epochs)'
                       : '$count trials · edit groups',
-                  style: const TextStyle(fontSize: 11),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: isEmpty ? Colors.amber.shade300 : null,
+                  ),
                 ),
                 children: [
+                  if (_savedGroups.isNotEmpty)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          'Available epoch groups in recording:',
+                          style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
+                        ),
+                      ),
+                    ),
                   Wrap(
                     spacing: 4,
                     runSpacing: 4,
@@ -1726,7 +1960,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       for (final g in _savedGroups)
                         FilterChip(
                           label: Text(
-                            '$g ×${_scanFiles.fold<int>(0, (n, f) => n + (erpMap(f['marker_counts'])[g] as num? ?? 0).toInt())}',
+                            '$g ×${_savedGroupTrialCount(g)}',
                           ),
                           selected: c.savedGroups.contains(g),
                           onSelected: _busy
@@ -1740,10 +1974,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                         other < _conditions.length;
                                         other++
                                       ) {
-                                        if (other != index)
+                                        if (other != index) {
                                           _conditions[other].savedGroups.remove(
                                             g,
                                           );
+                                        }
                                       }
                                       if (c.name.startsWith('Condition ') ||
                                           c.name.isEmpty) {
