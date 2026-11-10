@@ -276,7 +276,30 @@ Future<String> writeErpWorkbenchReport(
       );
     }
   }
+  final bytes = await doc.save();
   final file = File('$output/erp_report.pdf');
-  await file.writeAsBytes(await doc.save());
+  await file.writeAsBytes(bytes);
+  if (files.length == 1) {
+    final stem = (files.first['path'] as String? ?? '')
+        .split(RegExp(r'[/\\]'))
+        .last
+        .replaceAll(
+          RegExp(
+            r'(?:\.(?:json|ccseeg|edf|set|vhdr|fif|mat|orb|xdf|signal))+$',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(
+          RegExp(r'(?:[-_]epo(?:ched)?|_clean)+$', caseSensitive: false),
+          '',
+        );
+    if (stem.isNotEmpty && stem != 'erp') {
+      try {
+        final namedFile = File('$output/${stem}_erp_report.pdf');
+        await namedFile.writeAsBytes(bytes);
+      } catch (_) {}
+    }
+  }
   return file.path;
 }

@@ -3164,6 +3164,13 @@ class _FeatureHomeState extends State<FeatureHome>
             color: _accentBlue,
             onPressed: _running ? null : _loadRaw,
           ),
+          _loadButton(
+            label: 'Open ERP Workbench & Saved Results…',
+            color: const Color(0xFF6C5CE7),
+            onPressed: _running
+                ? null
+                : () => setState(() => _selectedModule = _Module.erpAnalysis),
+          ),
           if (_openedRecordings.isNotEmpty) ...[
             const SizedBox(height: 12),
             _subLabel('OPEN RECORDINGS'),

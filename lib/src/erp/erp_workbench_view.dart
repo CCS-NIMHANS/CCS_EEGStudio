@@ -1,6 +1,7 @@
 import 'axis_controls.dart';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models.dart';
@@ -612,28 +613,357 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     }
   }
 
+  static Map<String, dynamic> mergeErpResults(
+    List<Map<String, dynamic>> resultsList,
+  ) {
+    if (resultsList.isEmpty) return {};
+    if (resultsList.length == 1) return resultsList.first;
+
+    final allFiles = <Map<String, dynamic>>[];
+    final seenPaths = <String>{};
+    final allFailures = <Map<String, dynamic>>[];
+
+    for (final res in resultsList) {
+      final files = ((res['files'] as List?) ?? []).map(erpMap);
+      for (final f in files) {
+        final p = f['path']?.toString() ?? '';
+        if (p.isNotEmpty && !seenPaths.contains(p)) {
+          seenPaths.add(p);
+          allFiles.add(f);
+        } else if (p.isEmpty) {
+          allFiles.add(f);
+        }
+      }
+      final fails = ((res['failures'] as List?) ?? []).map(erpMap);
+      allFailures.addAll(fails);
+    }
+
+    final tasks =
+        allFiles.map((f) => f['task']?.toString() ?? 'Custom').toSet();
+    final mergedGroups = <Map<String, dynamic>>[];
+
+    for (final task in tasks) {
+      final taskFiles = allFiles
+          .where((f) => (f['task']?.toString() ?? 'Custom') == task)
+          .toList();
+      if (taskFiles.isEmpty) continue;
+
+      final first = taskFiles.first;
+      final times = erpNumbers(first['times']);
+      final nTimes = times.length;
+      final labels = (first['labels'] as List? ?? []).cast<String>();
+      final conditionNames =
+          (first['condition_names'] as List? ?? []).cast<String>();
+
+      final subjects = taskFiles
+          .map((f) => f['subject']?.toString() ?? 'subj')
+          .toSet()
+          .toList();
+
+      final condWaves = <String, List<double>>{};
+      final condSems = <String, List<double>>{};
+      for (final cond in conditionNames) {
+        final subWaves = <List<double>>[];
+        for (final f in taskFiles) {
+          final cw = f['condition_waves'];
+          if (cw is Map && cw[cond] != null) {
+            subWaves.add(erpNumbers(cw[cond]));
+          }
+        }
+        if (subWaves.isNotEmpty) {
+          final avgWave = List<double>.filled(nTimes, 0.0);
+          for (var t = 0; t < nTimes; t++) {
+            var sum = 0.0;
+            var count = 0;
+            for (final w in subWaves) {
+              if (t < w.length) {
+                sum += w[t];
+                count++;
+              }
+            }
+            avgWave[t] = count > 0 ? sum / count : 0.0;
+          }
+          condWaves[cond] = avgWave;
+
+          final semWave = List<double>.filled(nTimes, 0.0);
+          if (subWaves.length > 1) {
+            for (var t = 0; t < nTimes; t++) {
+              var sumSq = 0.0;
+              var count = 0;
+              for (final w in subWaves) {
+                if (t < w.length) {
+                  final diff = w[t] - avgWave[t];
+                  sumSq += diff * diff;
+                  count++;
+                }
+              }
+              if (count > 1) {
+                final variance = sumSq / (count - 1);
+                semWave[t] = math.sqrt(variance / count);
+              }
+            }
+          }
+          condSems[cond] = semWave;
+        }
+      }
+
+      final aWaves = taskFiles
+          .map((f) => erpNumbers(f['a']))
+          .where((w) => w.length == nTimes)
+          .toList();
+      final bWaves = taskFiles
+          .map((f) => erpNumbers(f['b']))
+          .where((w) => w.length == nTimes)
+          .toList();
+      final diffWaves = taskFiles
+          .map((f) => erpNumbers(f['difference']))
+          .where((w) => w.length == nTimes)
+          .toList();
+
+      List<double> avgA = List<double>.filled(nTimes, 0.0);
+      List<double> avgB = List<double>.filled(nTimes, 0.0);
+      List<double> avgDiff = List<double>.filled(nTimes, 0.0);
+      List<double> semDiff = List<double>.filled(nTimes, 0.0);
+
+      if (aWaves.isNotEmpty) {
+        for (var t = 0; t < nTimes; t++) {
+          avgA[t] =
+              aWaves.map((w) => w[t]).reduce((x, y) => x + y) / aWaves.length;
+        }
+      }
+      if (bWaves.isNotEmpty) {
+        for (var t = 0; t < nTimes; t++) {
+          avgB[t] =
+              bWaves.map((w) => w[t]).reduce((x, y) => x + y) / bWaves.length;
+        }
+      }
+      if (diffWaves.isNotEmpty) {
+        for (var t = 0; t < nTimes; t++) {
+          avgDiff[t] =
+              diffWaves.map((w) => w[t]).reduce((x, y) => x + y) /
+              diffWaves.length;
+        }
+        if (diffWaves.length > 1) {
+          for (var t = 0; t < nTimes; t++) {
+            final m = avgDiff[t];
+            final sumSq = diffWaves
+                .map((w) => (w[t] - m) * (w[t] - m))
+                .reduce((x, y) => x + y);
+            semDiff[t] = math.sqrt(
+              sumSq / ((diffWaves.length - 1) * diffWaves.length),
+            );
+          }
+        }
+      }
+
+      final channelConds = <String, List<List<double>>>{};
+      for (final cond in conditionNames) {
+        final chGrids = <List<List<double>>>[];
+        for (final f in taskFiles) {
+          final cc = f['channel_conditions'];
+          if (cc is Map && cc[cond] is List) {
+            final list2d = (cc[cond] as List).map(erpNumbers).toList();
+            if (list2d.isNotEmpty) chGrids.add(list2d);
+          }
+        }
+        if (chGrids.isNotEmpty) {
+          final nCh = chGrids.first.length;
+          final avgGrid = List.generate(nCh, (ch) {
+            return List.generate(nTimes, (t) {
+              var sum = 0.0;
+              var cnt = 0;
+              for (final g in chGrids) {
+                if (ch < g.length && t < g[ch].length) {
+                  sum += g[ch][t];
+                  cnt++;
+                }
+              }
+              return cnt > 0 ? sum / cnt : 0.0;
+            });
+          });
+          channelConds[cond] = avgGrid;
+        }
+      }
+
+      final topoDiffs = taskFiles
+          .map((f) => erpNumbers(f['topo_difference']))
+          .where((v) => v.isNotEmpty)
+          .toList();
+      List<double> avgTopoDiff = [];
+      if (topoDiffs.isNotEmpty) {
+        final nCh = topoDiffs.first.length;
+        avgTopoDiff = List.generate(nCh, (ch) {
+          var sum = 0.0;
+          var cnt = 0;
+          for (final td in topoDiffs) {
+            if (ch < td.length) {
+              sum += td[ch];
+              cnt++;
+            }
+          }
+          return cnt > 0 ? sum / cnt : 0.0;
+        });
+      }
+
+      final profile = erpMap(first['profile']);
+      final win = erpNumbers(profile['window']);
+      final pol = (profile['polarity'] as num?)?.toDouble() ?? 1.0;
+      final grandDiffMeas = win.length == 2
+          ? reviewMeasures(times, avgDiff, win[0], win[1], pol)
+          : <String, double?>{};
+
+      final grandCondMeas = <String, Map<String, double?>>{};
+      for (final cond in conditionNames) {
+        if (condWaves[cond] != null && win.length == 2) {
+          grandCondMeas[cond] = reviewMeasures(
+            times,
+            condWaves[cond]!,
+            win[0],
+            win[1],
+            pol,
+          );
+        }
+      }
+
+      mergedGroups.add({
+        'task': task,
+        'component_name': task,
+        'times': times,
+        'bin_times': first['bin_times'] ?? [],
+        'n_files': taskFiles.length,
+        'n_subjects': subjects.length,
+        'subjects': subjects,
+        'labels': labels,
+        'a': avgA,
+        'b': avgB,
+        'difference': avgDiff,
+        'sem_difference': semDiff,
+        'condition_names': conditionNames,
+        'condition_waves': condWaves,
+        'condition_sems': condSems,
+        'channel_conditions': channelConds,
+        'gfp_a': first['gfp_a'] ?? [],
+        'gfp_b': first['gfp_b'] ?? [],
+        'topo_difference': avgTopoDiff,
+        'topo_p_fwer': [],
+        'topo_t': [],
+        'spatiotemporal_p_fwer': [],
+        'spatiotemporal_t': [],
+        'statistics': first['statistics'] ?? [],
+        'profile': profile,
+        'grand_difference_measurements': grandDiffMeas,
+        'grand_condition_measurements': grandCondMeas,
+        'warning': '',
+      });
+    }
+
+    return {
+      'schema': 'ccs-erp-workbench-v1',
+      'output': resultsList.first['output'] ?? '',
+      'options': resultsList.first['options'] ?? {},
+      'files': allFiles,
+      'groups': mergedGroups,
+      'failures': allFailures,
+    };
+  }
+
   Future<void> _openResult() async {
     final picked = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['ccserp', 'json'],
+      allowMultiple: true,
     );
-    if (picked == null || picked.files.single.path == null || !mounted) return;
+    if (picked == null || picked.files.isEmpty || !mounted) return;
     try {
-      final path = picked.files.single.path!;
-      final value = Map<String, dynamic>.from(
-        jsonDecode(await File(path).readAsString()) as Map,
-      );
-      if (value['schema'] != 'ccs-erp-workbench-v1')
+      final validFiles = picked.files
+          .where((f) => f.path != null)
+          .map((f) => f.path!)
+          .toList();
+      if (validFiles.isEmpty) return;
+
+      final resultsList = <Map<String, dynamic>>[];
+      for (final path in validFiles) {
+        final content = await File(path).readAsString();
+        final val = Map<String, dynamic>.from(jsonDecode(content) as Map);
+        if (val['schema'] == 'ccs-erp-workbench-v1') {
+          resultsList.add(val);
+        }
+      }
+
+      if (resultsList.isEmpty) {
         throw const FormatException(
-          'Choose erp_results.ccserp from a workbench run',
+          'No valid ccs-erp-workbench-v1 ERP results found in selected file(s).',
         );
+      }
+
+      final merged = mergeErpResults(resultsList);
       if (!mounted) return;
       setState(() {
-        _result = value;
+        _result = merged;
         _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
         _file = null;
-        _output.text = File(path).parent.path;
-        _status = 'Loaded saved ERP results.';
+        _output.text = File(validFiles.first).parent.path;
+        final nF = (merged['files'] as List? ?? []).length;
+        _status =
+            'Loaded $nF recording(s) across ${resultsList.length} ERP result file(s).';
+      });
+    } catch (e) {
+      if (mounted) setState(() => _status = '$e');
+    }
+  }
+
+  Future<void> _openResultFolder() async {
+    final dirPath = await FilePicker.getDirectoryPath();
+    if (dirPath == null || !mounted) return;
+    try {
+      final dir = Directory(dirPath);
+      final entries = dir.listSync(recursive: false).whereType<File>().toList();
+      final candidates = entries.where((f) {
+        final lower = f.path.toLowerCase();
+        return lower.endsWith('.ccserp') ||
+            (lower.endsWith('.json') && lower.contains('erp_results'));
+      }).toList();
+
+      if (candidates.isEmpty) {
+        if (mounted) {
+          setState(
+            () => _status =
+                'No .ccserp or erp_results.json files found in $dirPath',
+          );
+        }
+        return;
+      }
+
+      final resultsList = <Map<String, dynamic>>[];
+      for (final f in candidates) {
+        try {
+          final content = await f.readAsString();
+          final val = Map<String, dynamic>.from(jsonDecode(content) as Map);
+          if (val['schema'] == 'ccs-erp-workbench-v1') {
+            resultsList.add(val);
+          }
+        } catch (_) {}
+      }
+
+      if (resultsList.isEmpty) {
+        if (mounted) {
+          setState(
+            () => _status = 'No valid ccs-erp-workbench-v1 files in $dirPath',
+          );
+        }
+        return;
+      }
+
+      final merged = mergeErpResults(resultsList);
+      if (!mounted) return;
+      setState(() {
+        _result = merged;
+        _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
+        _file = null;
+        _output.text = dirPath;
+        final nF = (merged['files'] as List? ?? []).length;
+        _status =
+            'Loaded $nF recording(s) from ${resultsList.length} ERP file(s) in $dirPath.';
       });
     } catch (e) {
       if (mounted) setState(() => _status = '$e');
@@ -897,12 +1227,33 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   style: const TextStyle(fontSize: 11),
                 ),
                 Wrap(
-                  spacing: 4,
+                  spacing: 6,
+                  runSpacing: 4,
                   children: [
                     TextButton.icon(
                       onPressed: _busy ? null : widget.onOpenRecording,
                       icon: const Icon(Icons.folder_open, size: 16),
                       label: const Text('Open EEG / epochs'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : _openResult,
+                      icon: const Icon(Icons.history, size: 16),
+                      label: const Text('Load ERP (.ccserp)'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : _openResultFolder,
+                      icon: const Icon(Icons.folder_open, size: 16),
+                      label: const Text('Load ERP Folder'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : _addFiles,
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('Add EEG Files / Epochs'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : _addFolder,
+                      icon: const Icon(Icons.folder_open, size: 16),
+                      label: const Text('Add Folder'),
                     ),
                     if (widget.activeRecording != null)
                       IconButton(
@@ -914,22 +1265,36 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         ),
                       ),
                     IconButton(
-                      tooltip: 'Open saved ERP results',
-                      onPressed: _busy ? null : _openResult,
-                      icon: const Icon(Icons.restore, size: 18),
-                    ),
-                    IconButton(
                       tooltip: 'Edit trial groups and windows in Epochs',
                       onPressed: widget.onPrepare,
                       icon: const Icon(Icons.content_cut, size: 18),
                     ),
-                    IconButton(
-                      tooltip: 'Multiple recordings: Batch Workspace',
-                      onPressed: widget.onOpenBatch,
-                      icon: const Icon(Icons.account_tree, size: 18),
-                    ),
                   ],
                 ),
+                if (_paths.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '${_paths.length} recording(s) queued for ERP analysis',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.cyanAccent,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _busy
+                        ? null
+                        : () => setState(() {
+                            _paths.clear();
+                            _inspection = null;
+                            _fillProfile(null);
+                          }),
+                    child: const Text(
+                      'Clear queued files',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                  ),
+                ],
               ])
             else
               _card(widget.batchMode ? '1  Batch inputs' : '1  Active recording', [
@@ -976,10 +1341,37 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     ],
                   ),
                 ] else ...[
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _openResult,
+                        icon: const Icon(Icons.history, size: 16),
+                        label: const Text('Open saved ERP (.ccserp)…'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _openResultFolder,
+                        icon: const Icon(Icons.folder_open, size: 16),
+                        label: const Text('Open ERP folder…'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _addFiles,
+                        icon: const Icon(Icons.add, size: 16),
+                        label: const Text('Open epoched EEG files…'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _addFolder,
+                        icon: const Icon(Icons.folder_open, size: 16),
+                        label: const Text('Open recordings folder…'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
                   TextButton.icon(
                     onPressed: _busy ? null : widget.onOpenRecording,
                     icon: const Icon(Icons.folder_open),
-                    label: const Text('Open preprocessed EEG / saved epochs…'),
+                    label: const Text('Open continuous recording…'),
                   ),
                   Text(
                     widget.activeRecording?.path.split(RegExp(r'[/\\]')).last ??
@@ -2426,6 +2818,21 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               TextButton(
                 onPressed: () => _groupModels(difference: true),
                 child: const Text('Difference-wave group models'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _openResult,
+                icon: const Icon(Icons.file_open, size: 16),
+                label: const Text('Load ERP (.ccserp)…'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _openResultFolder,
+                icon: const Icon(Icons.folder_open, size: 16),
+                label: const Text('Load ERP Folder…'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _addFiles,
+                icon: const Icon(Icons.add_to_photos, size: 16),
+                label: const Text('Add EEG Files…'),
               ),
             ],
           ),

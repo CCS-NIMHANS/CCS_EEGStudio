@@ -16,6 +16,7 @@ class StateDynamicsResult {
     required this.reprChannel,
     required this.silhouetteScores,
     required this.availableScales,
+    this.availableFamilies = const [],
     required this.metrics,
     required this.rois,
     required this.recordings,
@@ -37,6 +38,9 @@ class StateDynamicsResult {
           int.tryParse(entry.key) ?? 2: (entry.value as num).toDouble(),
       },
       availableScales: (json['available_scales'] as List<dynamic>? ?? [])
+          .map((e) => e.toString())
+          .toList(),
+      availableFamilies: (json['available_families'] as List<dynamic>? ?? [])
           .map((e) => e.toString())
           .toList(),
       metrics: (json['metrics'] as List<dynamic>? ?? [])
@@ -62,6 +66,7 @@ class StateDynamicsResult {
   final String reprChannel;
   final Map<int, double> silhouetteScores;
   final List<String> availableScales;
+  final List<String> availableFamilies;
   final List<String> metrics;
   final List<String> rois;
   final List<RecordingTimeline> recordings;
@@ -265,6 +270,7 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
   double _ivThreshold = 0.4;
   String _displayBand = 'Gamma1';
   String _reprChannel = 'Fz';
+  String _selectedFamily = 'All';
   final bool _rankTransform = false;
 
   bool _loading = false;
@@ -819,6 +825,36 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
         ),
         const SizedBox(height: 12),
 
+        // Feature Family filter chips
+        if (res.availableFamilies.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text(
+                  'Feature Families:',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                ),
+                FilterChip(
+                  label: Text('All (${res.metrics.length})'),
+                  selected: _selectedFamily == 'All',
+                  onSelected: (_) => setState(() => _selectedFamily = 'All'),
+                  visualDensity: VisualDensity.compact,
+                ),
+                for (final fam in res.availableFamilies)
+                  FilterChip(
+                    label: Text(fam),
+                    selected: _selectedFamily == fam,
+                    onSelected: (_) => setState(() => _selectedFamily = fam),
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+          ),
+
         // Interactive Heatmap Grid
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -831,8 +867,15 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
   Widget _buildHeatmapGrid(StateSummary st, StateDynamicsResult res, ThemeData theme) {
     const double cellW = 32;
     const double cellH = 14;
-    final nRows = res.metrics.length;
     final nCols = res.rois.length;
+
+    final matchingRowIndices = <int>[];
+    for (var r = 0; r < res.metrics.length; r++) {
+      final m = res.metrics[r];
+      if (_selectedFamily == 'All' || m.startsWith('$_selectedFamily|')) {
+        matchingRowIndices.add(r);
+      }
+    }
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -842,7 +885,7 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             const SizedBox(height: 70), // space for top rotated ROI headers
-            for (var r = 0; r < nRows; r++)
+            for (final r in matchingRowIndices)
               SizedBox(
                 height: cellH,
                 child: Text(
@@ -882,7 +925,7 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
             ),
 
             // 2D Matrix of cells
-            for (var r = 0; r < nRows; r++)
+            for (final r in matchingRowIndices)
               Row(
                 children: [
                   for (var c = 0; c < nCols; c++)

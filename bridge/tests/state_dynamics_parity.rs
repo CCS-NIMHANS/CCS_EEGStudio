@@ -37,6 +37,7 @@ fn test_state_dynamics_parity() {
             "10.11 RE".into(),
         ],
         featureset: "paper".into(),
+        feature_families: None,
         scale: "60s".into(),
         k: Some(6),
         iv_threshold: 0.4,

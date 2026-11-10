@@ -2231,11 +2231,39 @@ where
             ));
         }
     }
+    let single_stem: Option<String> = if files.len() == 1 {
+        let p = &files[0].path;
+        let file_stem = Path::new(p)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let mut s = file_stem;
+        for ext in &[".edf", ".fif", ".ccseeg", ".json", ".vhdr", ".set"] {
+            s = s.trim_end_matches(ext);
+        }
+        for suff in &["_clean", "-epo", "-epo_clean", "_epo", "_epoched"] {
+            s = s.trim_end_matches(suff);
+        }
+        if !s.is_empty() && s != "erp" {
+            Some(s.to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     fs::write(
         Path::new(&job.output).join("erp_measurements.csv"),
-        measurements,
+        &measurements,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(ref stem) = single_stem {
+        let _ = fs::write(
+            Path::new(&job.output).join(format!("{}_erp_measurements.csv", stem)),
+            &measurements,
+        );
+    }
     let mut statistics = String::from("task,n_subjects,metric,mean_difference,t,p,q_fdr\n");
     for g in &groups {
         for s in g["statistics"].as_array().unwrap() {
@@ -2253,9 +2281,15 @@ where
     }
     fs::write(
         Path::new(&job.output).join("erp_group_statistics.csv"),
-        statistics,
+        &statistics,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(ref stem) = single_stem {
+        let _ = fs::write(
+            Path::new(&job.output).join(format!("{}_erp_group_statistics.csv", stem)),
+            &statistics,
+        );
+    }
     let mut trial_csv=String::from("subject,group,task,file,event_index,condition,marker,onset_s,rt_s,mean_uv,signed_auc_uv_s,positive_auc_uv_s,negative_auc_uv_s,peak_amplitude_uv,peak_latency_s,fractional_area_latency_s,fractional_peak_latency_s\n");
     let mut wave_csv =
         String::from("level,subject,group,task,time_s,A_uv,B_uv,difference_uv,sem_difference_uv\n");
@@ -2328,12 +2362,24 @@ where
     if job.options.export_trial_measurements {
         fs::write(
             Path::new(&job.output).join("erp_trial_measurements.csv"),
-            trial_csv,
+            &trial_csv,
         )
         .map_err(|e| e.to_string())?;
+        if let Some(ref stem) = single_stem {
+            let _ = fs::write(
+                Path::new(&job.output).join(format!("{}_erp_trial_measurements.csv", stem)),
+                &trial_csv,
+            );
+        }
     }
-    fs::write(Path::new(&job.output).join("erp_waveforms.csv"), wave_csv)
+    fs::write(Path::new(&job.output).join("erp_waveforms.csv"), &wave_csv)
         .map_err(|e| e.to_string())?;
+    if let Some(ref stem) = single_stem {
+        let _ = fs::write(
+            Path::new(&job.output).join(format!("{}_erp_waveforms.csv", stem)),
+            &wave_csv,
+        );
+    }
     let mut model_csv = String::from("subject,group,task,file,model,predictor,channel,time_s,beta\n");
     let mut model_rows = 0;
     for f in &files {
@@ -2366,16 +2412,58 @@ where
     if model_rows > 0 {
         fs::write(
             Path::new(&job.output).join("erp_model_coefficients.csv"),
-            model_csv,
+            &model_csv,
         )
         .map_err(|e| e.to_string())?;
+        if let Some(ref stem) = single_stem {
+            let _ = fs::write(
+                Path::new(&job.output).join(format!("{}_erp_model_coefficients.csv", stem)),
+                &model_csv,
+            );
+        }
     }
     let result = json!({"schema":"ccs-erp-workbench-v1","options":job.options,"files":files,"groups":groups,"failures":failures,"output":job.output});
+    let result_bytes = serde_json::to_vec(&result).map_err(|e| e.to_string())?;
     fs::write(
         Path::new(&job.output).join("erp_results.ccserp"),
-        serde_json::to_vec(&result).map_err(|e| e.to_string())?,
+        &result_bytes,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(ref stem) = single_stem {
+        let _ = fs::write(
+            Path::new(&job.output).join(format!("{}_erp_results.ccserp", stem)),
+            &result_bytes,
+        );
+    }
+    if files.len() > 1 {
+        // Also save each individual participant's .ccserp in the batch output folder
+        for f in &files {
+            let file_stem = Path::new(&f.path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let mut s = file_stem;
+            for ext in &[".edf", ".fif", ".ccseeg", ".json", ".vhdr", ".set"] {
+                s = s.trim_end_matches(ext);
+            }
+            for suff in &["_clean", "-epo", "-epo_clean", "_epo", "_epoched"] {
+                s = s.trim_end_matches(suff);
+            }
+            if !s.is_empty() && s != "erp" {
+                let single_res = json!({
+                    "schema": "ccs-erp-workbench-v1",
+                    "options": job.options,
+                    "files": [f],
+                    "groups": groups.iter().filter(|g| g["task"] == f.task).cloned().collect::<Vec<_>>(),
+                    "failures": Vec::<Value>::new(),
+                    "output": job.output
+                });
+                if let Ok(b) = serde_json::to_vec(&single_res) {
+                    let _ = fs::write(Path::new(&job.output).join(format!("{}_erp_results.ccserp", s)), b);
+                }
+            }
+        }
+    }
     eprintln!("PROGRESS 100 ERP workbench complete");
     Ok(result)
 }

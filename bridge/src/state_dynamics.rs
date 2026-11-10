@@ -48,6 +48,8 @@ pub struct Job {
     #[serde(default = "default_repr_channel")]
     pub repr_channel: String,
     #[serde(default)]
+    pub feature_families: Option<Vec<String>>,
+    #[serde(default)]
     pub rank_transform: bool,
     #[serde(default = "default_step_s")]
     pub step_s: f64,
@@ -75,6 +77,7 @@ pub struct StateDynamicsResult {
     pub repr_channel: String,
     pub silhouette_scores: BTreeMap<usize, f64>,
     pub available_scales: Vec<String>,
+    pub available_families: Vec<String>,
     pub metrics: Vec<String>,
     pub rois: Vec<String>,
     pub recordings: Vec<RecordingTimeline>,
@@ -152,6 +155,34 @@ pub fn default_rois() -> Vec<(&'static str, &'static [&'static str])> {
 pub const PSD_BANDS: &[&str] = &["Delta", "Theta", "Alpha", "Beta1", "Beta2", "Gamma1"];
 pub const COH_BANDS: &[&str] = &["Theta", "Alpha", "Beta1", "Beta2", "Gamma1"];
 pub const MIC_BANDS: &[&str] = &["Theta", "Alpha", "Beta1", "Beta2", "Gamma1"];
+
+pub fn classify_col(c: &str) -> (String, String, bool) {
+    const BANDS7: &[&str] = &["Delta", "Theta", "ThetaAlpha", "Alpha", "Beta1", "Beta2", "Gamma1"];
+    if let Some(rest) = c.strip_prefix("conn_mic_") {
+        return ("MIC".into(), rest.into(), false);
+    }
+    if let Some(rest) = c.strip_prefix("conn_coh_") {
+        return ("Coh".into(), rest.into(), false);
+    }
+    if c == "ACW" {
+        return ("ACW".into(), "ACW".into(), false);
+    }
+    if let Some(rest) = c.strip_suffix("_nonlinear") {
+        return ("Nonlinear".into(), rest.into(), false);
+    }
+    for &(suf, fb, fp) in &[
+        ("_PSD", "PSD", "PSD"),
+        ("_FOOOF", "FOOOF_band", "FOOOF_param"),
+        ("_Irasa", "IRASA_band", "IRASA_param"),
+    ] {
+        if let Some(rest) = c.strip_suffix(suf) {
+            let is_band = BANDS7.contains(&rest);
+            let fam = if is_band { fb } else { fp };
+            return (fam.into(), rest.into(), is_band);
+        }
+    }
+    ("Other".into(), c.into(), false)
+}
 
 pub struct FeatureDef {
     pub ftype: String,
@@ -938,20 +969,19 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
 
                 let feature_cols: Vec<&String> = header.iter().filter(|c| !non_feature_cols.contains(c.as_str())).collect();
                 for &col in &feature_cols {
-                    let is_mic = col.starts_with("conn_mic_");
-                    let is_band = col.ends_with("_PSD") || col.ends_with("_FOOOF") || col.ends_with("_Irasa");
+                    let (family, short_name, is_band) = classify_col(col);
 
-                    if is_mic {
+                    if family == "MIC" {
                         let mut vals: Vec<f64> = ch_rows.iter().filter_map(|r| r.vals.get(col).copied()).collect();
                         vals.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
                         let med = if !vals.is_empty() { vals[vals.len() / 2] } else { 0.0 };
                         win_features.push(med);
                         if is_first_win {
                             feat_defs.push(FeatureDef {
-                                ftype: "MIC".into(),
-                                name: col.replace("conn_mic_", ""),
+                                ftype: family,
+                                name: short_name.clone(),
                                 roi: "Global".into(),
-                                fname: format!("MIC|{}|Global", col.replace("conn_mic_", "")),
+                                fname: format!("MIC|{}|Global", short_name),
                             });
                         }
                     } else {
@@ -960,21 +990,23 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
                         for r in &ch_rows {
                             if let Some(&roi_idx) = chan_to_roi.get(&r.chan.to_uppercase()) {
                                 if let Some(&v) = r.vals.get(col) {
-                                    let transformed = if is_band { v.max(1e-3).log10() } else { v };
-                                    roi_sums[roi_idx] += transformed;
-                                    roi_counts[roi_idx] += 1;
+                                    if v.is_finite() {
+                                        let transformed = if is_band { v.max(1e-3).log10() } else { v };
+                                        roi_sums[roi_idx] += transformed;
+                                        roi_counts[roi_idx] += 1;
+                                    }
                                 }
                             }
                         }
                         for ri in 0..roi_names.len() {
-                            let avg = if roi_counts[ri] > 0 { roi_sums[ri] / roi_counts[ri] as f64 } else { 0.0 };
+                            let avg = if roi_counts[ri] > 0 { roi_sums[ri] / roi_counts[ri] as f64 } else { f64::NAN };
                             win_features.push(avg);
                             if is_first_win {
                                 feat_defs.push(FeatureDef {
-                                    ftype: "Full".into(),
-                                    name: col.clone(),
+                                    ftype: family.clone(),
+                                    name: short_name.clone(),
                                     roi: roi_names[ri].clone(),
-                                    fname: format!("{}|{}", col, roi_names[ri]),
+                                    fname: format!("{}|{}|{}", family, short_name, roi_names[ri]),
                                 });
                             }
                         }
@@ -1014,13 +1046,63 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
         return Err("No valid feature windows found in recordings".into());
     }
 
-    // Convert raw windows to DMatrix
+    // Convert raw windows to DMatrix and impute NaNs with column medians
     let mut x_mat = DMatrix::<f64>::zeros(n_total_windows, n_feat);
-    for r in 0..n_total_windows {
-        for c in 0..n_feat {
-            x_mat[(r, c)] = raw_windows[r][c];
+    for c in 0..n_feat {
+        let mut vals: Vec<f64> = (0..n_total_windows)
+            .map(|r| raw_windows[r][c])
+            .filter(|v| v.is_finite())
+            .collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let med = if !vals.is_empty() { vals[vals.len() / 2] } else { 0.0 };
+        for r in 0..n_total_windows {
+            let v = raw_windows[r][c];
+            x_mat[(r, c)] = if v.is_finite() { v } else { med };
         }
     }
+
+    // Available families in order of discovery
+    let mut available_families: Vec<String> = Vec::new();
+    let mut fam_seen = HashSet::new();
+    for f in &feat_defs {
+        if fam_seen.insert(f.ftype.clone()) {
+            available_families.push(f.ftype.clone());
+        }
+    }
+
+    // Filter by requested feature_families if provided and non-empty
+    let (feat_defs, x_mat, n_feat) = if let Some(ref req_fam) = job.feature_families {
+        let req_set: HashSet<&str> = req_fam.iter().map(|s| s.as_str()).collect();
+        let keep_indices: Vec<usize> = feat_defs
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| req_set.contains(f.ftype.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+        if !keep_indices.is_empty() && keep_indices.len() < feat_defs.len() {
+            let new_defs: Vec<FeatureDef> = keep_indices
+                .iter()
+                .map(|&i| FeatureDef {
+                    ftype: feat_defs[i].ftype.clone(),
+                    name: feat_defs[i].name.clone(),
+                    roi: feat_defs[i].roi.clone(),
+                    fname: feat_defs[i].fname.clone(),
+                })
+                .collect();
+            let mut new_x = DMatrix::<f64>::zeros(n_total_windows, keep_indices.len());
+            for (new_c, &old_c) in keep_indices.iter().enumerate() {
+                for r in 0..n_total_windows {
+                    new_x[(r, new_c)] = x_mat[(r, old_c)];
+                }
+            }
+            let new_n = keep_indices.len();
+            (new_defs, new_x, new_n)
+        } else {
+            (feat_defs, x_mat, n_feat)
+        }
+    } else {
+        (feat_defs, x_mat, n_feat)
+    };
 
     // Z-score across all pooled windows
     let mut z_mat = DMatrix::<f64>::zeros(n_total_windows, n_feat);
@@ -1396,6 +1478,7 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
         repr_channel: job.repr_channel.clone(),
         silhouette_scores: sil_map,
         available_scales: standard_scales.iter().map(|&s| s.to_string()).collect(),
+        available_families,
         metrics: metric_keys,
         rois: all_rois,
         recordings,
