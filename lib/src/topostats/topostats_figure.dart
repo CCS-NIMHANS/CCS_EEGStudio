@@ -25,6 +25,7 @@ import 'mpl_text.dart';
 import 'mpl_ticker.dart';
 import 'topo_interp.dart';
 import 'topostats_engine.dart';
+import '../state_dynamics/state_dynamics_view.dart';
 
 // matplotlib named colours used by the script
 const Color _tabRed = Color(0xFFD62728);
@@ -47,28 +48,37 @@ class _K {
 
 /// Hover / hit information.
 class TopoHit {
-  TopoHit.line(this.session, this.sampleIndex)
+  TopoHit.line(this.session, this.sampleIndex, {this.stateLabel})
     : window = -1,
       channel = -1,
       isColorbar = false;
   TopoHit.topo(this.session, this.window, this.channel)
     : sampleIndex = -1,
-      isColorbar = false;
+      isColorbar = false,
+      stateLabel = null;
   TopoHit.colorbar()
     : session = -1,
       window = -1,
       channel = -1,
       sampleIndex = -1,
-      isColorbar = true;
+      isColorbar = true,
+      stateLabel = null;
+  TopoHit.state(this.stateLabel, [this.session = -1])
+    : window = -1,
+      channel = -1,
+      sampleIndex = -1,
+      isColorbar = false;
 
   final int session;
   final int window;
   final int channel; // -1 => no channel under pointer
   final int sampleIndex;
   final bool isColorbar;
+  final String? stateLabel;
 
   bool get isLine => sampleIndex >= 0;
   bool get isTopo => window >= 0;
+  bool get isState => stateLabel != null && !isLine && !isTopo;
 
   @override
   bool operator ==(Object other) =>
@@ -77,11 +87,12 @@ class TopoHit {
       other.window == window &&
       other.channel == channel &&
       other.sampleIndex == sampleIndex &&
-      other.isColorbar == isColorbar;
+      other.isColorbar == isColorbar &&
+      other.stateLabel == stateLabel;
 
   @override
   int get hashCode =>
-      Object.hash(session, window, channel, sampleIndex, isColorbar);
+      Object.hash(session, window, channel, sampleIndex, isColorbar, stateLabel);
 }
 
 class _TopoCellCache {
@@ -92,7 +103,11 @@ class _TopoCellCache {
 
 /// Precomputed, reusable figure (layout + interpolated topomaps).
 class TopoFigure {
-  TopoFigure(this.result) {
+  TopoFigure(
+    this.result, {
+    this.stateDynamicsResult,
+    this.selectedStateLabel,
+  }) {
     final s = result.settings;
     interp = TopoInterpolator.forChannels(s.channels);
     _computeLayout();
@@ -101,12 +116,16 @@ class TopoFigure {
   }
 
   final TopoStatsResult result;
+  final StateDynamicsResult? stateDynamicsResult;
+  final String? selectedStateLabel;
   late final TopoInterpolator interp;
   late final List<int> _lut;
 
   // ---- layout (inches, origin top-left) ---------------------------------
   late final double widthIn, heightIn;
   late final List<Rect> lineAxes; // per session
+  late final List<Rect> stateStripAxes; // per session (when stateDynamicsResult != null)
+  late final List<Rect> rasterAxes; // per session (when stateDynamicsResult != null)
   late final List<List<Rect>> topoCells; // per session per column
   late final List<Rect> sessionSpan; // topo block span per session (cells)
   late final Rect colorbarAxes;
@@ -135,19 +154,23 @@ class TopoFigure {
     final totalUnits = ratios.fold<double>(0, (a, b) => a + b);
     widthIn = math.max(totalUnits * s.targetTopoWidthIn, 6.0);
     final topoRowIn = s.targetTopoWidthIn + 0.35;
+    final hasDynamics = stateDynamicsResult != null;
+    final stateStripIn = hasDynamics ? 0.28 : 0.0;
+    final rasterIn = hasDynamics ? 0.34 : 0.0;
+    final dynamicsGapIn = hasDynamics ? 0.08 : 0.0;
+
     heightIn =
         _K.topMarginIn +
         _K.lineAxesIn +
         _K.xlabelSpaceIn +
+        stateStripIn +
+        rasterIn +
+        dynamicsGapIn +
         _K.rowGapIn +
         topoRowIn +
         _K.bottomMarginIn;
 
-    final fh = heightIn, fw = widthIn;
-    final topFrac = 1 - _K.topMarginIn / fh;
-    final lineBottomFrac = topFrac - _K.lineAxesIn / fh;
-    final topoTopFrac = lineBottomFrac - (_K.xlabelSpaceIn + _K.rowGapIn) / fh;
-    final topoBottomFrac = _K.bottomMarginIn / fh;
+    final fw = widthIn;
     final leftFrac = _K.marginLIn / fw, rightFrac = 1 - _K.marginRIn / fw;
 
     // GridSpec(width_ratios, wspace=0) column edges, figure fraction.
@@ -160,19 +183,49 @@ class TopoFigure {
       rights.add(cur + w);
       cur += w;
     }
-    double yTop(double frac) => (1 - frac) * fh;
+
+    final lineTopIn = _K.topMarginIn;
+    final lineBottomIn = lineTopIn + _K.lineAxesIn;
+    final stateStripTopIn = lineBottomIn + _K.xlabelSpaceIn;
+    final stateStripBottomIn = stateStripTopIn + stateStripIn;
+    final rasterTopIn = stateStripBottomIn + 0.03;
+    final rasterBottomIn = rasterTopIn + rasterIn;
+    topoRowTopIn = hasDynamics
+        ? (rasterBottomIn + dynamicsGapIn + _K.rowGapIn)
+        : (lineBottomIn + _K.xlabelSpaceIn + _K.rowGapIn);
+    topoRowBottomIn = topoRowTopIn + topoRowIn;
 
     lineAxes = [
       for (final (a, b) in ranges)
         Rect.fromLTRB(
           lefts[a] * fw,
-          yTop(topFrac),
+          lineTopIn,
           rights[b - 1] * fw,
-          yTop(lineBottomFrac),
+          lineBottomIn,
         ),
     ];
-    topoRowTopIn = yTop(topoTopFrac);
-    topoRowBottomIn = yTop(topoBottomFrac);
+    stateStripAxes = hasDynamics
+        ? [
+            for (final (a, b) in ranges)
+              Rect.fromLTRB(
+                lefts[a] * fw,
+                stateStripTopIn,
+                rights[b - 1] * fw,
+                stateStripBottomIn,
+              ),
+          ]
+        : const [];
+    rasterAxes = hasDynamics
+        ? [
+            for (final (a, b) in ranges)
+              Rect.fromLTRB(
+                lefts[a] * fw,
+                rasterTopIn,
+                rights[b - 1] * fw,
+                rasterBottomIn,
+              ),
+          ]
+        : const [];
     topoCells = [
       for (final (a, b) in ranges)
         [
@@ -342,6 +395,9 @@ class TopoFigure {
     for (var i = 0; i < result.sessions.length; i++) {
       _paintLineAxes(canvas, i, px(lineAxes[i]), pt);
     }
+    if (stateDynamicsResult != null && stateStripAxes.isNotEmpty) {
+      _paintStateDynamicsRow(canvas, ppi, pt, px);
+    }
     _paintTopoRow(canvas, ppi, pt, px);
     _paintColorbar(canvas, px(colorbarAxes), pt);
   }
@@ -387,6 +443,37 @@ class TopoFigure {
 
     canvas.save();
     canvas.clipRect(ax);
+
+    // State Dynamics background tinting (if active)
+    if (stateDynamicsResult != null && i < stateDynamicsResult!.recordings.length) {
+      final rec = stateDynamicsResult!.recordings[i];
+      for (var wIdx = 0; wIdx < rec.windows.length; wIdx++) {
+        final w = rec.windows[wIdx];
+        final t1Min = w.tStart / 60.0;
+        final t2Min = (wIdx + 1 < rec.windows.length)
+            ? rec.windows[wIdx + 1].tStart / 60.0
+            : dur;
+        final xx1 = xOf(t1Min);
+        final xx2 = xOf(t2Min);
+        final isSelected = w.stateLabel == selectedStateLabel;
+        final color = _parseColor(w.stateColor).withValues(
+          alpha: isSelected ? 0.28 : 0.12,
+        );
+        canvas.drawRect(
+          Rect.fromLTRB(xx1, ax.top, xx2, ax.bottom),
+          Paint()..color = color,
+        );
+        if (isSelected) {
+          canvas.drawLine(
+            Offset(xx1, ax.top),
+            Offset(xx2, ax.top),
+            Paint()
+              ..color = _parseColor(w.stateColor)
+              ..strokeWidth = 2.0 * pt,
+          );
+        }
+      }
+    }
 
     // window boundaries: axvline(t_start, lightgray, lw=.5, ls=':'), zorder 1
     final vl = Paint()
@@ -629,14 +716,176 @@ class TopoFigure {
     }
 
     // title(name, fontsize=9), pad 6pt, va baseline
+    var title = sess.name;
+    title = title.replaceAll(RegExp(r'(-epo)?_clean$'), '');
+    title = title.replaceAll(RegExp(r'-epo$'), '');
+    final maxTitleW = ax.width - 2.0 * pt;
+    if (maxTitleW > 0) {
+      while (title.length > 4 &&
+          measureMplText(title, Offset.zero, 9 * pt).width > maxTitleW) {
+        title = title.substring(0, title.length - 1);
+      }
+      if (title.length < sess.name.length && !title.endsWith('…')) {
+        title = '$title…';
+      }
+    }
+
     drawMplText(
       canvas,
-      sess.name,
+      title,
       Offset(ax.center.dx, ax.top - 6 * pt),
       9 * pt,
       ha: HAlign.center,
       va: VAlign.baseline,
     );
+  }
+
+  void _paintStateDynamicsRow(
+    Canvas canvas,
+    double ppi,
+    double pt,
+    Rect Function(Rect) px,
+  ) {
+    if (stateDynamicsResult == null) return;
+    final res = stateDynamicsResult!;
+
+    for (var i = 0; i < result.sessions.length; i++) {
+      if (i >= res.recordings.length || i >= stateStripAxes.length) continue;
+      final sess = result.sessions[i];
+      final rec = res.recordings[i];
+      final dur = sess.durationMin;
+      final strip = px(stateStripAxes[i]);
+      final raster = px(rasterAxes[i]);
+
+      double xOf(double tMin) => strip.left + tMin / dur * strip.width;
+
+      // 1. State Categorical Bar
+      canvas.save();
+      canvas.clipRect(strip);
+      for (var wIdx = 0; wIdx < rec.windows.length; wIdx++) {
+        final w = rec.windows[wIdx];
+        final t1Min = w.tStart / 60.0;
+        final t2Min = (wIdx + 1 < rec.windows.length)
+            ? rec.windows[wIdx + 1].tStart / 60.0
+            : dur;
+        final xx1 = xOf(t1Min);
+        final xx2 = xOf(t2Min);
+        final isSelected = w.stateLabel == selectedStateLabel;
+        final baseColor = _parseColor(w.stateColor);
+
+        canvas.drawRect(
+          Rect.fromLTRB(xx1, strip.top, xx2, strip.bottom),
+          Paint()..color = baseColor,
+        );
+
+        if (isSelected) {
+          canvas.drawRect(
+            Rect.fromLTRB(xx1, strip.top, xx2, strip.bottom),
+            Paint()
+              ..color = const Color(0xFFFFFFFF)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.0 * pt,
+          );
+        }
+
+        // Draw state letter if wide enough
+        if (xx2 - xx1 > 12 * pt) {
+          final tp = TextPainter(
+            text: TextSpan(
+              text: w.stateLabel,
+              style: TextStyle(
+                color: const Color(0xFFFFFFFF),
+                fontWeight: FontWeight.bold,
+                fontSize: 8.5 * pt,
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout();
+          tp.paint(
+            canvas,
+            Offset((xx1 + xx2) / 2 - tp.width / 2, strip.center.dy - tp.height / 2),
+          );
+        }
+      }
+      canvas.restore();
+
+      // Border around strip
+      canvas.drawRect(
+        strip,
+        Paint()
+          ..color = const Color(0x33000000)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.5 * pt,
+      );
+
+      // Label on the left for session 0
+      if (i == 0) {
+        drawMplText(
+          canvas,
+          'state (${res.scale})',
+          Offset(strip.left - 6 * pt, strip.center.dy),
+          7.5 * pt,
+          ha: HAlign.right,
+          va: VAlign.center,
+          color: const Color(0xFF555555),
+        );
+      }
+
+      // 2. Multi-scale boundary rasters (auto, 60s, 30s, 15s)
+      canvas.save();
+      canvas.clipRect(raster);
+      final scales = const ['auto', '60s', '30s', '15s'];
+      final tickH = raster.height / scales.length;
+      final tickPaint = Paint()
+        ..color = const Color(0x99000000)
+        ..strokeWidth = 0.8 * pt;
+
+      for (var sIdx = 0; sIdx < scales.length; sIdx++) {
+        final sc = scales[sIdx];
+        final cuts = rec.cutPoints[sc] ?? [];
+        final yBase = raster.top + sIdx * tickH;
+
+        for (var c = 1; c < cuts.length - 1; c++) {
+          final winIdx = cuts[c];
+          if (winIdx < rec.windows.length) {
+            final tx = xOf(rec.windows[winIdx].tStart / 60.0);
+            canvas.drawLine(
+              Offset(tx, yBase + 1.0 * pt),
+              Offset(tx, yBase + tickH - 1.0 * pt),
+              tickPaint,
+            );
+          }
+        }
+
+        if (i == 0) {
+          drawMplText(
+            canvas,
+            sc,
+            Offset(raster.left - 6 * pt, yBase + tickH / 2),
+            6.5 * pt,
+            ha: HAlign.right,
+            va: VAlign.center,
+            color: const Color(0xFF777777),
+          );
+        }
+      }
+      canvas.restore();
+
+      // Border around raster
+      canvas.drawRect(
+        raster,
+        Paint()
+          ..color = const Color(0x22000000)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.5 * pt,
+      );
+    }
+  }
+
+  static Color _parseColor(String hex) {
+    var c = hex.replaceAll('#', '');
+    if (c.length == 6) c = 'FF$c';
+    return Color(int.tryParse(c, radix: 16) ?? 0xFF0072B2);
   }
 
   void _paintTopoRow(
@@ -928,6 +1177,29 @@ class TopoFigure {
 
   /// Hit-test at a position in figure inches.
   TopoHit? hitTest(Offset pIn) {
+    // Check state strip first
+    if (stateDynamicsResult != null && stateStripAxes.isNotEmpty) {
+      for (var i = 0; i < stateStripAxes.length; i++) {
+        final strip = stateStripAxes[i];
+        if (strip.contains(pIn) && i < stateDynamicsResult!.recordings.length) {
+          final rec = stateDynamicsResult!.recordings[i];
+          final durMin = result.sessions[i].durationMin;
+          if (durMin > 0) {
+            final tSec = (pIn.dx - strip.left) / strip.width * durMin * 60.0;
+            for (var wIdx = 0; wIdx < rec.windows.length; wIdx++) {
+              final w = rec.windows[wIdx];
+              final nextT = (wIdx + 1 < rec.windows.length)
+                  ? rec.windows[wIdx + 1].tStart
+                  : rec.durationS;
+              if (tSec >= w.tStart && tSec <= nextT) {
+                return TopoHit.state(w.stateLabel, i);
+              }
+            }
+          }
+        }
+      }
+    }
+
     for (var i = 0; i < lineAxes.length; i++) {
       final ax = lineAxes[i];
       if (ax.contains(pIn)) {
@@ -943,7 +1215,24 @@ class TopoFigure {
             best = k;
           }
         }
-        return TopoHit.line(i, best);
+
+        String? hitState;
+        if (stateDynamicsResult != null && i < stateDynamicsResult!.recordings.length) {
+          final rec = stateDynamicsResult!.recordings[i];
+          final tSec = t * 60.0;
+          for (var wIdx = 0; wIdx < rec.windows.length; wIdx++) {
+            final w = rec.windows[wIdx];
+            final nextT = (wIdx + 1 < rec.windows.length)
+                ? rec.windows[wIdx + 1].tStart
+                : rec.durationS;
+            if (tSec >= w.tStart && tSec <= nextT) {
+              hitState = w.stateLabel;
+              break;
+            }
+          }
+        }
+
+        return TopoHit.line(i, best, stateLabel: hitState);
       }
     }
     for (var i = 0; i < topoCells.length; i++) {
@@ -1039,6 +1328,11 @@ class TopoFigure {
             ..strokeWidth = 0.9 * pt,
         );
       }
+    } else if (hit.isState) {
+      if (hit.session >= 0 && hit.session < stateStripAxes.length) {
+        final strip = px(stateStripAxes[hit.session]);
+        _outlineCell(canvas, strip, accent, pt);
+      }
     }
   }
 
@@ -1096,7 +1390,16 @@ class TopoFigure {
           'mean = ${f(sess.mean[k])}  ± ${f(sess.band[k])} (${s.shadeMetric})',
         );
       if (sess.repr != null) b.writeln('${s.reprChan} = ${f(sess.repr![k])}');
+      if (hit.stateLabel != null) {
+        b.writeln('State ${hit.stateLabel} (click to view feature map)');
+      }
       return b.toString().trimRight();
+    }
+    if (hit.isState) {
+      final sess = hit.session >= 0 && hit.session < result.sessions.length
+          ? result.sessions[hit.session]
+          : null;
+      return '${sess != null ? "${sess.name}\n" : ""}State ${hit.stateLabel} (click to view feature map)';
     }
     if (hit.isTopo) {
       final sess = result.sessions[hit.session];

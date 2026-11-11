@@ -271,7 +271,80 @@ pub fn participant(path: &str) -> String {
         return sub.to_string();
     }
 
-    // Check delimited prefix
+    // Split tokens by '_'
+    let mut parts: Vec<&str> = stem
+        .split('_')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Helper to check if a token is a date, session/task tag, or pipeline suffix
+    let is_meta_token = |tok: &str| -> bool {
+        let p_clean = tok.replace("-epo", "").replace("_clean", "");
+        if p_clean.is_empty() {
+            return true;
+        }
+        let digit_count = p_clean.chars().filter(|c| c.is_ascii_digit()).count();
+        let is_date = digit_count >= 6
+            && (p_clean.contains('.') || p_clean.contains('-') || digit_count == p_clean.len());
+        let lower = p_clean.to_lowercase();
+        let is_session_or_task = lower.starts_with("ses-")
+            || lower.starts_with("session")
+            || lower.starts_with("task-")
+            || lower.starts_with("run-")
+            || lower.starts_with("clean")
+            || lower.starts_with("raw")
+            || lower.starts_with("edf")
+            || lower.starts_with("epo")
+            || [
+                "ern", "lrp", "mmn", "n170", "n2pc", "n400", "p3", "p300",
+            ]
+            .contains(&lower.as_str());
+        is_date || is_session_or_task
+    };
+
+    // If first part is a pure numeric prefix (e.g. "1", "6", "02") or "rec1", "file1":
+    // Only strip it if the remaining tokens contain at least one subject identifier token
+    // (e.g. "6_Pilot_Tukdam_..." -> strip "6", keep "Pilot_Tukdam";
+    //  "10_P3_cleaned.edf" -> "P3" and "cleaned" are meta tokens, so keep "10" as subject!).
+    if !parts.is_empty() {
+        let first = parts[0];
+        let is_idx = first.chars().all(|c| c.is_ascii_digit())
+            || ((first.starts_with("rec") || first.starts_with("file"))
+                && first.len() > 3
+                && first[4..].chars().all(|c| c.is_ascii_digit()));
+        if is_idx && parts.len() > 1 {
+            let has_named_subject_after = parts[1..].iter().any(|t| !is_meta_token(t));
+            if has_named_subject_after {
+                parts.remove(0);
+            } else {
+                return first.to_string();
+            }
+        }
+    }
+
+    // Scan parts for subject name before dates, tasks, sessions, or cleanup suffixes
+    let mut subj_tokens = Vec::new();
+    for part in &parts {
+        let p_clean = part.replace("-epo", "").replace("_clean", "");
+        if p_clean.is_empty() {
+            continue;
+        }
+        if is_meta_token(part) && !subj_tokens.is_empty() {
+            break;
+        }
+        if !is_meta_token(part) {
+            subj_tokens.push(p_clean);
+            if subj_tokens.len() >= 2 {
+                break;
+            }
+        }
+    }
+
+    if !subj_tokens.is_empty() {
+        return subj_tokens.join("_");
+    }
+
     let first = stem.split('_').next().unwrap_or("").trim();
     if !first.is_empty() && first != "unknown" {
         return first.replace("-epo", "").replace("_clean", "");
@@ -618,6 +691,21 @@ pub struct Job {
     pub options: Options,
 }
 fn input_profile(path: &str, o: &Options) -> Result<Profile, String> {
+    if o.task == "Auto" {
+        if let Some(detected) = detect_task(path) {
+            if let Some(p) = &o.profile_override {
+                if p.task.eq_ignore_ascii_case(&detected) {
+                    return Ok(p.clone());
+                }
+            }
+            return o
+                .profile_overrides
+                .get(&detected)
+                .cloned()
+                .map(Ok)
+                .unwrap_or_else(|| profile(&detected));
+        }
+    }
     if let Some(p) = &o.profile_override {
         return Ok(p.clone());
     }
@@ -898,6 +986,8 @@ fn classify(events: &[Event], p: &Profile, o: &Options) -> (Vec<Trial>, usize) {
     let mut trials = Vec::new();
     let mut rejected = 0;
     let conditions = p.resolved_conditions();
+    let has_flanker_stim = ["ERN", "LRP"].contains(&p.task.as_str())
+        && events.iter().any(|ev| [11, 12, 21, 22].contains(&code(ev)));
     for (i, e) in events.iter().enumerate() {
         let normalized = normalized(&e.label);
         let class = match conditions
@@ -907,6 +997,28 @@ fn classify(events: &[Event], p: &Profile, o: &Options) -> (Vec<Trial>, usize) {
             Some(idx) => idx,
             None => continue,
         };
+        if ["ERN", "LRP"].contains(&p.task.as_str()) {
+            let stim = events[..i]
+                .iter()
+                .rev()
+                .take_while(|s| e.onset - s.onset <= o.response_max)
+                .find(|s| [11, 12, 21, 22].contains(&code(s)));
+            let rt = stim.map(|s| e.onset - s.onset);
+            if o.correct_only
+                && has_flanker_stim
+                && !rt.is_some_and(|t| t >= o.response_min && t <= o.response_max)
+            {
+                rejected += 1;
+                continue;
+            }
+            trials.push(Trial {
+                event: e.clone(),
+                class,
+                rt,
+                sample_start: None,
+            });
+            continue;
+        }
         let response = if !["MMN", "ERN", "LRP"].contains(&p.task.as_str()) {
             events
                 .iter()
@@ -2163,7 +2275,7 @@ fn group(files: &[&FileResult], o: &Options) -> Value {
             }
         }
     }
-    json!({"task":first.task,"component_name":first.profile.component_name,"profile":first.profile,"subjects":names,"n_subjects":subjects.len(),"n_files":files.len(),"times":first.times,"a":a,"b":b,"difference":difference,"sem_difference":sem,"grand_difference_measurements":grand_difference_measurements,"condition_names":first.condition_names,"condition_waves":grand_condition_waves,"condition_sems":grand_condition_sems,"grand_condition_measurements":grand_condition_measurements,"channel_conditions":if same_channels{Some(grand_channel_conditions)}else{None},"regression_inference":regression_inference,"gfp_a":gfp_a,"gfp_b":gfp_b,"labels":common_labels,"topo_difference":if same_channels{Some(avg(&topo))}else{None},"topo_t":topo_t,"topo_p_fwer":topo_p,"bin_times":first.bin_times,"spatiotemporal_t":temporal_t,"spatiotemporal_p_fwer":temporal_p,"statistics":stats,"tanova_gmd":tanova,"tanova_p":tanova_p,"permutation_patterns":flip.len(),"inference_unit":"participant; multiple recordings averaged within participant","warning":if !same_channels{"Fewer than four common channels: topographical inference omitted"}else if subjects.len()<2{"One participant: descriptive results only"}else{"Separate max-|t| families: component-window channels and all channel×time bins"}})
+    json!({"task":first.task,"component_name":first.profile.component_name,"profile":first.profile,"subjects":names,"n_subjects":subjects.len(),"n_files":files.len(),"times":first.times,"a":a,"b":b,"difference":difference,"sem_difference":sem,"grand_difference_measurements":grand_difference_measurements,"condition_names":first.condition_names,"condition_waves":grand_condition_waves,"condition_sems":grand_condition_sems,"grand_condition_measurements":grand_condition_measurements,"channel_conditions":if same_channels{Some(grand_channel_conditions)}else{None},"regression_inference":regression_inference,"gfp_a":gfp_a,"gfp_b":gfp_b,"labels":common_labels,"topo_a":if same_channels{Some(avg(&topoa))}else{None},"topo_b":if same_channels{Some(avg(&topob))}else{None},"topo_difference":if same_channels{Some(avg(&topo))}else{None},"topo_t":topo_t,"topo_p_fwer":topo_p,"bin_times":first.bin_times,"spatiotemporal_t":temporal_t,"spatiotemporal_p_fwer":temporal_p,"statistics":stats,"tanova_gmd":tanova,"tanova_p":tanova_p,"permutation_patterns":flip.len(),"inference_unit":"participant; multiple recordings averaged within participant","warning":if !same_channels{"Fewer than four common channels: topographical inference omitted"}else if subjects.len()<2{"One participant: descriptive results only"}else{"Separate max-|t| families: component-window channels and all channel×time bins"}})
 }
 pub fn run<F>(job: &Job, mut load: F) -> Result<Value, String>
 where

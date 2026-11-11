@@ -351,15 +351,196 @@ class ErpWorkbenchWavePainter extends CustomPainter {
   bool shouldRepaint(covariant ErpWorkbenchWavePainter old) => true;
 }
 
+List<Map<String, dynamic>> extractErpConditionTopos(
+  Map<String, dynamic> data, {
+  List<Map<String, dynamic>>? files,
+}) {
+  final labels = (data['labels'] as List? ?? []).cast<String>();
+  if (labels.isEmpty) return [];
+  final profile = erpMap(data['profile']);
+  final lateral = profile['lateralized'] == true;
+  final condNames = (data['condition_names'] as List?)
+          ?.map((e) => e.toString())
+          .toList() ??
+      [];
+  final nameA = lateral
+      ? 'Ipsilateral'
+      : (condNames.isNotEmpty
+          ? condNames.first
+          : (profile['a_name']?.toString() ?? 'Condition A'));
+  final nameB = lateral
+      ? 'Contralateral'
+      : (condNames.length > 1
+          ? condNames[1]
+          : (profile['b_name']?.toString() ?? 'Condition B'));
+
+  List<double> windowMeanFromMatrix(dynamic matrix, List<double> times, List<double> win) {
+    if (matrix is! List || times.isEmpty || win.length < 2) return [];
+    final idx = <int>[
+      for (var t = 0; t < times.length; t++)
+        if (times[t] >= win[0] - 1e-9 && times[t] <= win[1] + 1e-9) t,
+    ];
+    if (idx.isEmpty) return [];
+    final out = <double>[];
+    for (final row in matrix) {
+      final nums = erpNumbers(row);
+      var sum = 0.0;
+      var count = 0;
+      for (final i in idx) {
+        if (i < nums.length && nums[i].isFinite) {
+          sum += nums[i];
+          count++;
+        }
+      }
+      out.add(count > 0 ? sum / count : 0.0);
+    }
+    return out;
+  }
+
+  List<double> resolveTopo(String key, String condName) {
+    final direct = erpNumbers(data[key]);
+    if (direct.length == labels.length) return direct;
+
+    final times = erpNumbers(data['times']);
+    final win = erpNumbers(profile['window']);
+    final cc = data['channel_conditions'];
+    if (cc is Map && cc[condName] is List) {
+      final fromCc = windowMeanFromMatrix(cc[condName], times, win);
+      if (fromCc.length == labels.length) return fromCc;
+    }
+    if (key == 'topo_a' && data['channel_a'] is List) {
+      final fromA = windowMeanFromMatrix(data['channel_a'], times, win);
+      if (fromA.length == labels.length) return fromA;
+    }
+    if (key == 'topo_b' && data['channel_b'] is List) {
+      final fromB = windowMeanFromMatrix(data['channel_b'], times, win);
+      if (fromB.length == labels.length) return fromB;
+    }
+
+    if (files != null && files.isNotEmpty) {
+      final fileTopos = <List<double>>[];
+      for (final f in files) {
+        final fLabels = (f['labels'] as List? ?? []).cast<String>();
+        final fVals = erpNumbers(f[key]);
+        if (fVals.length == fLabels.length && fVals.isNotEmpty) {
+          final aligned = <double>[];
+          for (final l in labels) {
+            final idx = fLabels.indexWhere(
+              (fl) => fl.toUpperCase() == l.toUpperCase(),
+            );
+            aligned.add(idx >= 0 ? fVals[idx] : 0.0);
+          }
+          fileTopos.add(aligned);
+        }
+      }
+      if (fileTopos.isNotEmpty) {
+        return List<double>.generate(labels.length, (c) {
+          var s = 0.0;
+          for (final ft in fileTopos) {
+            s += ft[c];
+          }
+          return s / fileTopos.length;
+        });
+      }
+    }
+    return [];
+  }
+
+  final topoA = resolveTopo('topo_a', nameA);
+  final topoB = resolveTopo('topo_b', nameB);
+  var topoDiff = erpNumbers(data['topo_difference']);
+  if (topoDiff.length != labels.length &&
+      topoA.length == labels.length &&
+      topoB.length == labels.length) {
+    topoDiff = [
+      for (var i = 0; i < labels.length; i++) topoB[i] - topoA[i],
+    ];
+  }
+  final pFwer = erpNumbers(data['topo_p_fwer']);
+
+  double maxAbs(List<double> v) =>
+      v.where((x) => x.isFinite).fold(0.01, (a, b) => math.max(a, b.abs()));
+  final sharedCondScale = math.max(maxAbs(topoA), maxAbs(topoB));
+  final diffScale = maxAbs(topoDiff);
+
+  final out = <Map<String, dynamic>>[];
+  if (topoA.length == labels.length) {
+    out.add({
+      'key': 'topo_a',
+      'title': '$nameA (µV)',
+      'values': topoA,
+      'scale': sharedCondScale,
+      'p_fwer': const <double>[],
+      'is_diff': false,
+    });
+  }
+  if (topoB.length == labels.length) {
+    out.add({
+      'key': 'topo_b',
+      'title': '$nameB (µV)',
+      'values': topoB,
+      'scale': sharedCondScale,
+      'p_fwer': const <double>[],
+      'is_diff': false,
+    });
+  }
+  // Additional conditions beyond A and B if present
+  if (condNames.length > 2 && data['channel_conditions'] is Map) {
+    final times = erpNumbers(data['times']);
+    final win = erpNumbers(profile['window']);
+    final cc = data['channel_conditions'] as Map;
+    for (var i = 2; i < condNames.length; i++) {
+      final cName = condNames[i];
+      final vals = windowMeanFromMatrix(cc[cName], times, win);
+      if (vals.length == labels.length) {
+        out.add({
+          'key': 'cond_$i',
+          'title': '$cName (µV)',
+          'values': vals,
+          'scale': math.max(sharedCondScale, maxAbs(vals)),
+          'p_fwer': const <double>[],
+          'is_diff': false,
+        });
+      }
+    }
+  }
+  if (topoDiff.length == labels.length) {
+    out.add({
+      'key': 'topo_difference',
+      'title': '$nameB − $nameA (µV)',
+      'values': topoDiff,
+      'scale': diffScale,
+      'p_fwer': pFwer,
+      'is_diff': true,
+    });
+  }
+  return out;
+}
+
 class ErpWorkbenchTopoPainter extends CustomPainter {
-  ErpWorkbenchTopoPainter(this.data);
+  ErpWorkbenchTopoPainter(
+    this.data, {
+    this.valueKey = 'topo_difference',
+    this.customTitle,
+    this.valuesOverride,
+    this.scaleOverride,
+    this.showPValues = true,
+    this.selectedChannels = const {},
+  });
   final Map<String, dynamic> data;
+  final String valueKey;
+  final String? customTitle;
+  final List<double>? valuesOverride;
+  final double? scaleOverride;
+  final bool showPValues;
+  final Set<String> selectedChannels;
+
   @override
   void paint(Canvas c, Size size) {
     c.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFFFFFFF));
     final labels = (data['labels'] as List? ?? []).cast<String>();
-    final values = erpNumbers(data['topo_difference']);
-    final p = erpNumbers(data['topo_p_fwer']);
+    final values = valuesOverride ?? erpNumbers(data[valueKey]);
+    final p = showPValues ? erpNumbers(data['topo_p_fwer']) : const <double>[];
     final known = {
       for (final name in kStandard1020Topo.keys) name.toUpperCase(): name,
     };
@@ -378,27 +559,47 @@ class ErpWorkbenchTopoPainter extends CustomPainter {
     }
     final ch = [for (final i in indices) known[labels[i].toUpperCase()]!];
     final v = [for (final i in indices) values[i]];
-    final scale = v.fold(.01, (a, b) => math.max(a, b.abs()));
+    final double scale = scaleOverride ??
+        v.where((x) => x.isFinite).fold<double>(.01, (a, b) => math.max(a, b.abs()));
+    final selUpper = selectedChannels.map((s) => s.toUpperCase()).toSet();
+    final highlightList = p.length == labels.length
+        ? [for (final i in indices) p[i] <= .05]
+        : (selUpper.isNotEmpty
+            ? [for (final i in indices) selUpper.contains(labels[i].toUpperCase())]
+            : null);
+
     paintTopomap(
       c,
-      Rect.fromLTWH(0, 20, size.width - 80, size.height - 40),
+      Rect.fromLTWH(4, 22, size.width - 68, size.height - 38),
       TopoInterpolator.forChannels(ch),
       v,
       vmin: -scale,
       vmax: scale,
       cmap: 'RdBu_r',
-      highlight: p.length == labels.length
-          ? [for (final i in indices) p[i] <= .05]
-          : null,
+      highlight: highlightList,
       fittedHead: true,
       contours: true,
     );
-    erpText(c, 'B - A (µV)', const Offset(12, 2), size: 12);
+    final profile = erpMap(data['profile']);
+    final defaultTitle = customTitle ??
+        (valueKey == 'topo_a'
+            ? '${profile['a_name'] ?? 'Condition A'} (µV)'
+            : valueKey == 'topo_b'
+                ? '${profile['b_name'] ?? 'Condition B'} (µV)'
+                : '${profile['b_name'] ?? 'B'} − ${profile['a_name'] ?? 'A'} (µV)');
+    erpText(
+      c,
+      defaultTitle,
+      const Offset(10, 4),
+      size: 11.5,
+      color: const Color(0xFF0F172A),
+      maxWidth: size.width - 20,
+    );
     final bar = Rect.fromLTWH(
-      size.width - 62,
-      size.height * .25,
-      10,
-      size.height * .5,
+      size.width - 54,
+      size.height * .24,
+      9,
+      size.height * .52,
     );
     paintColorbar(c, bar, cmap: 'RdBu_r');
     erpText(
@@ -406,28 +607,39 @@ class ErpWorkbenchTopoPainter extends CustomPainter {
       scale.toStringAsFixed(2),
       Offset(bar.right + 4, bar.top - 5),
       size: 9,
-      maxWidth: 48,
+      maxWidth: 44,
     );
     erpText(
       c,
       '0',
       Offset(bar.right + 4, bar.center.dy - 5),
       size: 9,
-      maxWidth: 48,
+      maxWidth: 44,
     );
     erpText(
       c,
       (-scale).toStringAsFixed(2),
       Offset(bar.right + 4, bar.bottom - 5),
       size: 9,
-      maxWidth: 48,
+      maxWidth: 44,
     );
-    if (p.isNotEmpty)
-      erpText(c, 'Rings: pFWER ≤ .05', Offset(12, size.height - 18), size: 10);
+    if (p.isNotEmpty) {
+      erpText(
+        c,
+        'Rings: pFWER ≤ .05',
+        Offset(10, size.height - 16),
+        size: 9.5,
+      );
+    }
   }
 
   @override
-  bool shouldRepaint(covariant ErpWorkbenchTopoPainter old) => old.data != data;
+  bool shouldRepaint(covariant ErpWorkbenchTopoPainter old) =>
+      old.data != data ||
+      old.valueKey != valueKey ||
+      old.customTitle != customTitle ||
+      old.scaleOverride != scaleOverride ||
+      old.selectedChannels != selectedChannels;
 }
 
 class ErpWorkbenchHeatPainter extends CustomPainter {

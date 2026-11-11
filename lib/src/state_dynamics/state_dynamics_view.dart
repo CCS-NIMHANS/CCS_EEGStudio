@@ -253,11 +253,21 @@ class StateDynamicsView extends StatefulWidget {
     required this.featureFilePaths,
     this.title = 'State Dynamics Analysis',
     this.autoRun = false,
+    this.result,
+    this.onResultChanged,
+    this.selectedStateLabel,
+    this.onStateSelected,
+    this.hideTimeline = false,
   });
 
   final List<String> featureFilePaths;
   final String title;
   final bool autoRun;
+  final StateDynamicsResult? result;
+  final ValueChanged<StateDynamicsResult>? onResultChanged;
+  final String? selectedStateLabel;
+  final ValueChanged<String>? onStateSelected;
+  final bool hideTimeline;
 
   @override
   State<StateDynamicsView> createState() => _StateDynamicsViewState();
@@ -280,10 +290,17 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
   String? _selectedStateLabel;
   Process? _process;
 
+  bool _forceShowStandalone = false;
+  double _timelineZoom = 1.0;
+  final _timelineScrollCtrl = ScrollController();
+
   @override
   void initState() {
     super.initState();
-    if (widget.autoRun && widget.featureFilePaths.isNotEmpty) {
+    _result = widget.result;
+    _selectedStateLabel =
+        widget.selectedStateLabel ?? widget.result?.states.firstOrNull?.label;
+    if (widget.autoRun && widget.featureFilePaths.isNotEmpty && _result == null) {
       _runAnalysis();
     }
   }
@@ -291,17 +308,30 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
   @override
   void dispose() {
     _process?.kill();
+    _timelineScrollCtrl.dispose();
     super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant StateDynamicsView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.result != oldWidget.result && widget.result != null) {
+      _result = widget.result;
+    }
+    if (widget.selectedStateLabel != oldWidget.selectedStateLabel &&
+        widget.selectedStateLabel != null) {
+      _selectedStateLabel = widget.selectedStateLabel;
+    }
     if (widget.autoRun &&
         oldWidget.featureFilePaths != widget.featureFilePaths &&
         widget.featureFilePaths.isNotEmpty) {
       _runAnalysis();
     }
+  }
+
+  void _selectState(String label) {
+    setState(() => _selectedStateLabel = label);
+    widget.onStateSelected?.call(label);
   }
 
   Future<void> _runAnalysis() async {
@@ -355,10 +385,12 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
       if (mounted) {
         setState(() {
           _result = parsed;
-          _selectedStateLabel ??= parsed.states.firstOrNull?.label;
+          _selectedStateLabel =
+              widget.selectedStateLabel ?? parsed.states.firstOrNull?.label;
           _loading = false;
           _status = 'Complete.';
         });
+        widget.onResultChanged?.call(parsed);
       }
     } catch (e) {
       if (mounted) {
@@ -434,10 +466,12 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
                 ),
               )
             else if (res != null) ...[
-              // Snapshot 1: Stable-State Segmentation Timeline
-              _buildTimelineSection(res, theme),
+              if (widget.hideTimeline && !_forceShowStandalone)
+                _buildIntegrationBanner(theme)
+              else
+                _buildTimelineSection(res, theme),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               const Divider(height: 24),
 
               // Snapshot 2: State Feature Mapping Heatmap
@@ -649,10 +683,57 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 ),
               ),
+              if (widget.hideTimeline)
+                ActionChip(
+                  avatar: Icon(
+                    _forceShowStandalone ? Icons.layers_outlined : Icons.auto_graph,
+                    size: 14,
+                    color: const Color(0xFF0072B2),
+                  ),
+                  label: Text(_forceShowStandalone ? 'Standalone View' : 'Integrated in Plot'),
+                  tooltip: _forceShowStandalone
+                      ? 'Click to collapse back to integrated main plot view'
+                      : 'Click to expand standalone timeline',
+                  onPressed: () => setState(() => _forceShowStandalone = !_forceShowStandalone),
+                  visualDensity: VisualDensity.compact,
+                ),
             ],
           ),
         );
       },
+    );
+  }
+
+  Widget _buildIntegrationBanner(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0072B2).withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF0072B2).withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.check_circle_outline, size: 18, color: Color(0xFF0072B2)),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text(
+              'State dynamics segmentation (state colors & multi-scale boundaries) is integrated into the zoomable feature plot above. Click any state segment in the plot or the chips below to explore its feature map.',
+              style: TextStyle(fontSize: 12, height: 1.3),
+            ),
+          ),
+          const SizedBox(width: 12),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.open_in_full, size: 13),
+            label: const Text('Standalone Timeline', style: TextStyle(fontSize: 11)),
+            onPressed: () => setState(() => _forceShowStandalone = true),
+            style: OutlinedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -662,22 +743,52 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Title & State Legend
+        // Title & State Legend & Zoom Controls
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Expanded(
               child: Text(
-                'Stable-state segmentation of ${res.displayBand} PSD course — scale ${res.scale} (purple = task markers, dashed = ${res.reprChannel})',
+                'Stable-state segmentation of ${res.displayBand} PSD course — scale ${res.scale} (dashed = ${res.reprChannel})',
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
               ),
             ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.zoom_out, size: 16),
+                  tooltip: 'Zoom out timeline',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: _timelineZoom > 0.6
+                      ? () => setState(() => _timelineZoom = (_timelineZoom / 1.3).clamp(0.5, 4.0))
+                      : null,
+                ),
+                Text(
+                  '${(_timelineZoom * 100).round()}%',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.zoom_in, size: 16),
+                  tooltip: 'Zoom in timeline',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: _timelineZoom < 3.8
+                      ? () => setState(() => _timelineZoom = (_timelineZoom * 1.3).clamp(0.5, 4.0))
+                      : null,
+                ),
+                TextButton(
+                  onPressed: () => setState(() => _timelineZoom = 1.0),
+                  child: const Text('Fit', style: TextStyle(fontSize: 11)),
+                ),
+              ],
+            ),
+            const SizedBox(width: 8),
             Wrap(
               spacing: 6,
               children: [
                 for (final st in res.states)
                   InkWell(
-                    onTap: () => setState(() => _selectedStateLabel = st.label),
+                    onTap: () => _selectState(st.label),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
@@ -685,7 +796,12 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
                             ? _parseHex(st.color)
                             : _parseHex(st.color).withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: _parseHex(st.color)),
+                        border: Border.all(
+                          color: _selectedStateLabel == st.label
+                              ? Colors.white
+                              : _parseHex(st.color),
+                          width: _selectedStateLabel == st.label ? 1.5 : 1.0,
+                        ),
                       ),
                       child: Text(
                         'state ${st.label}',
@@ -705,21 +821,43 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
         ),
         const SizedBox(height: 10),
 
-        // Side-by-side timeline plots for each recording
-        SizedBox(
-          height: 280,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (var i = 0; i < res.recordings.len(); i++) ...[
-                if (i > 0) const SizedBox(width: 8),
-                Expanded(
-                  flex: math.max(1, (res.recordings[i].durationS / 60.0).round()),
-                  child: _buildSingleRecordingTimeline(res.recordings[i], res, theme, showYAxis: i == 0),
+        // Side-by-side zoomable timeline plots for each recording
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final availableW = constraints.hasBoundedWidth ? constraints.maxWidth : 900.0;
+            final totalMin = res.recordings.fold<double>(0.0, (sum, r) => sum + r.durationS / 60.0);
+            final targetW = math.max(availableW, totalMin * 18.0 * _timelineZoom);
+
+            return Scrollbar(
+              controller: _timelineScrollCtrl,
+              thumbVisibility: _timelineZoom > 1.05,
+              child: SingleChildScrollView(
+                controller: _timelineScrollCtrl,
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: targetW,
+                  height: 280,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (var i = 0; i < res.recordings.len(); i++) ...[
+                        if (i > 0) const SizedBox(width: 8),
+                        Expanded(
+                          flex: math.max(1, (res.recordings[i].durationS / 60.0).round()),
+                          child: _buildSingleRecordingTimeline(
+                            res.recordings[i],
+                            res,
+                            theme,
+                            showYAxis: i == 0,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
-              ],
-            ],
-          ),
+              ),
+            );
+          },
         ),
       ],
     );
@@ -734,10 +872,10 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Recording label header
+        // Recording label header (cleaned)
         Center(
           child: Text(
-            rec.label,
+            rec.label.replaceAll(RegExp(r'(-epo)?_clean(\.edf)?$'), ''),
             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
             overflow: TextOverflow.ellipsis,
           ),
@@ -746,14 +884,38 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
 
         // Custom plotted canvas: PSD curve + State Strip + Raster
         Expanded(
-          child: CustomPaint(
-            painter: _StateTimelinePainter(
-              rec: rec,
-              res: res,
-              showYAxis: showYAxis,
-              theme: theme,
-              onStateTap: (label) => setState(() => _selectedStateLabel = label),
-            ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (details) {
+                  final totalMin = rec.durationS / 60.0;
+                  if (totalMin <= 0 || constraints.maxWidth <= 0) return;
+                  final tSec = (details.localPosition.dx / constraints.maxWidth) * rec.durationS;
+                  for (var wIdx = 0; wIdx < rec.windows.length; wIdx++) {
+                    final w = rec.windows[wIdx];
+                    final nextT = (wIdx + 1 < rec.windows.length)
+                        ? rec.windows[wIdx + 1].tStart
+                        : rec.durationS;
+                    if (tSec >= w.tStart && tSec <= nextT) {
+                      _selectState(w.stateLabel);
+                      break;
+                    }
+                  }
+                },
+                child: CustomPaint(
+                  size: Size(constraints.maxWidth, constraints.maxHeight),
+                  painter: _StateTimelinePainter(
+                    rec: rec,
+                    res: res,
+                    selectedStateLabel: _selectedStateLabel,
+                    showYAxis: showYAxis,
+                    theme: theme,
+                    onStateTap: _selectState,
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ],
@@ -1037,6 +1199,7 @@ class _StateTimelinePainter extends CustomPainter {
   _StateTimelinePainter({
     required this.rec,
     required this.res,
+    this.selectedStateLabel,
     required this.showYAxis,
     required this.theme,
     required this.onStateTap,
@@ -1044,6 +1207,7 @@ class _StateTimelinePainter extends CustomPainter {
 
   final RecordingTimeline rec;
   final StateDynamicsResult res;
+  final String? selectedStateLabel;
   final bool showYAxis;
   final ThemeData theme;
   final void Function(String stateLabel) onStateTap;
@@ -1186,6 +1350,15 @@ class _StateTimelinePainter extends CustomPainter {
       final x2 = mapX(nextT);
       final c = _parseColor(w.stateColor);
       canvas.drawRect(Rect.fromLTRB(x1, stripY, x2, stripY + stripH), Paint()..color = c);
+      if (w.stateLabel == selectedStateLabel) {
+        canvas.drawRect(
+          Rect.fromLTRB(x1, stripY, x2, stripY + stripH),
+          Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.0,
+        );
+      }
 
       // Draw state letter if wide enough
       if (x2 - x1 > 14) {

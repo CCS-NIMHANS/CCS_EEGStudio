@@ -122,6 +122,116 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   final List<ErpConditionConfig> _conditions = [];
   final Map<String, String> _participantGroups = {};
   String _gallerySearch = '';
+  int _activeStage = 0; // 0 = All stages, 1..4 = focused modular stage
+  String? _primaryPlotChannel; // null = Task ROI average, or specific channel name
+  bool _showAxisLimits = false;
+
+  static final Map<String, Map<String, dynamic>> _kErpCorePresets = {
+    'P3': {
+      'task': 'P3',
+      'component_name': 'P3',
+      'a_name': 'Non-target',
+      'b_name': 'Target',
+      'a_codes': [
+        '12', '13', '14', '15',
+        '21', '23', '24', '25',
+        '31', '32', '34', '35',
+        '41', '42', '43', '45',
+        '51', '52', '53', '54',
+      ],
+      'b_codes': ['11', '22', '33', '44', '55'],
+      'roi': ['Pz'],
+      'epoch': [-0.2, 0.8],
+      'baseline': [-0.2, 0.0],
+      'window': [0.3, 0.6],
+      'polarity': 1.0,
+      'lateralized': false,
+    },
+    'MMN': {
+      'task': 'MMN',
+      'component_name': 'MMN',
+      'a_name': 'Standard',
+      'b_name': 'Deviant',
+      'a_codes': ['80'],
+      'b_codes': ['70'],
+      'roi': ['FCz'],
+      'epoch': [-0.2, 0.8],
+      'baseline': [-0.2, 0.0],
+      'window': [0.125, 0.225],
+      'polarity': -1.0,
+      'lateralized': false,
+    },
+    'N170': {
+      'task': 'N170',
+      'component_name': 'N170',
+      'a_name': 'Car',
+      'b_name': 'Face',
+      'a_codes': [for (var i = 41; i <= 80; i++) '$i'],
+      'b_codes': [for (var i = 1; i <= 40; i++) '$i'],
+      'roi': ['PO7', 'PO8'],
+      'epoch': [-0.2, 0.8],
+      'baseline': [-0.2, 0.0],
+      'window': [0.11, 0.15],
+      'polarity': -1.0,
+      'lateralized': false,
+    },
+    'N2pc': {
+      'task': 'N2pc',
+      'component_name': 'N2pc',
+      'a_name': 'Left target',
+      'b_name': 'Right target',
+      'a_codes': ['111', '112', '211', '212'],
+      'b_codes': ['121', '122', '221', '222'],
+      'roi': ['PO7', 'PO8'],
+      'epoch': [-0.2, 0.8],
+      'baseline': [-0.2, 0.0],
+      'window': [0.2, 0.275],
+      'polarity': -1.0,
+      'lateralized': true,
+    },
+    'N400': {
+      'task': 'N400',
+      'component_name': 'N400',
+      'a_name': 'Related target',
+      'b_name': 'Unrelated target',
+      'a_codes': ['211', '212'],
+      'b_codes': ['221', '222'],
+      'roi': ['CPz', 'Cz'],
+      'epoch': [-0.2, 0.8],
+      'baseline': [-0.2, 0.0],
+      'window': [0.3, 0.5],
+      'polarity': -1.0,
+      'lateralized': false,
+    },
+    'ERN': {
+      'task': 'ERN',
+      'component_name': 'ERN',
+      'a_name': 'Correct response',
+      'b_name': 'Error response',
+      'a_codes': ['111', '121', '212', '222'],
+      'b_codes': ['112', '122', '211', '221'],
+      'roi': ['FCz'],
+      'epoch': [-0.6, 0.4],
+      'baseline': [-0.4, -0.2],
+      'window': [0.0, 0.1],
+      'polarity': -1.0,
+      'lateralized': false,
+    },
+    'LRP': {
+      'task': 'LRP',
+      'component_name': 'LRP',
+      'a_name': 'Left-hand correct',
+      'b_name': 'Right-hand correct',
+      'a_codes': ['111', '121'],
+      'b_codes': ['212', '222'],
+      'roi': ['C3', 'C4'],
+      'epoch': [-0.8, 0.2],
+      'baseline': [-0.8, -0.6],
+      'window': [-0.1, 0.0],
+      'polarity': -1.0,
+      'lateralized': true,
+    },
+  };
 
   List<String> get _savedA =>
       _conditions.isNotEmpty ? _conditions[0].savedGroups : [];
@@ -233,6 +343,255 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       }
     }
     return null;
+  }
+
+  Map<String, String> _describeRecording(Map<String, dynamic> f) {
+    final path = (f['path'] as String?) ?? '';
+    final fileName = path.split(RegExp(r'[/\\]')).last;
+    var stem = fileName.replaceAll(
+      RegExp(r'\.(edf|bdf|set|vhdr|ccserp|json|csv)$', caseSensitive: false),
+      '',
+    );
+    stem = stem.replaceAll(
+      RegExp(r'-epo_clean$|_cleaned$|_clean$', caseSensitive: false),
+      '',
+    );
+
+    bool isMetaToken(String tok) {
+      final lower = tok.toLowerCase();
+      final isDate =
+          RegExp(r'\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2}|\d{8}').hasMatch(tok);
+      final isTaskOrSession = lower.startsWith('ses') ||
+          lower.startsWith('task') ||
+          lower.startsWith('run') ||
+          lower.startsWith('clean') ||
+          lower.startsWith('raw') ||
+          lower.startsWith('epo') ||
+          const {
+            'ern',
+            'lrp',
+            'mmn',
+            'n170',
+            'n2pc',
+            'n400',
+            'p3',
+            'p300',
+          }.contains(lower);
+      return isDate || isTaskOrSession;
+    }
+
+    var subject = (f['subject'] as String?)?.trim() ?? '';
+    final parts = stem.split('_').where((s) => s.isNotEmpty).toList();
+    if (subject.isEmpty ||
+        subject == 'unknown' ||
+        RegExp(r'^\d+$').hasMatch(subject)) {
+      if (parts.isNotEmpty &&
+          RegExp(r'^\d+$').hasMatch(parts.first) &&
+          parts.length > 1) {
+        final hasNamedSubjectAfter = parts.skip(1).any((t) => !isMetaToken(t));
+        if (hasNamedSubjectAfter) {
+          final namedTokens = <String>[];
+          for (final p in parts.skip(1)) {
+            if (isMetaToken(p) && namedTokens.isNotEmpty) break;
+            if (!isMetaToken(p)) {
+              namedTokens.add(p);
+              if (namedTokens.length >= 2) break;
+            }
+          }
+          if (namedTokens.isNotEmpty) {
+            subject = namedTokens.join('_');
+          }
+        } else {
+          subject = 'Subj ${parts.first}';
+        }
+      } else if (parts.isNotEmpty) {
+        final subTokens = <String>[];
+        for (final p in parts) {
+          if (isMetaToken(p) && subTokens.isNotEmpty) break;
+          if (!isMetaToken(p)) {
+            subTokens.add(p);
+            if (subTokens.length >= 2) break;
+          }
+        }
+        if (subTokens.isNotEmpty) subject = subTokens.join('_');
+      }
+    } else if (RegExp(r'^\d+$').hasMatch(subject)) {
+      subject = 'Subj $subject';
+    }
+    if (subject.isEmpty) subject = 'Unknown';
+
+    final rawSubj = subject.replaceFirst(RegExp(r'^Subj\s+'), '');
+    var sessionPart = stem;
+    if (sessionPart.startsWith('${rawSubj}_')) {
+      sessionPart = sessionPart.substring(rawSubj.length + 1);
+    } else if (sessionPart.startsWith(RegExp(r'^\d+_'))) {
+      sessionPart = sessionPart.replaceFirst(RegExp(r'^\d+_'), '');
+    }
+    if (sessionPart.startsWith('${subject}_')) {
+      sessionPart = sessionPart.substring(subject.length + 1);
+    } else if (sessionPart == subject || sessionPart == rawSubj) {
+      sessionPart = (f['task'] as String?) ?? 'Session 1';
+    }
+    sessionPart = sessionPart.replaceAll('_', ' ').replaceAll('-', ' ').trim();
+    if (sessionPart.isEmpty) {
+      sessionPart = (f['task'] as String?) ?? 'Session 1';
+    }
+
+    return {
+      'path': path,
+      'fileName': fileName,
+      'stem': stem,
+      'subject': subject,
+      'session': sessionPart,
+      'label': '$subject · $sessionPart',
+    };
+  }
+
+  Widget _buildActiveRecordingIdentityCard(
+    Map<String, dynamic> d,
+    List<Map<String, dynamic>> current,
+  ) {
+    if (_file == null) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.cyan.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.groups, size: 18, color: Colors.cyanAccent),
+            const SizedBox(width: 8),
+            const Text(
+              'Grand Average',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                color: Colors.cyanAccent,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              '${d['n_files'] ?? current.length} recording(s) across ${d['n_subjects'] ?? current.length} subject(s)',
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
+            ),
+            if (current.isNotEmpty) ...[
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Select any recording above to inspect individual traces.',
+                  textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    final activeFile = current.firstWhere(
+      (f) => f['path'] == _file,
+      orElse: () => current.first,
+    );
+    final info = _describeRecording(activeFile);
+    final idx = current.indexWhere((f) => f['path'] == _file);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131D2E),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.cyan.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'Recording ${idx + 1} of ${current.length}',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.cyanAccent,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'Subject: ${info['subject']}',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.amberAccent,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'Session: ${info['session']}',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.lightBlueAccent,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              FilledButton.tonalIcon(
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                ),
+                onPressed: () => setState(() => _file = null),
+                icon: const Icon(Icons.arrow_back, size: 14),
+                label: const Text('Back to Grand Average', style: TextStyle(fontSize: 11)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Icon(Icons.description_outlined, size: 14, color: Colors.grey),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Tooltip(
+                  message: info['path'] ?? '',
+                  child: Text(
+                    '${info['fileName']}  ·  ${activeFile['n_a'] ?? 0} trials (${erpMap(d['profile'])['a_name'] ?? 'A'}), ${activeFile['n_b'] ?? 0} trials (${erpMap(d['profile'])['b_name'] ?? 'B'})',
+                    style: const TextStyle(fontSize: 11, color: Colors.white70),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   List<String> get _selectedPaths => _paths
@@ -429,7 +788,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       p['baseline'] = [number(_base0), number(_base1)];
       p['window'] = [number(_window0), number(_window1)];
       final epoching = widget.config?.stimEpochSpec;
-      if (!_isPrepared && epoching != null) {
+      if (!_isPrepared &&
+          !widget.batchMode &&
+          epoching != null &&
+          (p['task'] == 'Custom' || p['task'] == null)) {
         List<String> expand(String key) => [
           for (final code in (p[key] as List).cast<String>())
             ...epoching.markerGroups[code] ?? [code],
@@ -438,9 +800,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         p['saved_b_groups'] = p['b_codes'];
         p['a_codes'] = expand('a_codes');
         p['b_codes'] = expand('b_codes');
-        p['epoch'] = [epoching.tmin, epoching.tmax];
-        if (epoching.baseline)
-          p['baseline'] = [epoching.baselineStart, epoching.baselineEnd];
       }
       options['profile_override'] = p;
     }
@@ -598,8 +957,17 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             .where((p) => p.isNotEmpty)
             .toList();
         final tasks = profiles.map((p) => p['task']).toSet();
-        _fillProfile(tasks.length == 1 ? profiles.first : null);
-        _restoreProtocol();
+        if (tasks.length == 1) {
+          _fillProfile(profiles.first);
+        } else if (_task != 'Auto' && _kErpCorePresets.containsKey(_task)) {
+          _fillProfile(Map<String, dynamic>.from(_kErpCorePresets[_task]!));
+        } else {
+          _fillProfile(null);
+        }
+        if (!widget.batchMode &&
+            (tasks.isEmpty || (tasks.length == 1 && tasks.first == 'Custom'))) {
+          _restoreProtocol();
+        }
         _status = _isPrepared
             ? (_profile == null
                   ? 'Saved trial metadata needs attention. Open Recording history or choose a complete signal/metadata pair.'
@@ -785,17 +1153,17 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         }
       }
 
-      final topoDiffs = taskFiles
-          .map((f) => erpNumbers(f['topo_difference']))
-          .where((v) => v.isNotEmpty)
-          .toList();
-      List<double> avgTopoDiff = [];
-      if (topoDiffs.isNotEmpty) {
-        final nCh = topoDiffs.first.length;
-        avgTopoDiff = List.generate(nCh, (ch) {
+      List<double> avgTopoForKey(String key) {
+        final topos = taskFiles
+            .map((f) => erpNumbers(f[key]))
+            .where((v) => v.isNotEmpty)
+            .toList();
+        if (topos.isEmpty) return [];
+        final nCh = topos.first.length;
+        return List.generate(nCh, (ch) {
           var sum = 0.0;
           var cnt = 0;
-          for (final td in topoDiffs) {
+          for (final td in topos) {
             if (ch < td.length) {
               sum += td[ch];
               cnt++;
@@ -804,6 +1172,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           return cnt > 0 ? sum / cnt : 0.0;
         });
       }
+
+      final avgTopoA = avgTopoForKey('topo_a');
+      final avgTopoB = avgTopoForKey('topo_b');
+      final avgTopoDiff = avgTopoForKey('topo_difference');
 
       final profile = erpMap(first['profile']);
       final win = erpNumbers(profile['window']);
@@ -844,6 +1216,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         'channel_conditions': channelConds,
         'gfp_a': first['gfp_a'] ?? [],
         'gfp_b': first['gfp_b'] ?? [],
+        'topo_a': avgTopoA,
+        'topo_b': avgTopoB,
         'topo_difference': avgTopoDiff,
         'topo_p_fwer': [],
         'topo_t': [],
@@ -1181,6 +1555,306 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             ),
           ),
   );
+  Widget _buildErpCorePresetBar() {
+    const tasks = [
+      'Auto',
+      'P3',
+      'MMN',
+      'N170',
+      'N2pc',
+      'N400',
+      'ERN',
+      'LRP',
+      'Custom',
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'ERP-CORE Paradigm Presets',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+            color: Colors.cyanAccent,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 5,
+          runSpacing: 5,
+          children: [
+            for (final t in tasks)
+              ChoiceChip(
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                label: Text(
+                  t == 'Auto' ? 'Auto-detect' : t,
+                  style: const TextStyle(fontSize: 11),
+                ),
+                selected: _task == t,
+                onSelected: _busy
+                    ? null
+                    : (sel) {
+                        if (!sel) return;
+                        setState(() {
+                          _task = t;
+                          if (t == 'Custom') {
+                            _regroupEpochs = false;
+                          } else if (_kErpCorePresets.containsKey(t)) {
+                            _fillProfile(
+                              Map<String, dynamic>.from(_kErpCorePresets[t]!),
+                            );
+                          }
+                        });
+                        _inspect();
+                      },
+              ),
+          ],
+        ),
+        if (_profile != null &&
+            _kErpCorePresets.containsKey(_profile!['task'])) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.cyan.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.cyan.withValues(alpha: 0.25)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${_profile!['task']} Preset · ROI: ${(_profile!['roi'] as List).join(', ')} · Window: ${_window0.text} to ${_window1.text} ms · Epoch: ${_epoch0.text} to ${_epoch1.text} ms',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.cyanAccent,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${_profile!['a_name']}: ${(_profile!['a_codes'] as List).take(6).join(', ')}${(_profile!['a_codes'] as List).length > 6 ? '…' : ''}   vs   ${_profile!['b_name']}: ${(_profile!['b_codes'] as List).take(6).join(', ')}${(_profile!['b_codes'] as List).length > 6 ? '…' : ''}',
+                  style: const TextStyle(fontSize: 10, color: Colors.white70),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildModularBatchHeaderBar() {
+    final stages = <(int, String, IconData)>[
+      (0, 'All Stages', Icons.view_agenda_outlined),
+      (1, 'Stage 1: Recordings', Icons.folder_open_outlined),
+      (2, 'Stage 2: Task & Markers', Icons.flag_outlined),
+      (3, 'Stage 3: Windows & Models', Icons.tune_outlined),
+      (4, 'Stage 4: Run & Export', Icons.play_circle_outline),
+    ];
+    final detectedTasks = _scanFiles
+        .map((f) => erpMap(f['profile'])['task'])
+        .whereType<String>()
+        .toSet();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        border: Border(
+          bottom: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+        ),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.account_tree_outlined,
+                size: 16,
+                color: Colors.cyanAccent,
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'ERP BATCH PIPELINE',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.7,
+                  color: Colors.cyanAccent,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  '${_selectedPaths.length} queued${detectedTasks.isNotEmpty ? ' · ${detectedTasks.join(", ")}' : ''}',
+                  style: const TextStyle(fontSize: 11, color: Colors.white70),
+                ),
+              ),
+            ],
+          ),
+          for (final st in stages)
+            ChoiceChip(
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              avatar: Icon(st.$3, size: 14),
+              label: Text(st.$2, style: const TextStyle(fontSize: 11)),
+              selected: _activeStage == st.$1,
+              onSelected: (_) => setState(() => _activeStage = st.$1),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMultiConditionTopoSection(
+    Map<String, dynamic> d,
+    List<Map<String, dynamic>> current,
+    Set<String> highlightChannels,
+  ) {
+    final activeFiles = current
+        .where((f) => _file == null || f['path'] == _file)
+        .toList();
+    final topoItems = extractErpConditionTopos(d, files: activeFiles);
+    final profile = erpMap(d['profile']);
+    final win = erpNumbers(profile['window']);
+    final winLabel = win.length == 2
+        ? '${(win[0] * 1000).round()}–${(win[1] * 1000).round()} ms'
+        : 'component window';
+
+    if (topoItems.isEmpty) {
+      return Card(
+        margin: const EdgeInsets.only(top: 10),
+        elevation: 0,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Component-Window Topographies ($winLabel)',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 240,
+                width: 320,
+                child: CustomPaint(
+                  painter: ErpWorkbenchTopoPainter(
+                    d,
+                    selectedChannels: highlightChannels,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(top: 10),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.blur_circular,
+                  size: 16,
+                  color: Colors.cyanAccent,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Component-Window Scalp Topographies ($winLabel)',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Conditions share amplitude scale; difference map shows B − A contrast',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final count = topoItems.length;
+                final panelWidth = math.max(
+                  220.0,
+                  math.min(
+                    310.0,
+                    (constraints.maxWidth - (count - 1) * 10) / count,
+                  ),
+                );
+                return Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    for (final item in topoItems)
+                      Container(
+                        width: panelWidth,
+                        height: 235,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: item['is_diff'] == true
+                                ? const Color(0xFF64748B)
+                                : const Color(0xFFCBD5E1),
+                            width: item['is_diff'] == true ? 1.5 : 1.0,
+                          ),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(5),
+                          child: CustomPaint(
+                            painter: ErpWorkbenchTopoPainter(
+                              d,
+                              valueKey: item['key'] as String,
+                              customTitle: item['title'] as String,
+                              valuesOverride:
+                                  (item['values'] as List).cast<double>(),
+                              scaleOverride: (item['scale'] as num).toDouble(),
+                              showPValues: item['is_diff'] == true,
+                              selectedChannels: highlightChannels,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
   Widget _check(String text, bool value, void Function(bool) set) =>
       CheckboxListTile(
         dense: true,
@@ -1192,6 +1866,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
+      final showStage1 = !widget.batchMode || _activeStage == 0 || _activeStage == 1;
+      final showStage2 = !widget.batchMode || _activeStage == 0 || _activeStage == 2;
+      final showStage3 = !widget.batchMode || _activeStage == 0 || _activeStage == 3;
+      final showStage4 = !widget.batchMode || _activeStage == 0 || _activeStage == 4;
       final settings = SingleChildScrollView(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -1210,7 +1888,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   ),
                 ],
               ),
-            if (!widget.batchMode)
+            if (!widget.batchMode && showStage1)
               _card('1  Recording', [
                 Text(
                   widget.activeRecording?.path.split(RegExp(r'[/\\]')).last ??
@@ -1295,8 +1973,96 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     ),
                   ),
                 ],
+                if (_results.isNotEmpty) ...[
+                  const Divider(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '${_results.length} loaded recording(s)',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.cyanAccent,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => setState(() {
+                                _result = null;
+                                _file = null;
+                              }),
+                        child: const Text(
+                          'Clear all ERP files',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.redAccent,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(
+                    height: math.min(180, _results.length * 44.0),
+                    child: ListView.builder(
+                      itemCount: _results.length,
+                      itemBuilder: (context, idx) {
+                        final rf = _results[idx];
+                        final info = _describeRecording(rf);
+                        final isSel = rf['path'] == _file;
+                        return InkWell(
+                          onTap: () => setState(() => _file = rf['path'] as String),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                            margin: const EdgeInsets.only(bottom: 2),
+                            decoration: BoxDecoration(
+                              color: isSel ? Colors.cyan.withValues(alpha: 0.15) : Colors.transparent,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                color: isSel ? Colors.cyanAccent : Colors.white10,
+                                width: isSel ? 1 : 0.5,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  isSel ? Icons.radio_button_checked : Icons.radio_button_off,
+                                  size: 14,
+                                  color: isSel ? Colors.cyanAccent : Colors.grey,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '#${idx + 1}: ${info['subject']} · ${info['session']}',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                                          color: isSel ? Colors.white : Colors.white70,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      Text(
+                                        info['fileName'] ?? '',
+                                        style: const TextStyle(fontSize: 9, color: Colors.grey),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ])
-            else
+            else if (showStage1)
               _card(widget.batchMode ? '1  Batch inputs' : '1  Active recording', [
                 TextButton.icon(
                   onPressed: _busy ? null : _openResult,
@@ -1408,9 +2174,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     child: const Text('Review files and participant IDs…'),
                   ),
               ]),
-            _card(_isPrepared ? '2  Compare conditions' : '2  Task and event markers', [
-              if (!_isPrepared)
-                DropdownButtonFormField<String>(
+            if (showStage2)
+              _card(_isPrepared ? '2  Compare conditions' : '2  Task and event markers', [
+                if (!_isPrepared) ...[
+                  _buildErpCorePresetBar(),
+                  const SizedBox(height: 10),
+                ],
+                if (!_isPrepared)
+                  DropdownButtonFormField<String>(
                   isExpanded: true,
                   initialValue: _eventSource,
                   decoration: const InputDecoration(
@@ -1628,7 +2399,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   ],
                 ),
             ]),
-            _card('3  Analyses', [
+            if (showStage3)
+              _card('3  Analyses', [
               ExpansionTile(
                 title: const Text('Solver, decoding and response parameters'),
                 children: [
@@ -1705,7 +2477,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 ),
               ],
             ]),
-            if (widget.batchMode)
+            if (widget.batchMode && showStage4)
               _card('4  Run and export', [
                 if (_timingIssue != null)
                   Text(
@@ -1839,21 +2611,31 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ],
             );
       final results = _resultsPane();
-      if (constraints.maxWidth < 850)
+      final body = constraints.maxWidth < 850
+          ? Column(
+              children: [
+                Expanded(child: panel),
+                SizedBox(height: constraints.maxHeight * .45, child: results),
+              ],
+            )
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(width: 375, child: panel),
+                const VerticalDivider(width: 1),
+                Expanded(child: results),
+              ],
+            );
+      if (widget.batchMode) {
         return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(child: panel),
-            SizedBox(height: constraints.maxHeight * .45, child: results),
+            _buildModularBatchHeaderBar(),
+            Expanded(child: body),
           ],
         );
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SizedBox(width: 360, child: panel),
-          const VerticalDivider(width: 1),
-          Expanded(child: results),
-        ],
-      );
+      }
+      return body;
     },
   );
   Future<void> _reviewInputs() async {
@@ -2657,24 +3439,79 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     final modelFile = _file == null
         ? (current.isEmpty ? <String, dynamic>{} : current.first)
         : d;
+    final activeFiles = current
+        .where((f) => _file == null || f['path'] == _file)
+        .toList();
+    final allLabels = activeFiles.isNotEmpty
+        ? (activeFiles.first['labels'] as List? ?? []).cast<String>()
+        : (d['labels'] as List? ?? []).cast<String>();
+    final roiLabels = (erpMap(d['profile'])['roi'] as List? ?? [])
+        .cast<String>();
+    final effectivePlotChannel =
+        _primaryPlotChannel != null &&
+                allLabels.any(
+                  (l) =>
+                      l.toUpperCase() == _primaryPlotChannel!.toUpperCase(),
+                )
+            ? _primaryPlotChannel
+            : null;
+    final primaryWaveSource = effectivePlotChannel != null && activeFiles.isNotEmpty
+        ? buildErpChannelSelectionWaveData(
+            files: activeFiles,
+            profile: erpMap(d['profile']),
+            targetChannels: [effectivePlotChannel],
+            smoothingMs: _displaySmoothing,
+            axisLimits: _axisLimits,
+          )
+        : smoothedErpDisplay({
+            ...d,
+            ..._axisLimits,
+          }, _displaySmoothing);
+    final highlightedOnTopo = effectivePlotChannel != null
+        ? {effectivePlotChannel}
+        : roiLabels.toSet();
+
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(10),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF131D2E),
+            border: Border(
+              bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+            ),
+          ),
           child: Wrap(
-            spacing: 12,
-            runSpacing: 8,
+            spacing: 8,
+            runSpacing: 6,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               SizedBox(
-                width: 130,
+                width: 108,
                 child: DropdownButtonFormField<String>(
                   initialValue: _component,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Task',
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 7,
+                    ),
+                    border: OutlineInputBorder(),
+                  ),
                   items: _groups
                       .map(
                         (g) => DropdownMenuItem(
                           value: g['task'] as String,
-                          child: Text('${g['task']}'),
+                          child: Text(
+                            '${g['task']}',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
                         ),
                       )
                       .toList(),
@@ -2685,22 +3522,44 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 ),
               ),
               SizedBox(
-                width: 240,
+                width: 280,
                 child: DropdownButtonFormField<String>(
                   key: ValueKey('$_component/$_file'),
                   initialValue: _file ?? 'group',
                   isExpanded: true,
-                  items: [
-                    const DropdownMenuItem(
-                      value: 'group',
-                      child: Text('Group (equal participant weights)'),
+                  decoration: const InputDecoration(
+                    labelText: 'Active Recording / Subject / Session',
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 7,
                     ),
-                    for (final f in current)
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    DropdownMenuItem(
+                      value: 'group',
+                      child: Text(
+                        '★ Grand Average (${d['n_subjects'] ?? current.length} subj · ${current.length} files)',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    for (var i = 0; i < current.length; i++)
                       DropdownMenuItem(
-                        value: f['path'] as String,
-                        child: Text(
-                          'Participant ${f['subject']}',
-                          overflow: TextOverflow.ellipsis,
+                        value: current[i]['path'] as String,
+                        child: Builder(
+                          builder: (_) {
+                            final info = _describeRecording(current[i]);
+                            return Text(
+                              '#${i + 1}: ${info['subject']} · ${info['session']} — ${info['fileName']}',
+                              style: const TextStyle(fontSize: 12),
+                              overflow: TextOverflow.ellipsis,
+                            );
+                          },
                         ),
                       ),
                   ],
@@ -2708,93 +3567,92 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       setState(() => _file = v == 'group' ? null : v),
                 ),
               ),
-              if (_file == null) Text('${d['n_subjects']} participant(s)'),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.chevron_left),
-                    tooltip: 'Previous participant',
-                    onPressed: current.isEmpty
-                        ? null
-                        : () {
-                            if (_file == null) {
-                              setState(
-                                () => _file = current.last['path'] as String,
-                              );
-                            } else {
-                              final idx = current.indexWhere(
-                                (f) => f['path'] == _file,
-                              );
-                              if (idx <= 0) {
-                                setState(() => _file = null);
-                              } else {
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.chevron_left, size: 18),
+                      tooltip: 'Previous recording',
+                      onPressed: current.isEmpty
+                          ? null
+                          : () {
+                              if (_file == null) {
                                 setState(
-                                  () => _file =
-                                      current[idx - 1]['path'] as String,
+                                  () => _file = current.last['path'] as String,
                                 );
-                              }
-                            }
-                          },
-                  ),
-                  Text(
-                    _file == null
-                        ? 'Grand Average'
-                        : 'Participant ${current.indexWhere((f) => f['path'] == _file) + 1} of ${current.length}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.chevron_right),
-                    tooltip: 'Next participant',
-                    onPressed: current.isEmpty
-                        ? null
-                        : () {
-                            if (_file == null) {
-                              setState(
-                                () => _file = current.first['path'] as String,
-                              );
-                            } else {
-                              final idx = current.indexWhere(
-                                (f) => f['path'] == _file,
-                              );
-                              if (idx >= current.length - 1) {
-                                setState(() => _file = null);
                               } else {
-                                setState(
-                                  () => _file =
-                                      current[idx + 1]['path'] as String,
+                                final idx = current.indexWhere(
+                                  (f) => f['path'] == _file,
                                 );
+                                if (idx <= 0) {
+                                  setState(() => _file = null);
+                                } else {
+                                  setState(
+                                    () => _file =
+                                        current[idx - 1]['path'] as String,
+                                  );
+                                }
                               }
-                            }
-                          },
-                  ),
-                ],
-              ),
-              OutlinedButton.icon(
-                onPressed: current.isEmpty
-                    ? null
-                    : () {
-                        showDialog(
-                          context: context,
-                          builder: (ctx) => ErpGroupLabelDialog(
-                            files: current,
-                            initialGroups: _participantGroups,
-                            onSaved: (newGroups) {
-                              setState(() {
-                                _participantGroups.clear();
-                                _participantGroups.addAll(newGroups);
-                              });
                             },
-                          ),
-                        );
-                      },
-                icon: const Icon(Icons.label_outlined),
-                label: const Text('Label Groups…'),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      child: Text(
+                        _file == null
+                            ? 'Grand Avg (${current.length})'
+                            : () {
+                                final idx = current.indexWhere(
+                                  (f) => f['path'] == _file,
+                                );
+                                return 'File ${idx + 1} of ${current.length}';
+                              }(),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.chevron_right, size: 18),
+                      tooltip: 'Next recording',
+                      onPressed: current.isEmpty
+                          ? null
+                          : () {
+                              if (_file == null) {
+                                setState(
+                                  () => _file = current.first['path'] as String,
+                                );
+                              } else {
+                                final idx = current.indexWhere(
+                                  (f) => f['path'] == _file,
+                                );
+                                if (idx >= current.length - 1) {
+                                  setState(() => _file = null);
+                                } else {
+                                  setState(
+                                    () => _file =
+                                        current[idx + 1]['path'] as String,
+                                  );
+                                }
+                              }
+                            },
+                    ),
+                  ],
+                ),
               ),
               OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
                 onPressed: current.isEmpty
                     ? null
                     : () => Navigator.push(
@@ -2807,32 +3665,140 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           ),
                         ),
                       ),
-                icon: const Icon(Icons.tune),
-                label: const Text('Interactive batch review'),
+                icon: const Icon(Icons.tune, size: 15),
+                label: const Text(
+                  'Interactive batch review',
+                  style: TextStyle(fontSize: 12),
+                ),
               ),
-              OutlinedButton.icon(
-                onPressed: () => _groupModels(),
-                icon: const Icon(Icons.groups),
-                label: const Text('Condition group models'),
+              PopupMenuButton<String>(
+                tooltip: 'Group statistics, participant labels & LMM/GLM models',
+                onSelected: (action) {
+                  if (action == 'label_groups') {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => ErpGroupLabelDialog(
+                        files: current,
+                        initialGroups: _participantGroups,
+                        onSaved: (newGroups) {
+                          setState(() {
+                            _participantGroups.clear();
+                            _participantGroups.addAll(newGroups);
+                          });
+                        },
+                      ),
+                    );
+                  } else if (action == 'cond_models') {
+                    _groupModels();
+                  } else if (action == 'diff_models') {
+                    _groupModels(difference: true);
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'label_groups',
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.label_outlined, size: 18),
+                      title: Text('Label Participant Groups…'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'cond_models',
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.groups, size: 18),
+                      title: Text('Condition Group Models (LMM/GLM)'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'diff_models',
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.compare_arrows, size: 18),
+                      title: Text('Difference-Wave Group Models'),
+                    ),
+                  ),
+                ],
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.groups_outlined, size: 15),
+                      SizedBox(width: 6),
+                      Text('Groups & Models', style: TextStyle(fontSize: 12)),
+                      SizedBox(width: 4),
+                      Icon(Icons.arrow_drop_down, size: 16),
+                    ],
+                  ),
+                ),
               ),
-              TextButton(
-                onPressed: () => _groupModels(difference: true),
-                child: const Text('Difference-wave group models'),
-              ),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _openResult,
-                icon: const Icon(Icons.file_open, size: 16),
-                label: const Text('Load ERP (.ccserp)…'),
-              ),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _openResultFolder,
-                icon: const Icon(Icons.folder_open, size: 16),
-                label: const Text('Load ERP Folder…'),
-              ),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _addFiles,
-                icon: const Icon(Icons.add_to_photos, size: 16),
-                label: const Text('Add EEG Files…'),
+              PopupMenuButton<String>(
+                tooltip: 'Load or add ERP recordings and results',
+                enabled: !_busy,
+                onSelected: (action) {
+                  if (action == 'load_ccserp') {
+                    _openResult();
+                  } else if (action == 'load_folder') {
+                    _openResultFolder();
+                  } else if (action == 'add_files') {
+                    _addFiles();
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'load_ccserp',
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.file_open, size: 18),
+                      title: Text('Load ERP (.ccserp)…'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'load_folder',
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.folder_open, size: 18),
+                      title: Text('Load ERP Folder…'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'add_files',
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.add_to_photos, size: 18),
+                      title: Text('Add EEG Files…'),
+                    ),
+                  ),
+                ],
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.folder_open_outlined, size: 15),
+                      SizedBox(width: 6),
+                      Text('Load / Add', style: TextStyle(fontSize: 12)),
+                      SizedBox(width: 4),
+                      Icon(Icons.arrow_drop_down, size: 16),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
@@ -2858,72 +3824,269 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               SingleChildScrollView(
                 padding: const EdgeInsets.all(12),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    DropdownButton<double>(
-                      value: _displaySmoothing,
-                      items: [
-                        for (final ms in [0.0, 8.0, 16.0, 24.0, 40.0])
-                          DropdownMenuItem(
-                            value: ms,
-                            child: Text(
-                              ms == 0
-                                  ? 'Smoothing off'
-                                  : 'Smooth ${ms.round()} ms · display only',
-                            ),
-                          ),
-                      ],
-                      onChanged: (v) => setState(() => _displaySmoothing = v!),
-                    ),
-                    Text(
-                      'Comparison: ${erpMap(d['profile'])['b_name']} − ${erpMap(d['profile'])['a_name']}. All named conditions are averaged separately.',
-                    ),
-                    ErpAxisControls(
-                      onChanged: (v) => setState(() => _axisLimits = v),
-                    ),
-                    SwitchListTile(
-                      dense: true,
-                      title: const Text(
-                        'Negative up (display orientation only)',
+                    _buildActiveRecordingIdentityCard(d, current),
+                    // Compact single-row Channel Selector & Display Controls Bar
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
                       ),
-                      value: _negativeUp,
-                      onChanged: (v) => setState(() => _negativeUp = v),
-                    ),
-                    SizedBox(
-                      height: 350,
-                      width: double.infinity,
-                      child: MouseRegion(
-                        onHover: (e) => _hover.value = e.localPosition.dx,
-                        onExit: (_) => _hover.value = null,
-                        child: ValueListenableBuilder<double?>(
-                          valueListenable: _hover,
-                          builder: (context, hover, child) => CustomPaint(
-                            painter: ErpWorkbenchWavePainter(
-                              smoothedErpDisplay({
-                                ...d,
-                                ..._axisLimits,
-                              }, _displaySmoothing),
-                              negativeUp: _negativeUp,
-                              hoverX: hover,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E293B),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white10),
+                      ),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          const Icon(
+                            Icons.sensors,
+                            size: 15,
+                            color: Colors.cyanAccent,
+                          ),
+                          const Text(
+                            'Primary Plot Channel:',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.cyanAccent,
                             ),
                           ),
+                          ChoiceChip(
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            label: Text(
+                              'Task ROI (${roiLabels.isEmpty ? "All" : roiLabels.join(", ")})',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            selected: effectivePlotChannel == null,
+                            onSelected: (_) =>
+                                setState(() => _primaryPlotChannel = null),
+                          ),
+                          for (final ch in <String>{
+                            ...roiLabels,
+                            for (final std in [
+                              'Fz',
+                              'FCz',
+                              'Cz',
+                              'CPz',
+                              'Pz',
+                              'Oz',
+                              'PO7',
+                              'PO8',
+                              'C3',
+                              'C4',
+                            ])
+                              if (allLabels.any(
+                                (l) => l.toUpperCase() == std.toUpperCase(),
+                              ))
+                                allLabels.firstWhere(
+                                  (l) => l.toUpperCase() == std.toUpperCase(),
+                                ),
+                          })
+                            ChoiceChip(
+                              visualDensity: VisualDensity.compact,
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              label: Text(
+                                ch,
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                              selected: effectivePlotChannel?.toUpperCase() ==
+                                  ch.toUpperCase(),
+                              onSelected: (sel) => setState(
+                                () => _primaryPlotChannel = sel ? ch : null,
+                              ),
+                            ),
+                          if (allLabels.isNotEmpty)
+                            SizedBox(
+                              height: 28,
+                              child: DropdownButton<String?>(
+                                value: effectivePlotChannel,
+                                hint: const Text(
+                                  'All channels…',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                                underline: const SizedBox.shrink(),
+                                items: [
+                                  DropdownMenuItem<String?>(
+                                    value: null,
+                                    child: Text(
+                                      'ROI (${roiLabels.join(", ")})',
+                                      style: const TextStyle(fontSize: 11),
+                                    ),
+                                  ),
+                                  for (final l in allLabels)
+                                    DropdownMenuItem<String?>(
+                                      value: l,
+                                      child: Text(
+                                        l,
+                                        style: const TextStyle(fontSize: 11),
+                                      ),
+                                    ),
+                                ],
+                                onChanged: (v) =>
+                                    setState(() => _primaryPlotChannel = v),
+                              ),
+                            ),
+                          const SizedBox(width: 8),
+                          FilterChip(
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            label: const Text(
+                              'Negative up',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                            selected: _negativeUp,
+                            onSelected: (v) => setState(() => _negativeUp = v),
+                          ),
+                          SizedBox(
+                            height: 28,
+                            child: DropdownButton<double>(
+                              value: _displaySmoothing,
+                              underline: const SizedBox.shrink(),
+                              items: [
+                                for (final ms in [0.0, 8.0, 16.0, 24.0, 40.0])
+                                  DropdownMenuItem(
+                                    value: ms,
+                                    child: Text(
+                                      ms == 0
+                                          ? 'Smoothing off'
+                                          : 'Smooth ${ms.round()} ms',
+                                      style: const TextStyle(fontSize: 11),
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (v) =>
+                                  setState(() => _displaySmoothing = v!),
+                            ),
+                          ),
+                          ActionChip(
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            avatar: Icon(
+                              _showAxisLimits
+                                  ? Icons.expand_less
+                                  : Icons.straighten,
+                              size: 14,
+                            ),
+                            label: const Text(
+                              'Axis limits',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                            onPressed: () => setState(
+                              () => _showAxisLimits = !_showAxisLimits,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_showAxisLimits)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: ErpAxisControls(
+                          onChanged: (v) => setState(() => _axisLimits = v),
                         ),
                       ),
+                    // Primary ERP Waveform Card
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: const BoxDecoration(
+                              color: Color(0xFFF1F5F9),
+                              borderRadius: BorderRadius.vertical(
+                                top: Radius.circular(7),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Text(
+                                  effectivePlotChannel != null
+                                      ? 'Electrode: $effectivePlotChannel'
+                                      : 'ROI Average: ${roiLabels.join(", ")}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                    color: Color(0xFF0F172A),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    'Comparison: ${erpMap(d['profile'])['b_name']} − ${erpMap(d['profile'])['a_name']} · Measurement window: ${() {
+                                      final w = erpNumbers(erpMap(d['profile'])['window']);
+                                      return w.length == 2 ? '${(w[0] * 1000).round()} to ${(w[1] * 1000).round()} ms' : '';
+                                    }()}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xFF475569),
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          SizedBox(
+                            height: 295,
+                            width: double.infinity,
+                            child: ClipRRect(
+                              borderRadius: const BorderRadius.vertical(
+                                bottom: Radius.circular(7),
+                              ),
+                              child: MouseRegion(
+                                onHover: (e) =>
+                                    _hover.value = e.localPosition.dx,
+                                onExit: (_) => _hover.value = null,
+                                child: ValueListenableBuilder<double?>(
+                                  valueListenable: _hover,
+                                  builder: (context, hover, child) =>
+                                      CustomPaint(
+                                        painter: ErpWorkbenchWavePainter(
+                                          primaryWaveSource,
+                                          negativeUp: _negativeUp,
+                                          hoverX: hover,
+                                        ),
+                                      ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 12),
+                    // Side-by-Side Condition A, Condition B, and Difference (B - A) Topographies
+                    _buildMultiConditionTopoSection(
+                      d,
+                      current,
+                      highlightedOnTopo,
+                    ),
+                    // Multi-Channel Waveform Grid with Region Presets & Electrode Selector Chips
                     ErpChannelGrid(
-                      files: current
-                          .where((f) => _file == null || f['path'] == _file)
-                          .toList(),
+                      files: activeFiles,
                       profile: erpMap(d['profile']),
                       negativeUp: _negativeUp,
                       smoothingMs: _displaySmoothing,
                       axisLimits: _axisLimits,
-                    ),
-                    const Text('Component-window topography (B - A)'),
-                    SizedBox(
-                      height: 280,
-                      width: 360,
-                      child: CustomPaint(painter: ErpWorkbenchTopoPainter(d)),
                     ),
                   ],
                 ),
@@ -2967,6 +4130,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    _buildMultiConditionTopoSection(
+                      d,
+                      current,
+                      highlightedOnTopo,
+                    ),
+                    const SizedBox(height: 12),
                     Text(
                       '${d['warning'] ?? 'Participant-level descriptive map; select Group for population statistics.'}',
                     ),

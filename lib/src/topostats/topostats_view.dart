@@ -46,6 +46,7 @@ class TopoPlotGroup {
     Set<String>? disabled,
     this.result,
     this.figure,
+    this.stateDynamicsResult,
   }) : disabled = disabled ?? <String>{};
 
   final String id;
@@ -55,6 +56,7 @@ class TopoPlotGroup {
   final Set<String> disabled;
   TopoStatsResult? result;
   TopoFigure? figure;
+  StateDynamicsResult? stateDynamicsResult;
 
   List<String> get activeFiles => [
     for (final f in files)
@@ -113,6 +115,28 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   Offset _hoverPos = Offset.zero;
   final _hScroll = ScrollController();
   final _vScroll = ScrollController();
+
+  StateDynamicsResult? _stateDynamicsResult;
+  String? _selectedStateLabel;
+
+  TopoFigure _makeFigure(TopoStatsResult r, [TopoPlotGroup? g]) {
+    return TopoFigure(
+      r,
+      stateDynamicsResult: g?.stateDynamicsResult ?? _stateDynamicsResult,
+      selectedStateLabel: _selectedStateLabel,
+    );
+  }
+
+  void _selectState(String stateLabel) {
+    setState(() {
+      _selectedStateLabel = stateLabel;
+      for (final g in _groups) {
+        if (g.result != null) {
+          g.figure = _makeFigure(g.result!, g);
+        }
+      }
+    });
+  }
 
   // text fields
   final _recId = TextEditingController();
@@ -242,82 +266,90 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     return i < 0 ? '.' : p.substring(0, i);
   }
 
-  void _setFiles(List<String> seed, {bool autoRun = false, bool append = false}) {
-    if (seed.isEmpty && !append) {
-      setState(() {
-        _groups.clear();
-        _selectedGroupIndex = 0;
-        _hoverHit = null;
-        _hoverGroup = null;
-      });
+  void _setFiles(
+    List<String> seed, {
+    bool autoRun = false,
+    bool append = false,
+    bool targetActiveGroup = false,
+    bool preserveExplicitFiles = false,
+  }) {
+    if (seed.isEmpty && !append && !targetActiveGroup) {
+      _clearAll();
       return;
     }
     _sessionScratch ??= Directory.systemTemp.createTempSync(
       'ccs_plot_sessions_',
     );
-    if (!append) {
+    if (!append && !targetActiveGroup) {
       _sourceDir = seed.isEmpty ? null : _dir(seed.first);
       _groups.clear();
       _cache.clear();
     }
     var prep = prepareSessionFeatureCsvs(seed, _sessionScratch!.path);
-    var overallRid = inferRecId(prep);
-    if (prep.length == 1 && overallRid.isNotEmpty) {
-      final sib = discoverSessionFiles(_dir(prep.first), overallRid);
-      if (sib.length > 1) {
-        prep = sib;
-        overallRid = inferRecId(prep);
-      }
-    }
 
-    if (overallRid.isNotEmpty) {
-      final existingIdx = _groups.indexWhere(
-        (g) => g.recId == overallRid || g.id == overallRid,
-      );
-      if (existingIdx >= 0 && append) {
-        final existing = _groups[existingIdx];
-        final combined = {...existing.files, ...prep}.toList()..sort();
-        existing.files = combined;
-      } else {
-        final g = TopoPlotGroup(
-          id: overallRid,
-          recId: overallRid,
-          files: List<String>.from(prep),
-        );
-        if (g.files.length > 8) g.disabled.addAll(g.files.skip(8));
-        _groups.add(g);
-      }
+    if (targetActiveGroup && _currentGroup != null) {
+      final g = _currentGroup!;
+      final combined = {...g.files, ...prep}.toList()..sort();
+      g.files = combined;
     } else {
-      final grouped = groupByRecording(prep);
-      if (grouped.isEmpty && prep.isNotEmpty) {
-        final rid = inferRecId(prep);
-        final g = TopoPlotGroup(
-          id: rid.isNotEmpty ? rid : 'group_${_groups.length + 1}',
-          recId: rid,
-          files: List<String>.from(prep),
+      var overallRid = inferRecId(prep);
+      if (!preserveExplicitFiles && prep.length == 1 && overallRid.isNotEmpty) {
+        final sib = discoverSessionFiles(_dir(prep.first), overallRid);
+        if (sib.length > 1) {
+          prep = sib;
+          overallRid = inferRecId(prep);
+        }
+      }
+
+      if (overallRid.isNotEmpty) {
+        final existingIdx = _groups.indexWhere(
+          (g) => g.recId == overallRid || g.id == overallRid,
         );
-        if (g.files.length > 8) g.disabled.addAll(g.files.skip(8));
-        _groups.add(g);
-      } else {
-        grouped.forEach((rid, gFiles) {
-          if (gFiles.isEmpty) return;
-          final existingIdx = _groups.indexWhere(
-            (g) => g.recId == rid || (rid.isNotEmpty && g.id == rid),
+        if (existingIdx >= 0 && append) {
+          final existing = _groups[existingIdx];
+          final combined = {...existing.files, ...prep}.toList()..sort();
+          existing.files = combined;
+        } else {
+          final g = TopoPlotGroup(
+            id: overallRid,
+            recId: overallRid,
+            files: List<String>.from(prep),
           );
-          if (existingIdx >= 0 && append) {
-            final existing = _groups[existingIdx];
-            final combined = {...existing.files, ...gFiles}.toList()..sort();
-            existing.files = combined;
-          } else {
-            final g = TopoPlotGroup(
-              id: rid.isNotEmpty ? rid : 'group_${_groups.length + 1}',
-              recId: rid,
-              files: List<String>.from(gFiles),
+          if (g.files.length > 8) g.disabled.addAll(g.files.skip(8));
+          _groups.add(g);
+        }
+      } else {
+        final grouped = groupByRecording(prep);
+        if (grouped.isEmpty && prep.isNotEmpty) {
+          final rid = inferRecId(prep);
+          final g = TopoPlotGroup(
+            id: rid.isNotEmpty ? rid : 'group_${_groups.length + 1}',
+            recId: rid,
+            files: List<String>.from(prep),
+          );
+          if (g.files.length > 8) g.disabled.addAll(g.files.skip(8));
+          _groups.add(g);
+        } else {
+          grouped.forEach((rid, gFiles) {
+            if (gFiles.isEmpty) return;
+            final existingIdx = _groups.indexWhere(
+              (g) => g.recId == rid || (rid.isNotEmpty && g.id == rid),
             );
-            if (g.files.length > 8) g.disabled.addAll(g.files.skip(8));
-            _groups.add(g);
-          }
-        });
+            if (existingIdx >= 0 && append) {
+              final existing = _groups[existingIdx];
+              final combined = {...existing.files, ...gFiles}.toList()..sort();
+              existing.files = combined;
+            } else {
+              final g = TopoPlotGroup(
+                id: rid.isNotEmpty ? rid : 'group_${_groups.length + 1}',
+                recId: rid,
+                files: List<String>.from(gFiles),
+              );
+              if (g.files.length > 8) g.disabled.addAll(g.files.skip(8));
+              _groups.add(g);
+            }
+          });
+        }
       }
     }
 
@@ -461,15 +493,146 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     if (g.activeFiles.isNotEmpty) _run();
   }
 
+  void _clearAll() {
+    setState(() {
+      _groups.clear();
+      _selectedGroupIndex = 0;
+      _cache.clear();
+      _features = [];
+      _stateDynamicsResult = null;
+      _selectedStateLabel = null;
+      _hoverHit = null;
+      _hoverGroup = null;
+      _error = null;
+    });
+    _syncControllers();
+  }
+
+  void _removeFileFromGroup(String file) {
+    final g = _currentGroup;
+    if (g == null || _running) return;
+    setState(() {
+      g.files.remove(file);
+      g.disabled.remove(file);
+    });
+    if (g.files.isEmpty) {
+      g.result = null;
+      g.figure = null;
+    } else {
+      _run();
+    }
+  }
+
   void _removeGroup(TopoPlotGroup group) {
-    if (_groups.length <= 1) return;
     setState(() {
       _groups.remove(group);
       if (_selectedGroupIndex >= _groups.length) {
-        _selectedGroupIndex = _groups.length - 1;
+        _selectedGroupIndex = math.max(0, _groups.length - 1);
+      }
+      if (_groups.isEmpty) {
+        _cache.clear();
+        _features = [];
+        _stateDynamicsResult = null;
+        _selectedStateLabel = null;
       }
       _syncControllers();
     });
+  }
+
+  Future<void> _addNewGroup() async {
+    final nameCtrl = TextEditingController(text: 'Group ${_groups.length + 1}');
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('New Plot Group'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Create a plot group to compare sessions or subjects stacked together:',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameCtrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Group name / Recording ID',
+                hintText: 'e.g. Sub02 or Meditation comparison',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Create & Pick CSVs'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final pick = await pickFilteredFiles(
+      context,
+      allowMultiple: true,
+      type: FileType.custom,
+      allowedExtensions: ['csv'],
+      dialogTitle: 'Select CSV files for "${nameCtrl.text.trim()}"',
+    );
+    final paths =
+        pick?.files.map((f) => f.path).whereType<String>().toList() ?? [];
+    _sessionScratch ??= Directory.systemTemp.createTempSync(
+      'ccs_plot_sessions_',
+    );
+    final prep = paths.isNotEmpty
+        ? prepareSessionFeatureCsvs(paths, _sessionScratch!.path)
+        : <String>[];
+    final gName = nameCtrl.text.trim().isEmpty
+        ? 'Group ${_groups.length + 1}'
+        : nameCtrl.text.trim();
+    final g = TopoPlotGroup(
+      id: gName,
+      recId: gName,
+      files: prep,
+    );
+    if (g.files.length > 8) g.disabled.addAll(g.files.skip(8));
+    setState(() {
+      _groups.add(g);
+      _selectedGroupIndex = _groups.length - 1;
+      _showAllGroups = true;
+    });
+    if (prep.isNotEmpty) {
+      _setFiles(prep, autoRun: true, append: true, preserveExplicitFiles: true);
+    }
+  }
+
+  Future<void> _addCsvsToActiveGroup() async {
+    if (_currentGroup == null) {
+      await _addNewGroup();
+      return;
+    }
+    final pick = await pickFilteredFiles(
+      context,
+      allowMultiple: true,
+      type: FileType.custom,
+      allowedExtensions: ['csv'],
+      dialogTitle: 'Select CSV files to add to ${_currentGroup!.recId}',
+    );
+    final paths =
+        pick?.files.map((f) => f.path).whereType<String>().toList() ?? [];
+    if (paths.isEmpty) return;
+    _setFiles(
+      paths,
+      autoRun: true,
+      append: true,
+      targetActiveGroup: true,
+      preserveExplicitFiles: true,
+    );
   }
 
   Future<void> _pickFiles({bool append = false}) async {
@@ -482,7 +645,14 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     );
     final paths =
         pick?.files.map((f) => f.path).whereType<String>().toList() ?? [];
-    if (paths.isNotEmpty) _setFiles(paths, autoRun: true, append: append);
+    if (paths.isNotEmpty) {
+      _setFiles(
+        paths,
+        autoRun: true,
+        append: append,
+        preserveExplicitFiles: true,
+      );
+    }
   }
 
   Future<void> _pickFolder({bool append = false}) async {
@@ -554,7 +724,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         if (cached != null) {
           final res = cached.withDisplay(groupSettings);
           g.result = res;
-          g.figure = TopoFigure(res);
+          g.figure = _makeFigure(res, g);
           continue;
         }
 
@@ -582,7 +752,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         final r = await job.results.first;
         _cache[key] = r;
         g.result = r;
-        g.figure = TopoFigure(r);
+        g.figure = _makeFigure(r, g);
       }
       if (!mounted) return;
       setState(() {
@@ -603,7 +773,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     setState(() {
       if (_currentGroup != null) {
         _currentGroup!.result = r;
-        _currentGroup!.figure = TopoFigure(r);
+        _currentGroup!.figure = _makeFigure(r, _currentGroup);
       }
       _hoverHit = null;
       _hoverGroup = null;
@@ -621,7 +791,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         if (r != null) {
           final updated = r.withDisplay(s.copyWith(recId: g.recId));
           g.result = updated;
-          g.figure = TopoFigure(updated);
+          g.figure = _makeFigure(updated, g);
         }
       }
     });
@@ -1040,26 +1210,42 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       padding: const EdgeInsets.only(bottom: 16),
       children: [
         _section('RECORDINGS', icon: Icons.folder_copy_outlined, [
-          if (_groups.length > 1) ...[
-            _drop<int>(
-              'Active plot group (edit below)',
-              _selectedGroupIndex,
-              {
-                for (var i = 0; i < _groups.length; i++)
-                  i: '${i + 1}: ${_groups[i].recId.isEmpty ? "Group ${i + 1}" : _groups[i].recId} (${_groups[i].activeFiles.length} files)',
-              },
-              (idx) {
-                setState(() {
-                  _selectedGroupIndex = idx;
-                  if (_currentGroup != null) {
-                    _s = _s.copyWith(
-                      recId: _currentGroup!.recId,
-                      baselineSession: _currentGroup!.baselineSession ?? '',
-                    );
-                  }
-                });
-                _syncControllers();
-              },
+          if (_groups.isNotEmpty) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: _drop<int>(
+                    'Active plot group (edit below)',
+                    _selectedGroupIndex,
+                    {
+                      for (var i = 0; i < _groups.length; i++)
+                        i: '${i + 1}: ${_groups[i].recId.isEmpty ? "Group ${i + 1}" : _groups[i].recId} (${_groups[i].activeFiles.length} files)',
+                    },
+                    (idx) {
+                      setState(() {
+                        _selectedGroupIndex = idx;
+                        if (_currentGroup != null) {
+                          _s = _s.copyWith(
+                            recId: _currentGroup!.recId,
+                            baselineSession: _currentGroup!.baselineSession ?? '',
+                          );
+                        }
+                      });
+                      _syncControllers();
+                    },
+                  ),
+                ),
+                if (_currentGroup != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 14, left: 4),
+                    child: IconButton(
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      tooltip: 'Delete active group',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _running ? null : () => _removeGroup(_currentGroup!),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 4),
             Row(
@@ -1097,9 +1283,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               const SizedBox(width: 6),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _running ? null : () => _pickFolder(append: true),
+                  onPressed: _running ? null : _addNewGroup,
                   icon: const Icon(Icons.add_to_photos_outlined, size: 14),
-                  label: const Text('Add group', style: TextStyle(fontSize: 11)),
+                  label: const Text('+ New group', style: TextStyle(fontSize: 11)),
                 ),
               ),
             ],
@@ -1117,13 +1303,27 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               const SizedBox(width: 6),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _running ? null : () => _pickFiles(append: true),
+                  onPressed: _running ? null : _addCsvsToActiveGroup,
                   icon: const Icon(Icons.add, size: 14),
-                  label: const Text('Add CSVs', style: TextStyle(fontSize: 11)),
+                  label: const Text('+ Add to active', style: TextStyle(fontSize: 11)),
                 ),
               ),
             ],
           ),
+          if (_groups.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _running ? null : _clearAll,
+                icon: const Icon(Icons.delete_sweep_outlined, size: 14, color: Colors.redAccent),
+                label: const Text(
+                  'Clear all files',
+                  style: TextStyle(fontSize: 11, color: Colors.redAccent),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
           Text(
             '${_activeFiles.length} selected / ${_files.length} available'
@@ -1304,6 +1504,14 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                             onPressed: _running
                                 ? null
                                 : () => _chooseSessionColor(f),
+                          ),
+                          IconButton(
+                            tooltip: 'Remove from group',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.close, size: 14),
+                            onPressed: _running
+                                ? null
+                                : () => _removeFileFromGroup(f),
                           ),
                         ],
                       ),
@@ -1802,7 +2010,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               ),
             ),
           MouseRegion(
-            cursor: isHovered && _hoverHit!.isTopo
+            cursor: isHovered && (_hoverHit!.isTopo || _hoverHit!.stateLabel != null)
                 ? SystemMouseCursors.click
                 : SystemMouseCursors.precise,
             onHover: (e) {
@@ -1824,8 +2032,12 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             child: GestureDetector(
               onTapUp: (d) {
                 final hit = fig.hitTest(d.localPosition / ppi);
-                if (hit != null && hit.isTopo) {
-                  _openTopoDetail(fig, hit);
+                if (hit != null) {
+                  if (hit.isTopo) {
+                    _openTopoDetail(fig, hit);
+                  } else if (hit.stateLabel != null) {
+                    _selectState(hit.stateLabel!);
+                  }
                 }
               },
               child: SizedBox(
@@ -1881,6 +2093,16 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             children: [
               StateDynamicsView(
                 featureFilePaths: _activeFiles,
+                result: _stateDynamicsResult,
+                selectedStateLabel: _selectedStateLabel,
+                hideTimeline: false,
+                onStateSelected: _selectState,
+                onResultChanged: (res) {
+                  setState(() {
+                    _stateDynamicsResult = res;
+                    _selectedStateLabel = res.states.firstOrNull?.label;
+                  });
+                },
               ),
             ],
           ),
@@ -1941,6 +2163,22 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     width: math.max(900.0, c.maxWidth - 40),
                     child: StateDynamicsView(
                       featureFilePaths: _activeFiles,
+                      result: _stateDynamicsResult,
+                      selectedStateLabel: _selectedStateLabel,
+                      hideTimeline: active.isNotEmpty && _stateDynamicsResult != null,
+                      onStateSelected: _selectState,
+                      onResultChanged: (res) {
+                        setState(() {
+                          _stateDynamicsResult = res;
+                          _selectedStateLabel = res.states.firstOrNull?.label;
+                          for (final g in _groups) {
+                            g.stateDynamicsResult = res;
+                            if (g.result != null) {
+                              g.figure = _makeFigure(g.result!, g);
+                            }
+                          }
+                        });
+                      },
                     ),
                   ),
                 ),

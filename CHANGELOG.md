@@ -4,6 +4,34 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.37]
+
+### ERP Batch Workspace modular redesign, ERP-CORE presets, multi-condition topographies & plot fixes
+
+- **Modular ERP Batch Workspace pipeline**:
+  - Re-architected ERP Batch Workspace to align with the Continuous EEG Batch Workspace, featuring a clean top pipeline stage selector (`ERP BATCH PIPELINE`: `All Stages`, `Stage 1: Recordings`, `Stage 2: Task & Markers`, `Stage 3: Windows & Models`, `Stage 4: Run & Export`).
+  - Completely un-crowded the UI layout, organizing controls into responsive focused stages with clear forward guidance.
+- **ERP-CORE paradigm presets & marker scheme support**:
+  - Added native ERP-CORE paradigm preset selectors (`Auto-detect`, `P3`, `MMN`, `N170`, `N2pc`, `N400`, `ERN`, `LRP`, `Custom`) configured with exact event code schemes, ROI electrodes, component windows, baseline intervals, and polarities.
+  - Fixed paradigm profile clobbering bug where inspection inadvertently restored stale single-recording custom options (`Rare`/`Freq`, `-500 to 1200 ms`), ensuring auto-detected ERP-CORE tasks run with verified protocol parameters.
+  - Fixed participant ID extraction for numeric ERP-CORE datasets (`1_P3_cleaned.edf`, `10_P3_cleaned.edf` correctly recognized as `Subj 1` and `Subj 10` rather than stripping the index).
+  - Added preceding stimulus-to-response pairing (`11, 12, 21, 22` -> response within `200–1000 ms`) for response-locked `ERN` and `LRP` paradigms to filter out pre-stimulus button presses.
+- **Streamlined recording browser & identity card**:
+  - Replaced crowded two-row button/tab header with a single structured control bar displaying active Task, prominent Recording Selector dropdown (`★ Grand Average` or `#i: Subject · Session — filename.edf`), `< Prev / Next >` buttons, and compact `Groups & Models` / `Load / Add` menus.
+  - Added an **Active Recording Identity Card** prominently displaying recording index, Subject, Session/Task, exact filename, and accepted trial counts per condition.
+- **Integrated waveforms, channel selection & multi-condition topographies**:
+  - Added single-row primary plot channel selector toolbar with quick chips (`Task ROI`, `Fz`, `FCz`, `Cz`, `CPz`, `Pz`, `Oz`, `PO7`, `PO8`, `C3`, `C4`, or any channel via dropdown) alongside `Negative up`, `Smoothing`, and collapsible `Axis limits`.
+  - Added side-by-side component-window scalp topographies displaying **Condition A**, **Condition B** (on a shared symmetric amplitude scale), and **Difference (`B − A`)** with max-$|t|$-corrected $p \le .05$ permutation significance rings.
+  - Redesigned multi-channel electrode grid with quick anatomical region presets (`Task ROI`, `Midline`, `Frontal`, `Central`, `Parieto-Occipital`, `All`, `Clear`) and interactive channel toggle chips.
+- **Plots & Reports grouping and clearing enhancements**:
+  - Enabled arbitrary multi-file selection across folders without auto-pulling sibling files or splitting groups.
+  - Added `Clear all files` button and individual file removal (`✕`) chips to easily manage comparison groups.
+- **Batch plot PDF crash fix**:
+  - Resolved fatal crash during batch PDF generation after nonlinear feature plotting (`lziv_nonlinear`).
+  - Cleaned and truncated long session table headers to prevent landscape A4 table width overflow in PDF generation.
+- **State dynamics feature mapping synchronization**:
+  - Synchronized stable-state segmentation timeline with State Feature Mapping, supporting interactive state inspection and multi-scale stage analysis.
+
 ## [1.2.36]
 
 ### State dynamics port, multi-file ERP loading & non-overwriting outputs

@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "ccs_eeg_engine"
-version = "1.2.36"
+version = "1.2.37"
 dependencies = [
  "approx",
  "ccs_algorithm",

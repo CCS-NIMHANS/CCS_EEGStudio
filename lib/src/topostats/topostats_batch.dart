@@ -190,12 +190,12 @@ Future<List<TopoBatchOutput>> generateTopoStatsFigures({
         for (final l in lines.skip(1)) {
           if (l.isNotEmpty) stats.writeln('${r.settings.feature},$l');
         }
-        // The PDF embeds a lighter render (~110 dpi) so the combined report
+        // The PDF embeds a lighter render (~96 dpi) so the combined report
         // stays small; the PNG on disk keeps the full script resolution.
         final pdfPng = !writePdf
             ? Uint8List(0)
-            : (!writePng || r.settings.dpi > 110
-                  ? await fig.toPng(dpi: 110)
+            : (!writePng || r.settings.dpi > 96
+                  ? await fig.toPng(dpi: 96)
                   : png);
         pages.add((r, pdfPng, fig.widthIn, fig.heightIn));
         saved.add(
@@ -217,16 +217,34 @@ Future<List<TopoBatchOutput>> generateTopoStatsFigures({
     }
     if (pages.isNotEmpty) {
       final base = '$outDir${Platform.pathSeparator}${recId}_TopoStats';
-      await File('${base}_stats.csv').writeAsString(stats.toString());
-      if (writePdf) {
-        await File(
-          '${base}_report.pdf',
-        ).writeAsBytes(await _topoReportPdf(recId, pages));
+      try {
+        await File('${base}_stats.csv').writeAsString(stats.toString());
+      } catch (e) {
+        onProgress?.call(
+          (gi + 1) / groups.length,
+          '  ⚠ Failed to write stats CSV: $e',
+        );
       }
-      onProgress?.call(
-        (gi + 1) / groups.length,
-        '  ✓ ${_base(base)}${writePdf ? '_report.pdf + ' : ''}_stats.csv (${pages.length} features)',
-      );
+      if (writePdf) {
+        try {
+          final pdfBytes = await _topoReportPdf(recId, pages);
+          await File('${base}_report.pdf').writeAsBytes(pdfBytes);
+          onProgress?.call(
+            (gi + 1) / groups.length,
+            '  ✓ ${_base(base)}_report.pdf + _stats.csv (${pages.length} features)',
+          );
+        } catch (e) {
+          onProgress?.call(
+            (gi + 1) / groups.length,
+            '  ⚠ ${_base(base)}_report.pdf generation failed ($e); stats CSV preserved.',
+          );
+        }
+      } else {
+        onProgress?.call(
+          (gi + 1) / groups.length,
+          '  ✓ ${_base(base)}_stats.csv (${pages.length} features)',
+        );
+      }
     }
     for (final e in errors) {
       onProgress?.call((gi + 1) / groups.length, '  ⚠ skipped $e');
@@ -256,7 +274,22 @@ Future<Uint8List> _topoReportPdf(
     theme: theme,
   );
   final first = pages.first.$1;
-  final sessions = [for (final s in first.sessions) s.name];
+  String cleanSessionHeader(String raw) {
+    var s = raw.split(RegExp(r'[\\/]')).last;
+    s = s.replaceAll(
+      RegExp(r'\.features\.csv$|\.csv$|-epo_clean$|_clean$', caseSensitive: false),
+      '',
+    );
+    if (s.length > 14) {
+      s = '${s.substring(0, 12)}…';
+    }
+    return s;
+  }
+
+  final sessions = [
+    for (var i = 0; i < first.sessions.length; i++)
+      'S${i + 1}: ${cleanSessionHeader(first.sessions[i].name)}'
+  ];
   const ink = PdfColor.fromInt(0xFF111827);
   const muted = PdfColor.fromInt(0xFF4B5563);
   const accent = PdfColor.fromInt(0xFF1D4ED8);
@@ -340,6 +373,7 @@ Future<Uint8List> _topoReportPdf(
     ),
   );
   for (final (_, png, wIn, hIn) in pages) {
+    if (png.isEmpty) continue;
     doc.addPage(
       pw.Page(
         pageFormat: PdfPageFormat(wIn * 72, hIn * 72, marginAll: 0),
