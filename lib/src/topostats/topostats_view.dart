@@ -1728,6 +1728,91 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Text(
+                      'Event markers:',
+                      style: TextStyle(color: _muted, fontSize: 10),
+                    ),
+                    const Spacer(),
+                    InkWell(
+                      onTap: () {
+                        setState(
+                          () => _s = _s.copyWith(showEventLabels: !_s.showEventLabels),
+                        );
+                        _redisplay();
+                      },
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _s.showEventLabels
+                                ? Icons.check_box
+                                : Icons.check_box_outline_blank,
+                            size: 13,
+                            color: _s.showEventLabels ? _amber : _muted,
+                          ),
+                          const SizedBox(width: 3),
+                          const Text(
+                            'Labels',
+                            style: TextStyle(color: _muted, fontSize: 10),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: [
+                    for (final (label, val) in [
+                      ('Off', 0.0),
+                      ('15%', 0.15),
+                      ('30%', 0.30),
+                      ('50%', 0.50),
+                      ('80%', 0.80),
+                      ('100%', 1.0),
+                    ])
+                      InkWell(
+                        onTap: () {
+                          setState(() => _s = _s.copyWith(eventMarkerOpacity: val));
+                          _redisplay();
+                        },
+                        borderRadius: BorderRadius.circular(4),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: _panel,
+                            border: Border.all(
+                              color: (_s.eventMarkerOpacity - val).abs() < 0.03
+                                  ? _amber
+                                  : _border,
+                            ),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            label,
+                            style: TextStyle(
+                              color: (_s.eventMarkerOpacity - val).abs() < 0.03
+                                  ? _amber
+                                  : _muted,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ]),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
@@ -1871,6 +1956,42 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             _running ? null : () => _stepFeature(1),
           ),
           const Spacer(),
+          Tooltip(
+            message: 'Event marker opacity on waveform plots',
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: _panel,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: _border),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<double>(
+                  value: [0.0, 0.15, 0.30, 0.50, 0.80, 1.0].reduce(
+                    (a, b) => (a - _s.eventMarkerOpacity).abs() < (b - _s.eventMarkerOpacity).abs() ? a : b,
+                  ),
+                  isDense: true,
+                  dropdownColor: _card,
+                  style: const TextStyle(color: _text, fontSize: 11),
+                  items: const [
+                    DropdownMenuItem(value: 0.0, child: Text('Events: Off')),
+                    DropdownMenuItem(value: 0.15, child: Text('Events: 15%')),
+                    DropdownMenuItem(value: 0.30, child: Text('Events: 30%')),
+                    DropdownMenuItem(value: 0.50, child: Text('Events: 50%')),
+                    DropdownMenuItem(value: 0.80, child: Text('Events: 80%')),
+                    DropdownMenuItem(value: 1.0, child: Text('Events: 100%')),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) {
+                      setState(() => _s = _s.copyWith(eventMarkerOpacity: v));
+                      _redisplay();
+                    }
+                  },
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
           _tbButton(
             Icons.zoom_out,
             'Zoom out',
@@ -2160,12 +2281,29 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 Padding(
                   padding: const EdgeInsets.only(top: 16),
                   child: SizedBox(
-                    width: math.max(900.0, c.maxWidth - 40),
+                    width: active.isNotEmpty
+                        ? active.first.figure!.widthIn * ppi
+                        : math.max(900.0, c.maxWidth - 40),
                     child: StateDynamicsView(
                       featureFilePaths: _activeFiles,
                       result: _stateDynamicsResult,
                       selectedStateLabel: _selectedStateLabel,
                       hideTimeline: active.isNotEmpty && _stateDynamicsResult != null,
+                      eventMarkerOpacity: _s.eventMarkerOpacity,
+                      showEventLabels: _s.showEventLabels,
+                      onEventMarkerOpacityChanged: (v) {
+                        setState(() => _s = _s.copyWith(eventMarkerOpacity: v));
+                        _redisplay();
+                      },
+                      alignedFigureWidth: active.isNotEmpty
+                          ? active.first.figure!.widthIn * ppi
+                          : null,
+                      alignedPanelSpans: active.isNotEmpty
+                          ? [
+                              for (final r in active.first.figure!.lineAxes)
+                                (r.left * ppi, r.right * ppi),
+                            ]
+                          : null,
                       onStateSelected: _selectState,
                       onResultChanged: (res) {
                         setState(() {

@@ -444,20 +444,27 @@ class TopoFigure {
     canvas.save();
     canvas.clipRect(ax);
 
-    // State Dynamics background tinting (if active)
+    // State Dynamics background tinting (if active) - merge contiguous state spans
     if (stateDynamicsResult != null && i < stateDynamicsResult!.recordings.length) {
       final rec = stateDynamicsResult!.recordings[i];
-      for (var wIdx = 0; wIdx < rec.windows.length; wIdx++) {
-        final w = rec.windows[wIdx];
-        final t1Min = w.tStart / 60.0;
-        final t2Min = (wIdx + 1 < rec.windows.length)
-            ? rec.windows[wIdx + 1].tStart / 60.0
+      var wIdx = 0;
+      while (wIdx < rec.windows.length) {
+        final wStart = rec.windows[wIdx];
+        final label = wStart.stateLabel;
+        final colorHex = wStart.stateColor;
+        final t1Min = wStart.tStart / 60.0;
+        var endIdx = wIdx + 1;
+        while (endIdx < rec.windows.length && rec.windows[endIdx].stateLabel == label) {
+          endIdx++;
+        }
+        final t2Min = (endIdx < rec.windows.length)
+            ? rec.windows[endIdx].tStart / 60.0
             : dur;
         final xx1 = xOf(t1Min);
         final xx2 = xOf(t2Min);
-        final isSelected = w.stateLabel == selectedStateLabel;
-        final color = _parseColor(w.stateColor).withValues(
-          alpha: isSelected ? 0.28 : 0.12,
+        final isSelected = label == selectedStateLabel;
+        final color = _parseColor(colorHex).withValues(
+          alpha: isSelected ? 0.24 : 0.10,
         );
         canvas.drawRect(
           Rect.fromLTRB(xx1, ax.top, xx2, ax.bottom),
@@ -468,10 +475,11 @@ class TopoFigure {
             Offset(xx1, ax.top),
             Offset(xx2, ax.top),
             Paint()
-              ..color = _parseColor(w.stateColor)
+              ..color = _parseColor(colorHex)
               ..strokeWidth = 2.0 * pt,
           );
         }
+        wIdx = endIdx;
       }
     }
 
@@ -496,21 +504,58 @@ class TopoFigure {
       }
     }
 
-    for (var eventIndex = 0; eventIndex < sess.events.length; eventIndex++) {
-      final event = sess.events[eventIndex];
-      final onset = (event['onset_s'] as num).toDouble() / 60;
-      final duration = (event['duration_s'] as num).toDouble() / 60;
-      final xx = xOf(onset);
-      final ink = Paint()..color = const Color(0xFF7B1FA2)..strokeWidth = 0.7 * pt;
-      if (duration > 0) {
-        canvas.drawRect(Rect.fromLTRB(xx, ax.top, xOf(onset + duration), ax.bottom),
-          Paint()..color = const Color(0xFF7B1FA2).withValues(alpha: 0.08));
+    if (s.eventMarkerOpacity > 0 && sess.events.isNotEmpty) {
+      final markerAlpha = s.eventMarkerOpacity.clamp(0.0, 1.0);
+      final ink = Paint()
+        ..color = const Color(0xFF7B1FA2).withValues(alpha: markerAlpha)
+        ..strokeWidth = 0.7 * pt;
+      var lastLineX = -1e9;
+      final lastLabelRight = <double>[-1e9, -1e9, -1e9];
+      var labelRow = 0;
+      for (var eventIndex = 0; eventIndex < sess.events.length; eventIndex++) {
+        final event = sess.events[eventIndex];
+        final onset = (event['onset_s'] as num).toDouble() / 60;
+        final duration = (event['duration_s'] as num).toDouble() / 60;
+        final xx = xOf(onset);
+        if (duration > 0) {
+          canvas.drawRect(
+            Rect.fromLTRB(xx, ax.top, xOf(onset + duration), ax.bottom),
+            Paint()
+              ..color = const Color(0xFF7B1FA2).withValues(
+                alpha: (markerAlpha * 0.25).clamp(0.01, 0.25),
+              ),
+          );
+        }
+        if (xx - lastLineX >= 0.85 * pt) {
+          canvas.drawLine(Offset(xx, ax.top), Offset(xx, ax.bottom), ink);
+          lastLineX = xx;
+        }
+        if (s.showEventLabels) {
+          final row = labelRow % 3;
+          if (xx >= lastLabelRight[row] + 4 * pt) {
+            final label = TextPainter(
+              text: TextSpan(
+                text: event['label'] as String,
+                style: TextStyle(
+                  color: const Color(0xFF7B1FA2).withValues(
+                    alpha: (markerAlpha * 1.4).clamp(0.15, 1.0),
+                  ),
+                  fontSize: 7 * pt,
+                ),
+              ),
+              textDirection: TextDirection.ltr,
+              maxLines: 1,
+              ellipsis: '…',
+            )..layout(maxWidth: 80 * pt);
+            label.paint(
+              canvas,
+              Offset(xx + 2 * pt, ax.top + row * 9 * pt),
+            );
+            lastLabelRight[row] = xx + 2 * pt + label.width;
+            labelRow++;
+          }
+        }
       }
-      canvas.drawLine(Offset(xx, ax.top), Offset(xx, ax.bottom), ink);
-      final label = TextPainter(text: TextSpan(text: event['label'] as String,
-        style: TextStyle(color: const Color(0xFF7B1FA2), fontSize: 7 * pt)),
-        textDirection: TextDirection.ltr, maxLines: 1, ellipsis: '…')..layout(maxWidth: 80 * pt);
-      label.paint(canvas, Offset(xx + 2 * pt, ax.top + (eventIndex % 3) * 9 * pt));
     }
 
     // fill_between(mean - band, mean + band, gray, alpha .3), zorder 2
@@ -759,40 +804,55 @@ class TopoFigure {
 
       double xOf(double tMin) => strip.left + tMin / dur * strip.width;
 
-      // 1. State Categorical Bar
+      // 1. State Categorical Bar (merged contiguous state spans)
       canvas.save();
       canvas.clipRect(strip);
-      for (var wIdx = 0; wIdx < rec.windows.length; wIdx++) {
-        final w = rec.windows[wIdx];
-        final t1Min = w.tStart / 60.0;
-        final t2Min = (wIdx + 1 < rec.windows.length)
-            ? rec.windows[wIdx + 1].tStart / 60.0
+      var wIdx = 0;
+      while (wIdx < rec.windows.length) {
+        final wStart = rec.windows[wIdx];
+        final label = wStart.stateLabel;
+        final colorHex = wStart.stateColor;
+        final t1Min = wStart.tStart / 60.0;
+        var endIdx = wIdx + 1;
+        while (endIdx < rec.windows.length && rec.windows[endIdx].stateLabel == label) {
+          endIdx++;
+        }
+        final t2Min = (endIdx < rec.windows.length)
+            ? rec.windows[endIdx].tStart / 60.0
             : dur;
         final xx1 = xOf(t1Min);
         final xx2 = xOf(t2Min);
-        final isSelected = w.stateLabel == selectedStateLabel;
-        final baseColor = _parseColor(w.stateColor);
+        final isSelected = label == selectedStateLabel;
+        final baseColor = _parseColor(colorHex);
+        final fillColor = (selectedStateLabel != null && !isSelected)
+            ? baseColor.withValues(alpha: 0.45)
+            : baseColor;
 
         canvas.drawRect(
           Rect.fromLTRB(xx1, strip.top, xx2, strip.bottom),
-          Paint()..color = baseColor,
+          Paint()..color = fillColor,
         );
 
         if (isSelected) {
           canvas.drawRect(
-            Rect.fromLTRB(xx1, strip.top, xx2, strip.bottom),
+            Rect.fromLTRB(
+              xx1 + 0.5 * pt,
+              strip.top + 0.5 * pt,
+              math.max(xx1 + 1.0 * pt, xx2 - 0.5 * pt),
+              strip.bottom - 0.5 * pt,
+            ),
             Paint()
-              ..color = const Color(0xFFFFFFFF)
+              ..color = const Color(0xFF0F172A)
               ..style = PaintingStyle.stroke
-              ..strokeWidth = 2.0 * pt,
+              ..strokeWidth = 1.3 * pt,
           );
         }
 
         // Draw state letter if wide enough
-        if (xx2 - xx1 > 12 * pt) {
+        if (xx2 - xx1 > 10 * pt) {
           final tp = TextPainter(
             text: TextSpan(
-              text: w.stateLabel,
+              text: label,
               style: TextStyle(
                 color: const Color(0xFFFFFFFF),
                 fontWeight: FontWeight.bold,
@@ -806,6 +866,7 @@ class TopoFigure {
             Offset((xx1 + xx2) / 2 - tp.width / 2, strip.center.dy - tp.height / 2),
           );
         }
+        wIdx = endIdx;
       }
       canvas.restore();
 

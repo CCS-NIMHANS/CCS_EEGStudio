@@ -4,6 +4,27 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.38]
+
+### Uniform 4-stage batch workspace across EEG, ERP & Microstates, Stage 1 preprocessing & state dynamics alignment
+
+- **Uniform 4-stage batch workspace architecture**:
+  - Unified **Continuous EEG**, **ERP Analysis**, and **Microstates** batch workspaces under the standardized 4-stage pipeline layout.
+  - Standardized the top workspace controls across all three modules: persistent batch queue status bar, one-click full pipeline execution, global output directory configuration, `Already preprocessed` fast-path switch, `Skip already processed files` resume switch, folder import subject limit, and responsive `Tabs` vs. `Columns` multi-stage layout switch.
+  - Consistent visual hierarchy with responsive color-coded stage cards: Stage 1 (Purple), Stage 2 (Green), Stage 3 (Amber), and Stage 4 (Blue), with forward stage navigation (`Next stage →` / `← Previous stage`).
+- **Stage 1 Preprocessing integration for ERP & Microstates**:
+  - Integrated full Stage 1 Preprocessing capability directly into the **ERP** and **Microstates** batch workspaces.
+  - Users can now perform channel montage mapping, 0.1–30.0 Hz zero-phase bandpass filtering, GEDAI ocular/muscle artifact cleaning, and bad channel detection before feeding cleaned recordings directly into ERP epoching or microstate clustering.
+  - Added optional stage chaining toggle (`Use Stage 1 outputs (or choose recordings directly)`) and standalone single-stage execution (`Run Preprocessing Only`).
+- **State dynamics timeline alignment & duration precision**:
+  - Re-engineered CSV parser in the Rust engine (`bridge/src/state_dynamics.rs`) with RFC 4180-compliant quote and escape handling, preventing commas embedded in JSON event markers and connectivity metadata from corrupting column alignment.
+  - Resolved session duration discrepancies by calculating recording time from true epoch boundaries (`rec.t_end.last()`) rather than synthetic window counts.
+  - Aligned the interactive timeline panels in `StateDynamicsView` 1:1 with `TopoFigure` waveform columns (`alignedFigureWidth` and `alignedPanelSpans`), ensuring multi-session comparison plots remain perfectly synchronized across continuous time.
+- **State dynamics visualization & event marker opacity**:
+  - Merged contiguous same-state time intervals into unified segments in both `TopoFigure` state strips and `StateDynamicsView`, completely eliminating solid white-out borders on short recording sessions.
+  - Added customizable event marker opacity controls (`Off`, `15%`, `30%`, `50%`, `80%`, `100%`) and an event labels toggle across the Plots & Report toolbar, sidebar style panel, and State Dynamics control bar.
+  - Implemented sub-pixel horizontal deduplication and collision avoidance for event marker lines and text annotations, allowing dense event bursts (such as 1,000+ MMN markers) to remain translucent behind waveforms without obscuring raw EEG traces.
+
 ## [1.2.37]
 
 ### ERP Batch Workspace modular redesign, ERP-CORE presets, multi-condition topographies & plot fixes

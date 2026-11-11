@@ -111,6 +111,8 @@ class TopoStatsSettings {
     this.topoValue = TopoValue.tfce,
     this.dpi = 200,
     this.sessionColors = const {},
+    this.eventMarkerOpacity = 0.30,
+    this.showEventLabels = true,
   });
 
   final String recId;
@@ -140,6 +142,8 @@ class TopoStatsSettings {
   final TopoValue topoValue;
   final int dpi;
   final Map<String, int> sessionColors;
+  final double eventMarkerOpacity;
+  final bool showEventLabels;
 
   TopoStatsSettings copyWith({
     String? recId,
@@ -167,6 +171,8 @@ class TopoStatsSettings {
     TopoValue? topoValue,
     int? dpi,
     Map<String, int>? sessionColors,
+    double? eventMarkerOpacity,
+    bool? showEventLabels,
   }) {
     return TopoStatsSettings(
       recId: recId ?? this.recId,
@@ -200,6 +206,8 @@ class TopoStatsSettings {
       topoValue: topoValue ?? this.topoValue,
       dpi: dpi ?? this.dpi,
       sessionColors: sessionColors ?? this.sessionColors,
+      eventMarkerOpacity: eventMarkerOpacity ?? this.eventMarkerOpacity,
+      showEventLabels: showEventLabels ?? this.showEventLabels,
     );
   }
 
@@ -374,6 +382,8 @@ class TopoStatsResult {
       targetTopoWidthIn: display.targetTopoWidthIn,
       dpi: display.dpi,
       sessionColors: display.sessionColors,
+      eventMarkerOpacity: display.eventMarkerOpacity,
+      showEventLabels: display.showEventLabels,
     );
     return TopoStatsResult(
       settings: s,

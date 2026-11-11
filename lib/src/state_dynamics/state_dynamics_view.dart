@@ -159,6 +159,7 @@ class WindowPoint {
 class EventMarker {
   EventMarker({
     required this.onsetS,
+    this.durationS = 0.0,
     required this.label,
     required this.markerType,
   });
@@ -166,12 +167,14 @@ class EventMarker {
   factory EventMarker.fromJson(Map<String, dynamic> json) {
     return EventMarker(
       onsetS: (json['onset_s'] as num?)?.toDouble() ?? 0.0,
+      durationS: (json['duration_s'] as num?)?.toDouble() ?? 0.0,
       label: json['label'] as String? ?? '',
       markerType: json['marker_type'] as String? ?? '',
     );
   }
 
   final double onsetS;
+  final double durationS;
   final String label;
   final String markerType;
 }
@@ -258,6 +261,11 @@ class StateDynamicsView extends StatefulWidget {
     this.selectedStateLabel,
     this.onStateSelected,
     this.hideTimeline = false,
+    this.eventMarkerOpacity = 0.30,
+    this.showEventLabels = true,
+    this.onEventMarkerOpacityChanged,
+    this.alignedFigureWidth,
+    this.alignedPanelSpans,
   });
 
   final List<String> featureFilePaths;
@@ -268,6 +276,11 @@ class StateDynamicsView extends StatefulWidget {
   final String? selectedStateLabel;
   final ValueChanged<String>? onStateSelected;
   final bool hideTimeline;
+  final double eventMarkerOpacity;
+  final bool showEventLabels;
+  final ValueChanged<double>? onEventMarkerOpacityChanged;
+  final double? alignedFigureWidth;
+  final List<(double, double)>? alignedPanelSpans;
 
   @override
   State<StateDynamicsView> createState() => _StateDynamicsViewState();
@@ -292,6 +305,8 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
 
   bool _forceShowStandalone = false;
   double _timelineZoom = 1.0;
+  late double _eventMarkerOpacity = widget.eventMarkerOpacity;
+  late bool _showEventLabels = widget.showEventLabels;
   final _timelineScrollCtrl = ScrollController();
 
   @override
@@ -300,6 +315,8 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
     _result = widget.result;
     _selectedStateLabel =
         widget.selectedStateLabel ?? widget.result?.states.firstOrNull?.label;
+    _eventMarkerOpacity = widget.eventMarkerOpacity;
+    _showEventLabels = widget.showEventLabels;
     if (widget.autoRun && widget.featureFilePaths.isNotEmpty && _result == null) {
       _runAnalysis();
     }
@@ -321,6 +338,12 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
     if (widget.selectedStateLabel != oldWidget.selectedStateLabel &&
         widget.selectedStateLabel != null) {
       _selectedStateLabel = widget.selectedStateLabel;
+    }
+    if (widget.eventMarkerOpacity != oldWidget.eventMarkerOpacity) {
+      _eventMarkerOpacity = widget.eventMarkerOpacity;
+    }
+    if (widget.showEventLabels != oldWidget.showEventLabels) {
+      _showEventLabels = widget.showEventLabels;
     }
     if (widget.autoRun &&
         oldWidget.featureFilePaths != widget.featureFilePaths &&
@@ -412,21 +435,32 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final res = _result;
+    final hasAlignedSpans = widget.alignedFigureWidth != null &&
+        widget.alignedPanelSpans != null &&
+        widget.alignedPanelSpans!.isNotEmpty;
 
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      margin: hasAlignedSpans
+          ? const EdgeInsets.only(bottom: 14)
+          : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       elevation: 1,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
         side: BorderSide(color: theme.colorScheme.outlineVariant),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: EdgeInsets.symmetric(
+          horizontal: hasAlignedSpans ? 0 : 14,
+          vertical: 14,
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Header / Controls bar
-            _buildControlsBar(theme),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: hasAlignedSpans ? 14 : 0),
+              child: _buildControlsBar(theme),
+            ),
             const Divider(height: 20),
 
             if (_loading)
@@ -441,41 +475,50 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
                 ),
               )
             else if (_error != null)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.red.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.red.shade400),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.error_outline, color: Colors.redAccent),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _error!,
-                        style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: hasAlignedSpans ? 14 : 0),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.red.shade400),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.error_outline, color: Colors.redAccent),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _error!,
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                        ),
                       ),
-                    ),
-                    TextButton(
-                      onPressed: _runAnalysis,
-                      child: const Text('Retry'),
-                    ),
-                  ],
+                      TextButton(
+                        onPressed: _runAnalysis,
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
                 ),
               )
             else if (res != null) ...[
               if (widget.hideTimeline && !_forceShowStandalone)
-                _buildIntegrationBanner(theme)
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: hasAlignedSpans ? 14 : 0),
+                  child: _buildIntegrationBanner(theme),
+                )
               else
-                _buildTimelineSection(res, theme),
+                _buildTimelineSection(res, theme, hasAlignedSpans: hasAlignedSpans),
 
               const SizedBox(height: 16),
               const Divider(height: 24),
 
               // Snapshot 2: State Feature Mapping Heatmap
-              _buildFeatureMappingSection(res, theme),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: hasAlignedSpans ? 14 : 0),
+                child: _buildFeatureMappingSection(res, theme),
+              ),
             ] else if (widget.featureFilePaths.isNotEmpty)
               Center(
                 child: Padding(
@@ -674,6 +717,28 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
                         }
                       },
               ),
+              // Event marker opacity selector
+              DropdownButton<double>(
+                value: [0.0, 0.15, 0.30, 0.50, 0.80, 1.0].reduce(
+                  (a, b) => (a - _eventMarkerOpacity).abs() < (b - _eventMarkerOpacity).abs() ? a : b,
+                ),
+                isDense: true,
+                underline: const SizedBox(),
+                items: const [
+                  DropdownMenuItem(value: 0.0, child: Text('Events: Off')),
+                  DropdownMenuItem(value: 0.15, child: Text('Events: 15%')),
+                  DropdownMenuItem(value: 0.30, child: Text('Events: 30%')),
+                  DropdownMenuItem(value: 0.50, child: Text('Events: 50%')),
+                  DropdownMenuItem(value: 0.80, child: Text('Events: 80%')),
+                  DropdownMenuItem(value: 1.0, child: Text('Events: 100%')),
+                ],
+                onChanged: (v) {
+                  if (v != null) {
+                    setState(() => _eventMarkerOpacity = v);
+                    widget.onEventMarkerOpacityChanged?.call(v);
+                  }
+                },
+              ),
               FilledButton.icon(
                 onPressed: _loading ? null : _runAnalysis,
                 icon: const Icon(Icons.refresh, size: 16),
@@ -739,126 +804,166 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
 
   // ── Snapshot 1: Timeline Section ──────────────────────────────────────────
 
-  Widget _buildTimelineSection(StateDynamicsResult res, ThemeData theme) {
+  Widget _buildTimelineSection(
+    StateDynamicsResult res,
+    ThemeData theme, {
+    bool hasAlignedSpans = false,
+  }) {
+    final useAlignedLayout = hasAlignedSpans &&
+        widget.alignedFigureWidth != null &&
+        widget.alignedPanelSpans != null &&
+        widget.alignedPanelSpans!.length == res.recordings.length &&
+        (_timelineZoom - 1.0).abs() < 0.05;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Title & State Legend & Zoom Controls
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Expanded(
-              child: Text(
-                'Stable-state segmentation of ${res.displayBand} PSD course — scale ${res.scale} (dashed = ${res.reprChannel})',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: hasAlignedSpans ? 14 : 0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  'Stable-state segmentation of ${res.displayBand} PSD course — scale ${res.scale} (dashed = ${res.reprChannel})',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                ),
               ),
-            ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.zoom_out, size: 16),
-                  tooltip: 'Zoom out timeline',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: _timelineZoom > 0.6
-                      ? () => setState(() => _timelineZoom = (_timelineZoom / 1.3).clamp(0.5, 4.0))
-                      : null,
-                ),
-                Text(
-                  '${(_timelineZoom * 100).round()}%',
-                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.zoom_in, size: 16),
-                  tooltip: 'Zoom in timeline',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: _timelineZoom < 3.8
-                      ? () => setState(() => _timelineZoom = (_timelineZoom * 1.3).clamp(0.5, 4.0))
-                      : null,
-                ),
-                TextButton(
-                  onPressed: () => setState(() => _timelineZoom = 1.0),
-                  child: const Text('Fit', style: TextStyle(fontSize: 11)),
-                ),
-              ],
-            ),
-            const SizedBox(width: 8),
-            Wrap(
-              spacing: 6,
-              children: [
-                for (final st in res.states)
-                  InkWell(
-                    onTap: () => _selectState(st.label),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: _selectedStateLabel == st.label
-                            ? _parseHex(st.color)
-                            : _parseHex(st.color).withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.zoom_out, size: 16),
+                    tooltip: 'Zoom out timeline',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _timelineZoom > 0.6
+                        ? () => setState(() => _timelineZoom = (_timelineZoom / 1.3).clamp(0.5, 4.0))
+                        : null,
+                  ),
+                  Text(
+                    '${(_timelineZoom * 100).round()}%',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.zoom_in, size: 16),
+                    tooltip: 'Zoom in timeline',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _timelineZoom < 3.8
+                        ? () => setState(() => _timelineZoom = (_timelineZoom * 1.3).clamp(0.5, 4.0))
+                        : null,
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _timelineZoom = 1.0),
+                    child: const Text('Fit', style: TextStyle(fontSize: 11)),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 8),
+              Wrap(
+                spacing: 6,
+                children: [
+                  for (final st in res.states)
+                    InkWell(
+                      onTap: () => _selectState(st.label),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
                           color: _selectedStateLabel == st.label
-                              ? Colors.white
-                              : _parseHex(st.color),
-                          width: _selectedStateLabel == st.label ? 1.5 : 1.0,
+                              ? _parseHex(st.color)
+                              : _parseHex(st.color).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color: _selectedStateLabel == st.label
+                                ? Colors.white
+                                : _parseHex(st.color),
+                            width: _selectedStateLabel == st.label ? 1.5 : 1.0,
+                          ),
                         ),
-                      ),
-                      child: Text(
-                        'state ${st.label}',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: _selectedStateLabel == st.label
-                              ? Colors.white
-                              : _parseHex(st.color),
+                        child: Text(
+                          'state ${st.label}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: _selectedStateLabel == st.label
+                                ? Colors.white
+                                : _parseHex(st.color),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
         const SizedBox(height: 10),
 
         // Side-by-side zoomable timeline plots for each recording
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final availableW = constraints.hasBoundedWidth ? constraints.maxWidth : 900.0;
-            final totalMin = res.recordings.fold<double>(0.0, (sum, r) => sum + r.durationS / 60.0);
-            final targetW = math.max(availableW, totalMin * 18.0 * _timelineZoom);
+        if (useAlignedLayout)
+          SizedBox(
+            width: widget.alignedFigureWidth!,
+            height: 280,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                for (var i = 0; i < res.recordings.length; i++)
+                  Positioned(
+                    left: widget.alignedPanelSpans![i].$1,
+                    top: 0,
+                    bottom: 0,
+                    width: math.max(
+                      16.0,
+                      widget.alignedPanelSpans![i].$2 - widget.alignedPanelSpans![i].$1,
+                    ),
+                    child: _buildSingleRecordingTimeline(
+                      res.recordings[i],
+                      res,
+                      theme,
+                      showYAxis: i == 0,
+                    ),
+                  ),
+              ],
+            ),
+          )
+        else
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final availableW = constraints.hasBoundedWidth ? constraints.maxWidth : 900.0;
+              final totalMin = res.recordings.fold<double>(0.0, (sum, r) => sum + r.durationS / 60.0);
+              final targetW = math.max(availableW, totalMin * 18.0 * _timelineZoom);
 
-            return Scrollbar(
-              controller: _timelineScrollCtrl,
-              thumbVisibility: _timelineZoom > 1.05,
-              child: SingleChildScrollView(
+              return Scrollbar(
                 controller: _timelineScrollCtrl,
-                scrollDirection: Axis.horizontal,
-                child: SizedBox(
-                  width: targetW,
-                  height: 280,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = 0; i < res.recordings.len(); i++) ...[
-                        if (i > 0) const SizedBox(width: 8),
-                        Expanded(
-                          flex: math.max(1, (res.recordings[i].durationS / 60.0).round()),
-                          child: _buildSingleRecordingTimeline(
-                            res.recordings[i],
-                            res,
-                            theme,
-                            showYAxis: i == 0,
+                thumbVisibility: _timelineZoom > 1.05,
+                child: SingleChildScrollView(
+                  controller: _timelineScrollCtrl,
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: targetW,
+                    height: 280,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (var i = 0; i < res.recordings.len(); i++) ...[
+                          if (i > 0) const SizedBox(width: 8),
+                          Expanded(
+                            flex: math.max(1, res.recordings[i].nWindows),
+                            child: _buildSingleRecordingTimeline(
+                              res.recordings[i],
+                              res,
+                              theme,
+                              showYAxis: i == 0,
+                            ),
                           ),
-                        ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
-              ),
-            );
-          },
-        ),
+              );
+            },
+          ),
       ],
     );
   }
@@ -911,6 +1016,8 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
                     selectedStateLabel: _selectedStateLabel,
                     showYAxis: showYAxis,
                     theme: theme,
+                    eventMarkerOpacity: _eventMarkerOpacity,
+                    showEventLabels: _showEventLabels,
                     onStateTap: _selectState,
                   ),
                 ),
@@ -1202,6 +1309,8 @@ class _StateTimelinePainter extends CustomPainter {
     this.selectedStateLabel,
     required this.showYAxis,
     required this.theme,
+    this.eventMarkerOpacity = 0.30,
+    this.showEventLabels = true,
     required this.onStateTap,
   });
 
@@ -1210,6 +1319,8 @@ class _StateTimelinePainter extends CustomPainter {
   final String? selectedStateLabel;
   final bool showYAxis;
   final ThemeData theme;
+  final double eventMarkerOpacity;
+  final bool showEventLabels;
   final void Function(String stateLabel) onStateTap;
 
   @override
@@ -1220,8 +1331,8 @@ class _StateTimelinePainter extends CustomPainter {
     if (totalMin <= 0) return;
 
     // Layout proportions:
-    // Top graph: 60% of height
-    // State strip: 18% of height
+    // Top graph: 58% of height
+    // State strip: 16% of height
     // Raster: 22% of height
     final topH = size.height * 0.58;
     final stripY = topH + 6.0;
@@ -1232,14 +1343,75 @@ class _StateTimelinePainter extends CustomPainter {
     // X coordinate mapping
     double mapX(double tSec) => (tSec / 60.0 / totalMin) * size.width;
 
-    // 1. Top Panel: Background tint per window/stage
-    for (var i = 0; i < rec.windows.length; i++) {
-      final w = rec.windows[i];
-      final x1 = mapX(w.tStart);
-      final nextT = (i + 1 < rec.windows.length) ? rec.windows[i + 1].tStart : rec.durationS;
+    // 1. Top Panel: Background tint per contiguous state span
+    var sIdxSpan = 0;
+    while (sIdxSpan < rec.windows.length) {
+      final wStart = rec.windows[sIdxSpan];
+      final label = wStart.stateLabel;
+      final colorHex = wStart.stateColor;
+      var endIdx = sIdxSpan + 1;
+      while (endIdx < rec.windows.length && rec.windows[endIdx].stateLabel == label) {
+        endIdx++;
+      }
+      final x1 = mapX(wStart.tStart);
+      final nextT = (endIdx < rec.windows.length) ? rec.windows[endIdx].tStart : rec.durationS;
       final x2 = mapX(nextT);
-      final c = _parseColor(w.stateColor).withValues(alpha: 0.15);
+      final isSel = label == selectedStateLabel;
+      final c = _parseColor(colorHex).withValues(alpha: isSel ? 0.22 : 0.11);
       canvas.drawRect(Rect.fromLTRB(x1, 0, x2, topH), Paint()..color = c);
+      sIdxSpan = endIdx;
+    }
+
+    // Event markers (drawn UNDERNEATH waveform so waveform stays crystal clear)
+    if (eventMarkerOpacity > 0 && rec.events.isNotEmpty) {
+      final markerAlpha = eventMarkerOpacity.clamp(0.0, 1.0);
+      final purplePaint = Paint()
+        ..color = const Color(0xFF9C27B0).withValues(alpha: markerAlpha)
+        ..strokeWidth = 0.85;
+      var lastLineX = -1e9;
+      final lastLabelRight = <double>[-1e9, -1e9, -1e9];
+      var labelRow = 0;
+
+      for (var k = 0; k < rec.events.length; k++) {
+        final ev = rec.events[k];
+        final ex = mapX(ev.onsetS);
+        if (ev.durationS > 0) {
+          canvas.drawRect(
+            Rect.fromLTRB(ex, 0, mapX(ev.onsetS + ev.durationS), topH),
+            Paint()
+              ..color = const Color(0xFF9C27B0).withValues(
+                alpha: (markerAlpha * 0.25).clamp(0.01, 0.22),
+              ),
+          );
+        }
+        if (ex - lastLineX >= 1.0) {
+          canvas.drawLine(Offset(ex, 0), Offset(ex, topH), purplePaint);
+          lastLineX = ex;
+        }
+
+        if (showEventLabels) {
+          final row = labelRow % 3;
+          if (ex >= lastLabelRight[row] + 6.0) {
+            final tp = TextPainter(
+              text: TextSpan(
+                text: ev.label,
+                style: TextStyle(
+                  color: const Color(0xFFBA68C8).withValues(
+                    alpha: (markerAlpha * 1.4).clamp(0.18, 1.0),
+                  ),
+                  fontSize: 7.5,
+                ),
+              ),
+              textDirection: TextDirection.ltr,
+              maxLines: 1,
+              ellipsis: '…',
+            )..layout(maxWidth: 64);
+            tp.paint(canvas, Offset(ex + 2, 3.0 + row * 9.5));
+            lastLabelRight[row] = ex + 2 + tp.width;
+            labelRow++;
+          }
+        }
+      }
     }
 
     // Top Panel: Y scaling for PSD
@@ -1268,7 +1440,7 @@ class _StateTimelinePainter extends CustomPainter {
       ciPath.lineTo(mapX(w.tCenter), mapY(w.bandMean + w.bandCi95));
     }
     ciPath.close();
-    canvas.drawPath(ciPath, Paint()..color = const Color(0xFFD9D9D9).withValues(alpha: 0.6));
+    canvas.drawPath(ciPath, Paint()..color = const Color(0xFFD9D9D9).withValues(alpha: 0.45));
 
     // Draw Channel Mean solid line (red)
     final meanPath = Path();
@@ -1279,7 +1451,7 @@ class _StateTimelinePainter extends CustomPainter {
     canvas.drawPath(
       meanPath,
       Paint()
-        ..color = const Color(0xFFC0392B)
+        ..color = const Color(0xFFE74C3C)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.6,
     );
@@ -1293,32 +1465,10 @@ class _StateTimelinePainter extends CustomPainter {
     canvas.drawPath(
       reprPath,
       Paint()
-        ..color = const Color(0xFF4F81BD)
+        ..color = const Color(0xFF5DADE2)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.0,
+        ..strokeWidth = 1.1,
     );
-
-    // Event markers (purple vertical lines + text)
-    final purplePaint = Paint()
-      ..color = const Color(0xFF7B3FA0)
-      ..strokeWidth = 0.9;
-
-    for (var k = 0; k < rec.events.length; k++) {
-      final ev = rec.events[k];
-      final ex = mapX(ev.onsetS);
-      canvas.drawLine(Offset(ex, 0), Offset(ex, topH), purplePaint);
-
-      // Label
-      final tp = TextPainter(
-        text: TextSpan(
-          text: ev.label,
-          style: const TextStyle(color: Color(0xFF7B3FA0), fontSize: 8),
-        ),
-        textDirection: TextDirection.ltr,
-      );
-      tp.layout();
-      tp.paint(canvas, Offset(ex + 1, 4.0 + (k % 3) * 10.0));
-    }
 
     // Border around top graph
     canvas.drawRect(
@@ -1342,29 +1492,45 @@ class _StateTimelinePainter extends CustomPainter {
       tp.paint(canvas, const Offset(4, 4));
     }
 
-    // 2. Middle Strip: State classification bar
-    for (var i = 0; i < rec.windows.length; i++) {
-      final w = rec.windows[i];
-      final x1 = mapX(w.tStart);
-      final nextT = (i + 1 < rec.windows.length) ? rec.windows[i + 1].tStart : rec.durationS;
+    // 2. Middle Strip: State classification bar (merged contiguous spans)
+    var wIdx = 0;
+    while (wIdx < rec.windows.length) {
+      final wStart = rec.windows[wIdx];
+      final label = wStart.stateLabel;
+      final colorHex = wStart.stateColor;
+      var endIdx = wIdx + 1;
+      while (endIdx < rec.windows.length && rec.windows[endIdx].stateLabel == label) {
+        endIdx++;
+      }
+      final x1 = mapX(wStart.tStart);
+      final nextT = (endIdx < rec.windows.length) ? rec.windows[endIdx].tStart : rec.durationS;
       final x2 = mapX(nextT);
-      final c = _parseColor(w.stateColor);
-      canvas.drawRect(Rect.fromLTRB(x1, stripY, x2, stripY + stripH), Paint()..color = c);
-      if (w.stateLabel == selectedStateLabel) {
+      final baseColor = _parseColor(colorHex);
+      final isSelected = label == selectedStateLabel;
+      final fillColor = (selectedStateLabel != null && !isSelected)
+          ? baseColor.withValues(alpha: 0.45)
+          : baseColor;
+      canvas.drawRect(Rect.fromLTRB(x1, stripY, x2, stripY + stripH), Paint()..color = fillColor);
+      if (isSelected) {
         canvas.drawRect(
-          Rect.fromLTRB(x1, stripY, x2, stripY + stripH),
+          Rect.fromLTRB(
+            x1 + 0.75,
+            stripY + 0.75,
+            math.max(x1 + 1.5, x2 - 0.75),
+            stripY + stripH - 0.75,
+          ),
           Paint()
             ..color = Colors.white
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 2.0,
+            ..strokeWidth = 1.5,
         );
       }
 
       // Draw state letter if wide enough
-      if (x2 - x1 > 14) {
+      if (x2 - x1 > 12) {
         final tp = TextPainter(
           text: TextSpan(
-            text: w.stateLabel,
+            text: label,
             style: const TextStyle(
               color: Colors.white,
               fontWeight: FontWeight.bold,
@@ -1376,6 +1542,7 @@ class _StateTimelinePainter extends CustomPainter {
         tp.layout();
         tp.paint(canvas, Offset((x1 + x2) / 2 - tp.width / 2, stripY + stripH / 2 - tp.height / 2));
       }
+      wIdx = endIdx;
     }
 
     // 3. Bottom Raster: Multi-scale boundary raster (15s, 30s, 60s, auto)

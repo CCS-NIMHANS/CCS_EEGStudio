@@ -53,6 +53,9 @@ class ErpWorkbenchView extends StatefulWidget {
     this.onOpenRecording,
     this.onOpenBatch,
     this.initialInspection,
+    this.stage1Builder,
+    this.onRunPreprocessing,
+    this.onCloseBatch,
   });
   final EegRecording? activeRecording;
   final AnalysisConfig? config;
@@ -62,6 +65,9 @@ class ErpWorkbenchView extends StatefulWidget {
   final Map<String, dynamic>? initialInspection;
   final VoidCallback? onOpenRecording;
   final VoidCallback? onPrepare, onOpenBatch;
+  final Widget Function({VoidCallback? onNext})? stage1Builder;
+  final Future<List<String>> Function()? onRunPreprocessing;
+  final VoidCallback? onCloseBatch;
   @override
   State<ErpWorkbenchView> createState() => _ErpWorkbenchViewState();
 }
@@ -122,9 +128,25 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   final List<ErpConditionConfig> _conditions = [];
   final Map<String, String> _participantGroups = {};
   String _gallerySearch = '';
-  int _activeStage = 0; // 0 = All stages, 1..4 = focused modular stage
+  final int _activeStage = 0; // 0 = All stages, 1..4 = focused modular stage
   String? _primaryPlotChannel; // null = Task ROI average, or specific channel name
   bool _showAxisLimits = false;
+
+  // Uniform 4-Stage Batch Workspace state
+  bool _batchPreprocessedInput = false;
+  bool _batchSkipExisting = false;
+  bool _batchTabbedView = false;
+  int _batchActiveStage = 0;
+  bool _batchStage1Enabled = true;
+  bool _batchStage2Enabled = true;
+  bool _batchStage3Enabled = true;
+  bool _batchUseStage1Outputs = true;
+  bool _batchShowResults = false;
+  final List<String> _prepFiles = [];
+  bool _erpPrepFilter = true;
+  bool _erpPrepBadChannels = true;
+  bool _erpPrepRereference = true;
+  bool _erpPrepGedai = true;
 
   static final Map<String, Map<String, dynamic>> _kErpCorePresets = {
     'P3': {
@@ -621,6 +643,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         jsonDecode(File(widget.initialResultPath!).readAsStringSync()) as Map,
       );
       _result = result;
+      _batchShowResults = true;
       _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
       _output.text = File(widget.initialResultPath!).parent.path;
     }
@@ -1274,6 +1297,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (!mounted) return;
       setState(() {
         _result = merged;
+        _batchShowResults = true;
         _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
         _file = null;
         _output.text = File(validFiles.first).parent.path;
@@ -1332,6 +1356,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (!mounted) return;
       setState(() {
         _result = merged;
+        _batchShowResults = true;
         _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
         _file = null;
         _output.text = dirPath;
@@ -1469,6 +1494,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (!mounted) return;
       setState(() {
         _result = result;
+        _batchShowResults = true;
         _file = null;
         _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
         _status = 'Writing the compact report…';
@@ -1642,77 +1668,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           ),
         ],
       ],
-    );
-  }
-
-  Widget _buildModularBatchHeaderBar() {
-    final stages = <(int, String, IconData)>[
-      (0, 'All Stages', Icons.view_agenda_outlined),
-      (1, 'Stage 1: Recordings', Icons.folder_open_outlined),
-      (2, 'Stage 2: Task & Markers', Icons.flag_outlined),
-      (3, 'Stage 3: Windows & Models', Icons.tune_outlined),
-      (4, 'Stage 4: Run & Export', Icons.play_circle_outline),
-    ];
-    final detectedTasks = _scanFiles
-        .map((f) => erpMap(f['profile'])['task'])
-        .whereType<String>()
-        .toSet();
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
-        border: Border(
-          bottom: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
-        ),
-      ),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 6,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.account_tree_outlined,
-                size: 16,
-                color: Colors.cyanAccent,
-              ),
-              const SizedBox(width: 6),
-              const Text(
-                'ERP BATCH PIPELINE',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.7,
-                  color: Colors.cyanAccent,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  '${_selectedPaths.length} queued${detectedTasks.isNotEmpty ? ' · ${detectedTasks.join(", ")}' : ''}',
-                  style: const TextStyle(fontSize: 11, color: Colors.white70),
-                ),
-              ),
-            ],
-          ),
-          for (final st in stages)
-            ChoiceChip(
-              visualDensity: VisualDensity.compact,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              avatar: Icon(st.$3, size: 14),
-              label: Text(st.$2, style: const TextStyle(fontSize: 11)),
-              selected: _activeStage == st.$1,
-              onSelected: (_) => setState(() => _activeStage = st.$1),
-            ),
-        ],
-      ),
     );
   }
 
@@ -2627,17 +2582,1332 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ],
             );
       if (widget.batchMode) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildModularBatchHeaderBar(),
-            Expanded(child: body),
-          ],
-        );
+        return _buildUniformErpBatchWorkspace(constraints, results, body);
       }
       return body;
     },
   );
+
+  Future<void> _runErpStage1Only() async {
+    if (widget.onRunPreprocessing != null) {
+      setState(() {
+        _busy = true;
+        _status = 'Running Stage 1 Preprocessing…';
+      });
+      try {
+        final written = await widget.onRunPreprocessing!();
+        if (written.isNotEmpty && mounted) {
+          setState(() {
+            _paths
+              ..clear()
+              ..addAll(written);
+            _result = null;
+          });
+          await _inspect();
+        }
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+      return;
+    }
+    if (_prepFiles.isNotEmpty) {
+      setState(() {
+        _paths
+          ..clear()
+          ..addAll(_prepFiles);
+        _result = null;
+      });
+      await _inspect();
+    }
+  }
+
+  Future<void> _runFullErpPipeline() async {
+    if (_batchStage1Enabled && !_batchPreprocessedInput) {
+      await _runErpStage1Only();
+    }
+    if (_canRun) {
+      await _run();
+    }
+  }
+
+  Widget _buildUniformErpBatchWorkspace(
+    BoxConstraints constraints,
+    Widget resultsPane,
+    Widget splitBody,
+  ) {
+    const bgColor = Color(0xFF060D1A);
+    const cardColor = Color(0xFF0F1D32);
+    const borderColor = Color(0xFF1E293B);
+    const textMuted = Color(0xFF94A3B8);
+    const accentBlue = Color(0xFF3B82F6);
+    const accentGreen = Color(0xFF10B981);
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: bgColor,
+        border: Border(top: BorderSide(color: borderColor)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 1. Uniform BATCH QUEUE Header Bar
+          SizedBox(
+            height: 36,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.queue_play_next,
+                    size: 13,
+                    color: accentBlue,
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'BATCH QUEUE',
+                    style: TextStyle(
+                      color: accentBlue,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    '${_selectedPaths.length} files queued',
+                    style: const TextStyle(color: textMuted, fontSize: 11),
+                  ),
+                  const Spacer(),
+                  if (_result != null) ...[
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          setState(() => _batchShowResults = !_batchShowResults),
+                      icon: Icon(
+                        _batchShowResults
+                            ? Icons.view_column_outlined
+                            : Icons.analytics_outlined,
+                        size: 15,
+                      ),
+                      label: Text(
+                        _batchShowResults
+                            ? 'Pipeline Stages'
+                            : 'View ERP Results',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  TextButton.icon(
+                    onPressed: _busy || _result == null || _component.isEmpty
+                        ? null
+                        : () => _groupModels(difference: false),
+                    icon: const Icon(Icons.groups, size: 16),
+                    label: const Text('Group Statistics'),
+                  ),
+                  const SizedBox(width: 4),
+                  if (_busy)
+                    TextButton.icon(
+                      onPressed: () => _service.cancel(),
+                      icon: const Icon(Icons.stop_circle, size: 14),
+                      label: const Text('Cancel', style: TextStyle(fontSize: 11)),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.redAccent,
+                      ),
+                    )
+                  else
+                    FilledButton.icon(
+                      onPressed: _canRun ||
+                              (_batchStage1Enabled &&
+                                  !_batchPreprocessedInput &&
+                                  _prepFiles.isNotEmpty)
+                          ? _runFullErpPipeline
+                          : null,
+                      icon: const Icon(Icons.play_circle_filled, size: 14),
+                      label: Text(
+                        _batchStage1Enabled && !_batchPreprocessedInput
+                            ? 'Run Full Pipeline'
+                            : 'Analyse ${_selectedPaths.length} recording(s)',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: accentGreen,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: cardColor,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                      ),
+                    ),
+                  if (widget.onCloseBatch != null) ...[
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Close batch workspace',
+                      icon: const Icon(Icons.close, size: 17, color: textMuted),
+                      onPressed: widget.onCloseBatch,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 28,
+                        minHeight: 28,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          const Divider(color: borderColor, height: 1),
+
+          if (_batchShowResults && _result != null)
+            Expanded(child: splitBody)
+          else ...[
+            // 2. Info Banner
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: accentBlue.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: accentBlue.withValues(alpha: 0.3)),
+                ),
+                child: const Text(
+                  'Batch parameters are configured inside each stage below. Preprocess raw recordings in Stage 1, configure ERP-CORE or custom task markers in Stage 2, set ERP windows & models in Stage 3, and inspect/export group statistics in Stage 4.',
+                  style: TextStyle(color: Colors.white70, fontSize: 11),
+                ),
+              ),
+            ),
+
+            // 3. Global Batch Output Directory Bar
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: borderColor),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.folder_shared_outlined,
+                    size: 18,
+                    color: accentBlue,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'BATCH OUTPUT DIRECTORY (ALL STAGES)',
+                          style: TextStyle(
+                            color: accentBlue,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _output.text.trim().isEmpty
+                              ? 'Next to source files (default for each recording)'
+                              : _output.text.trim(),
+                          style: TextStyle(
+                            color: _output.text.trim().isEmpty
+                                ? textMuted
+                                : Colors.white,
+                            fontSize: 12,
+                            fontWeight: _output.text.trim().isEmpty
+                                ? FontWeight.normal
+                                : FontWeight.w600,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () async {
+                            final path = await FilePicker.getDirectoryPath(
+                              dialogTitle:
+                                  'Select ERP batch output directory for all stages',
+                            );
+                            if (path != null && mounted) {
+                              setState(() => _output.text = path);
+                            }
+                          },
+                    icon: const Icon(Icons.folder_open, size: 14),
+                    label: const Text('Browse…'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                    ),
+                  ),
+                  if (_output.text.trim().isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    IconButton(
+                      tooltip: 'Reset to default output location',
+                      icon: const Icon(Icons.clear, size: 16, color: textMuted),
+                      onPressed: _busy
+                          ? null
+                          : () => setState(() => _output.clear()),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+
+            // 4. Batch Workspace Toolbar Row
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: SwitchListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text(
+                              'Already preprocessed: start with task markers',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            value: _batchPreprocessedInput,
+                            onChanged: _busy
+                                ? null
+                                : (v) => setState(() {
+                                    _batchPreprocessedInput = v;
+                                    _batchUseStage1Outputs = !v;
+                                    if (v && _batchActiveStage == 0) {
+                                      _batchActiveStage = 1;
+                                    }
+                                  }),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: SwitchListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text(
+                              'Skip already processed files (resume batch)',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            value: _batchSkipExisting,
+                            onChanged: _busy
+                                ? null
+                                : (v) => setState(() => _batchSkipExisting = v),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  SizedBox(
+                    width: 260,
+                    child: _field(
+                      _limit,
+                      'First N participants on folder import (0 = all)',
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment(
+                        value: true,
+                        icon: Icon(Icons.tab, size: 14),
+                        label: Text('Tabs', style: TextStyle(fontSize: 11)),
+                      ),
+                      ButtonSegment(
+                        value: false,
+                        icon: Icon(Icons.view_column, size: 14),
+                        label: Text('Columns', style: TextStyle(fontSize: 11)),
+                      ),
+                    ],
+                    selected: {_batchTabbedView},
+                    onSelectionChanged: (set) =>
+                        setState(() => _batchTabbedView = set.first),
+                  ),
+                ],
+              ),
+            ),
+
+            // 5. 4-Stage Pipeline Step Tabs
+            _buildErpBatchStageTabs(),
+
+            // 6. 4 Stage Cards (Columns or Tabs)
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                child: _batchTabbedView
+                    ? switch (_batchActiveStage) {
+                        0 => _buildErpStage1Card(
+                            onNext: () => setState(() => _batchActiveStage = 1),
+                          ),
+                        1 => _buildErpStage2Card(
+                            onPrevious: _batchPreprocessedInput
+                                ? null
+                                : () => setState(() => _batchActiveStage = 0),
+                            onNext: () => setState(() => _batchActiveStage = 2),
+                          ),
+                        2 => _buildErpStage3Card(
+                            onPrevious: () =>
+                                setState(() => _batchActiveStage = 1),
+                            onNext: () => setState(() => _batchActiveStage = 3),
+                          ),
+                        _ => _buildErpStage4Card(
+                            onPrevious: () =>
+                                setState(() => _batchActiveStage = 2),
+                          ),
+                      }
+                    : Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (!_batchPreprocessedInput) ...[
+                            Expanded(child: _buildErpStage1Card()),
+                            const SizedBox(width: 10),
+                          ],
+                          Expanded(child: _buildErpStage2Card()),
+                          const SizedBox(width: 10),
+                          Expanded(child: _buildErpStage3Card()),
+                          const SizedBox(width: 10),
+                          Expanded(child: _buildErpStage4Card()),
+                        ],
+                      ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErpBatchStageTabs() {
+    const borderColor = Color(0xFF1E293B);
+    const textMuted = Color(0xFF94A3B8);
+    final stages = [
+      (
+        index: 0,
+        title: 'Stage 1: Preprocessing',
+        color: const Color(0xFF8B5CF6),
+        icon: Icons.cleaning_services,
+        badge: !_batchStage1Enabled || _batchPreprocessedInput
+            ? 'Skipped'
+            : '${_prepFiles.length} files',
+        enabled: !_batchPreprocessedInput,
+        stageActive: _batchStage1Enabled && !_batchPreprocessedInput,
+      ),
+      (
+        index: 1,
+        title: 'Stage 2: Task & Event Markers',
+        color: const Color(0xFF10B981),
+        icon: Icons.flag_outlined,
+        badge: !_batchStage2Enabled
+            ? 'Skipped'
+            : (_batchUseStage1Outputs && _paths.isEmpty
+                ? 'Stage 1 output'
+                : '${_selectedPaths.length} files'),
+        enabled: true,
+        stageActive: _batchStage2Enabled,
+      ),
+      (
+        index: 2,
+        title: 'Stage 3: Windows & ERP Models',
+        color: const Color(0xFFF59E0B),
+        icon: Icons.analytics_outlined,
+        badge: !_batchStage3Enabled ? 'Skipped' : 'ERP / Decode',
+        enabled: true,
+        stageActive: _batchStage3Enabled,
+      ),
+      (
+        index: 3,
+        title: 'Stage 4: ERP Plots & Group Stats',
+        color: const Color(0xFF3B82F6),
+        icon: Icons.groups,
+        badge: _result != null ? '${_results.length} results' : 'Waveforms / LMM',
+        enabled: true,
+        stageActive: true,
+      ),
+    ];
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A1628),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < stages.length; i++) ...[
+            if (i > 0)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 2),
+                child: Icon(Icons.chevron_right, size: 16, color: borderColor),
+              ),
+            Expanded(
+              child: InkWell(
+                onTap: !stages[i].enabled
+                    ? null
+                    : () => setState(() => _batchActiveStage = stages[i].index),
+                borderRadius: BorderRadius.circular(8),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: _batchActiveStage == stages[i].index
+                        ? stages[i].color.withValues(alpha: 0.18)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _batchActiveStage == stages[i].index
+                          ? stages[i].color
+                          : Colors.transparent,
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        stages[i].icon,
+                        size: 14,
+                        color: stages[i].enabled
+                            ? (_batchActiveStage == stages[i].index
+                                ? stages[i].color
+                                : textMuted)
+                            : borderColor,
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          stages[i].title,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: stages[i].enabled
+                                ? (_batchActiveStage == stages[i].index
+                                    ? Colors.white
+                                    : textMuted)
+                                : borderColor,
+                            fontWeight: _batchActiveStage == stages[i].index
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                            fontSize: 11.5,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: !stages[i].stageActive
+                              ? Colors.orange.withValues(alpha: 0.18)
+                              : stages[i].color.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          stages[i].badge,
+                          style: TextStyle(
+                            color: !stages[i].stageActive
+                                ? Colors.orangeAccent
+                                : stages[i].color,
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _erpBatchCardShell({
+    required String title,
+    required IconData icon,
+    required Color color,
+    required List<Widget> children,
+    required String runLabel,
+    required VoidCallback? onRun,
+    bool stageEnabled = true,
+    ValueChanged<bool>? onStageEnabledChanged,
+    VoidCallback? onPrevious,
+    VoidCallback? onNext,
+  }) {
+    const cardColor = Color(0xFF0F1D32);
+    const borderColor = Color(0xFF1E293B);
+    const textMuted = Color(0xFF94A3B8);
+
+    return Material(
+      color: cardColor,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: borderColor),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.08),
+                border: const Border(bottom: BorderSide(color: borderColor)),
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, size: 16, color: stageEnabled ? color : textMuted),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: stageEnabled ? color : textMuted,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  if (onStageEnabledChanged != null)
+                    InkWell(
+                      onTap: _busy ? null : () => onStageEnabledChanged(!stageEnabled),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: stageEnabled
+                              ? color.withValues(alpha: 0.18)
+                              : Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: stageEnabled
+                                ? color.withValues(alpha: 0.7)
+                                : borderColor,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              stageEnabled ? Icons.check_circle : Icons.do_not_disturb_on,
+                              size: 13,
+                              color: stageEnabled ? color : textMuted,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              stageEnabled ? 'Enabled' : 'Skip Stage',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: stageEnabled ? color : textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.all(12),
+                children: children,
+              ),
+            ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: borderColor)),
+              ),
+              child: Row(
+                children: [
+                  if (onPrevious != null) ...[
+                    OutlinedButton.icon(
+                      onPressed: onPrevious,
+                      icon: const Icon(Icons.arrow_back, size: 14),
+                      label: const Text('Previous', style: TextStyle(fontSize: 11)),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: onRun,
+                      icon: const Icon(Icons.play_arrow, size: 15),
+                      label: Text(
+                        runLabel,
+                        style: const TextStyle(fontSize: 11.5),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: color,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: const Color(0xFF1E293B),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    ),
+                  ),
+                  if (onNext != null) ...[
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: onNext,
+                      icon: const Icon(Icons.arrow_forward, size: 14),
+                      label: const Text('Next', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErpStage1Card({VoidCallback? onNext}) {
+    if (widget.stage1Builder != null) {
+      return widget.stage1Builder!(onNext: onNext);
+    }
+    const accentPurple = Color(0xFF8B5CF6);
+    const borderColor = Color(0xFF1E293B);
+    const textMuted = Color(0xFF94A3B8);
+
+    return _erpBatchCardShell(
+      title: 'Stage 1: Preprocessing',
+      icon: Icons.cleaning_services,
+      color: accentPurple,
+      stageEnabled: _batchStage1Enabled,
+      onStageEnabledChanged: (v) => setState(() => _batchStage1Enabled = v),
+      onNext: onNext,
+      runLabel: 'Run Preprocessing Only',
+      onRun: !_busy && _prepFiles.isNotEmpty ? _runErpStage1Only : null,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Files (${_prepFiles.length})',
+              style: const TextStyle(
+                color: textMuted,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            Row(
+              children: [
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () async {
+                          final directory = await FilePicker.getDirectoryPath();
+                          if (directory == null || !mounted) return;
+                          final files = discoverErpRecordings(
+                            directory,
+                            firstSubjects: int.tryParse(_limit.text) ?? 2,
+                          );
+                          setState(() {
+                            _prepFiles
+                              ..clear()
+                              ..addAll(files);
+                          });
+                        },
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(64, 24),
+                  ),
+                  child: const Text('Add Folder', style: TextStyle(fontSize: 11)),
+                ),
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () async {
+                          final picked = await pickFilteredFiles(
+                            context,
+                            allowMultiple: true,
+                            type: FileType.custom,
+                            allowedExtensions: ['edf', 'fif', 'ccseeg', 'json'],
+                            recordingsOnly: true,
+                          );
+                          if (picked == null || !mounted) return;
+                          setState(() {
+                            for (final f in picked.files) {
+                              if (f.path != null && !_prepFiles.contains(f.path)) {
+                                _prepFiles.add(f.path!);
+                              }
+                            }
+                          });
+                        },
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(40, 24),
+                  ),
+                  child: const Text('Add', style: TextStyle(fontSize: 11)),
+                ),
+                TextButton(
+                  onPressed: _busy || _prepFiles.isEmpty
+                      ? null
+                      : () => setState(() => _prepFiles.clear()),
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(40, 24),
+                  ),
+                  child: const Text(
+                    'Clear',
+                    style: TextStyle(color: Colors.red, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Container(
+          height: 110,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0A1628),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: borderColor),
+          ),
+          child: _prepFiles.isEmpty
+              ? const Center(
+                  child: Text(
+                    'No raw files queued for preprocessing',
+                    style: TextStyle(color: textMuted, fontSize: 11),
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: _prepFiles.length,
+                  itemBuilder: (context, idx) => ListTile(
+                    dense: true,
+                    visualDensity: VisualDensity.compact,
+                    title: Text(
+                      _prepFiles[idx].split(Platform.pathSeparator).last,
+                      style: const TextStyle(fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close, size: 13),
+                      onPressed: _busy
+                          ? null
+                          : () => setState(() => _prepFiles.removeAt(idx)),
+                    ),
+                  ),
+                ),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'BATCH PARAMETERS · SHARED WITH SINGLE RECORDING',
+          style: TextStyle(
+            color: textMuted,
+            fontSize: 9.5,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 0.6,
+          ),
+        ),
+        const SizedBox(height: 6),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          initiallyExpanded: true,
+          title: const Text(
+            '1. Channel setup & montage',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          subtitle: const Text(
+            'Standard 10-20 / ERP-CORE montage & non-EEG channel exclusion',
+            style: TextStyle(fontSize: 10.5, color: textMuted),
+          ),
+          children: [
+            _check(
+              'Interpolate bad channels automatically',
+              _erpPrepBadChannels,
+              (v) => _erpPrepBadChannels = v,
+            ),
+            _check(
+              'Re-reference to Average / Linked Mastoids',
+              _erpPrepRereference,
+              (v) => _erpPrepRereference = v,
+            ),
+          ],
+        ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          initiallyExpanded: true,
+          title: const Text(
+            '2. Filtering & signal preparation',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          subtitle: const Text(
+            'ERP bandpass 0.1–30.0 Hz · Line noise notch · GEDAI cleaning',
+            style: TextStyle(fontSize: 10.5, color: textMuted),
+          ),
+          children: [
+            _check(
+              'ERP bandpass filter (0.1–30.0 Hz, zero-phase)',
+              _erpPrepFilter,
+              (v) => _erpPrepFilter = v,
+            ),
+            _check(
+              'GEDAI / ocular & muscle artifact removal',
+              _erpPrepGedai,
+              (v) => _erpPrepGedai = v,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildErpStage2Card({VoidCallback? onPrevious, VoidCallback? onNext}) {
+    const accentGreen = Color(0xFF10B981);
+
+    return _erpBatchCardShell(
+      title: 'Stage 2: Task & Event Markers',
+      icon: Icons.flag_outlined,
+      color: accentGreen,
+      stageEnabled: _batchStage2Enabled,
+      onStageEnabledChanged: (v) => setState(() => _batchStage2Enabled = v),
+      onPrevious: onPrevious,
+      onNext: onNext,
+      runLabel: 'Inspect & Verify Markers',
+      onRun: !_busy && _paths.isNotEmpty ? _inspect : null,
+      children: [
+        CheckboxListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: const Text(
+            'Use Stage 1 outputs (or choose recordings directly)',
+            style: TextStyle(fontSize: 11, color: Colors.white),
+          ),
+          value: _batchUseStage1Outputs,
+          onChanged: _busy
+              ? null
+              : (v) => setState(() => _batchUseStage1Outputs = v ?? true),
+        ),
+        _card('1  Batch inputs', [
+          TextButton.icon(
+            onPressed: _busy ? null : _openResult,
+            icon: const Icon(Icons.history),
+            label: const Text('Open saved ERP results…'),
+          ),
+          const Text(
+            'Start from continuous recordings with events, or reuse saved epoched condition files.',
+            style: TextStyle(fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _addFiles,
+                icon: const Icon(Icons.add),
+                label: const Text('Files'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _addFolder,
+                icon: const Icon(Icons.folder_open),
+                label: const Text('Folder'),
+              ),
+              if (_paths.isNotEmpty)
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () => setState(() {
+                          _paths.clear();
+                          _inspection = null;
+                          _fillProfile(null);
+                        }),
+                  child: const Text('Clear'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('${_selectedPaths.length} recordings selected'),
+          if (_paths.isNotEmpty)
+            TextButton(
+              onPressed: _busy ? null : _reviewInputs,
+              child: const Text('Review files and participant IDs…'),
+            ),
+        ]),
+        _card('2  Task and event markers', [
+          if (!_isPrepared) ...[
+            _buildErpCorePresetBar(),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              isExpanded: true,
+              initialValue: _eventSource,
+              decoration: const InputDecoration(
+                labelText: 'Event timing source',
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: 'auto',
+                  child: Text('Sidecar preferred, otherwise native events'),
+                ),
+                DropdownMenuItem(
+                  value: 'sidecar',
+                  child: Text('EEGLAB .evt sidecar only'),
+                ),
+                DropdownMenuItem(
+                  value: 'native',
+                  child: Text('EDF annotations / Status only'),
+                ),
+              ],
+              onChanged: _busy
+                  ? null
+                  : (v) {
+                      setState(() => _eventSource = v!);
+                      _inspect();
+                    },
+            ),
+          ],
+          DropdownButtonFormField<String>(
+            initialValue: _task,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Component'),
+            items: [
+              'Auto',
+              'MMN',
+              'N170',
+              'N2pc',
+              'N400',
+              'P3',
+              'LRP',
+              'ERN',
+              'Custom',
+            ]
+                .map(
+                  (v) => DropdownMenuItem(
+                    value: v,
+                    child: Text(
+                      v == 'Auto'
+                          ? 'Suggest per file (all ERP CORE tasks)'
+                          : v,
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: _busy
+                ? null
+                : (v) {
+                    setState(() {
+                      _task = v!;
+                      if (v == 'Custom') _regroupEpochs = false;
+                    });
+                    _inspect();
+                  },
+          ),
+          const SizedBox(height: 8),
+          if (_profile != null)
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text(
+                'Component guide',
+                style: TextStyle(fontSize: 12),
+              ),
+              children: [
+                Text(
+                  erpTaskGuides[_profile!['task']] ?? erpTaskGuides['Custom']!,
+                ),
+              ],
+            ),
+          if (_scanFiles.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            for (final task in _scanFiles
+                .map((f) => erpMap(f['profile'])['task'])
+                .whereType<String>()
+                .toSet())
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  '$task · ${_scanFiles.where((f) => erpMap(f['profile'])['task'] == task).length} recordings',
+                ),
+                subtitle: Text(() {
+                  final p = erpMap(
+                    _scanFiles.firstWhere(
+                      (f) => erpMap(f['profile'])['task'] == task,
+                    )['profile'],
+                  );
+                  final w = erpNumbers(p['window']);
+                  return '${(p['roi'] as List).join(', ')} · ${(w.first * 1000).round()}–${(w.last * 1000).round()} ms';
+                }()),
+                trailing: TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () {
+                          setState(() => _task = task);
+                          _inspect();
+                        },
+                  child: const Text('Review'),
+                ),
+              ),
+          ],
+          if (_profile != null) ...[
+            const SizedBox(height: 8),
+            _field(_componentLabel, 'Component name'),
+            _buildConditionEditor(),
+          ],
+          if (!_isPrepared)
+            _check(
+              'Require correct stimulus responses (where applicable)',
+              _correct,
+              (v) => _correct = v,
+            ),
+        ]),
+      ],
+    );
+  }
+
+  Widget _buildErpStage3Card({VoidCallback? onPrevious, VoidCallback? onNext}) {
+    const accentAmber = Color(0xFFF59E0B);
+
+    return _erpBatchCardShell(
+      title: 'Stage 3: Windows & ERP Models',
+      icon: Icons.analytics_outlined,
+      color: accentAmber,
+      stageEnabled: _batchStage3Enabled,
+      onStageEnabledChanged: (v) => setState(() => _batchStage3Enabled = v),
+      onPrevious: onPrevious,
+      onNext: onNext,
+      runLabel: 'Analyse ${_selectedPaths.length} recording(s)',
+      onRun: _canRun ? _run : null,
+      children: [
+        if (_profile != null)
+          _card('Time windows & ROI', [
+            _field(
+              _roi,
+              _profile!['lateralized'] == true
+                  ? 'Left ROI, right ROI'
+                  : 'Electrodes / ROI',
+            ),
+            if (!_isPrepared)
+              _pair('Epoch', _epoch0, _epoch1)
+            else
+              Text(
+                'Saved trial window: ${_epoch0.text} to ${_epoch1.text} ms (preserved)',
+              ),
+            _pair('Baseline', _base0, _base1),
+            _pair('Measurement window', _window0, _window1),
+            DropdownButtonFormField<double>(
+              initialValue: (_profile!['polarity'] as num).toDouble(),
+              decoration: const InputDecoration(
+                labelText: 'Component polarity',
+              ),
+              items: const [
+                DropdownMenuItem(value: -1, child: Text('Negative')),
+                DropdownMenuItem(value: 1, child: Text('Positive')),
+              ],
+              onChanged: _busy
+                  ? null
+                  : (v) => setState(() => _profile!['polarity'] = v!),
+            ),
+          ]),
+        _card('3  Analyses', [
+          const Text(
+            'Always: mean, peak amplitude/latency, signed and positive/negative AUC, fractional-area/peak latency, GFP, paired subject statistics, corrected topography and TANOVA.',
+            style: TextStyle(fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          _field(
+            _reject,
+            'Amplitude rejection threshold (µV; 0 = off)',
+            helper: 'Use Stage 1 Preprocessing or amplitude rejection.',
+          ),
+          _field(_bin, 'Model / statistical time-bin width (ms)'),
+          _field(_permutations, 'Group sign-flip permutations'),
+          _check(
+            'Regression ERP (multichannel OLS)',
+            _regression,
+            (v) => _regression = v,
+          ),
+          if (_regression)
+            _field(
+              _metadata,
+              'Optional trial predictor CSV path',
+            ),
+          if (!_isPrepared)
+            _check(
+              'Overlap correction (Unfold-style FIR / LSQR)',
+              _deconvolution,
+              (v) => _deconvolution = v,
+            ),
+          _check(
+            'Time-resolved neural decoding (shrinkage LDA)',
+            _decoding,
+            (v) => _decoding = v,
+          ),
+          if (_decoding)
+            _check(
+              'Temporal generalization (train time × test time)',
+              _generalization,
+              (v) => _generalization = v,
+            ),
+          _check(
+            'Export individual-trial measurements (advanced)',
+            _exportTrials,
+            (v) => _exportTrials = v,
+          ),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text(
+              'Solver, decoding and response parameters',
+              style: TextStyle(fontSize: 12),
+            ),
+            children: [
+              if (!_isPrepared)
+                _pair('Response association window', _rtMin, _rtMax),
+              _field(_folds, 'Blocked decoding folds (2–20)'),
+              _field(_shrinkage, 'LDA shrinkage (0–1)'),
+              if (!_isPrepared) ...[
+                _field(_lsqrTolerance, 'Overlap solver tolerance'),
+                _field(_lsqrIterations, 'Overlap solver maximum iterations'),
+              ],
+            ],
+          ),
+        ]),
+      ],
+    );
+  }
+
+  Widget _buildErpStage4Card({VoidCallback? onPrevious}) {
+    const accentBlue = Color(0xFF3B82F6);
+
+    return _erpBatchCardShell(
+      title: 'Stage 4: ERP Plots & Group Statistics',
+      icon: Icons.groups,
+      color: accentBlue,
+      onPrevious: onPrevious,
+      runLabel: _result != null
+          ? 'Open ERP Results & Plots Workbench'
+          : 'Open ERP Results Workbench',
+      onRun: _result != null
+          ? () => setState(() => _batchShowResults = true)
+          : (_canRun ? _run : null),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: accentBlue.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: accentBlue.withValues(alpha: 0.3)),
+          ),
+          child: const Text(
+            'Batch ERP waveforms, multi-condition topographies, latency/amplitude tables, LMM/GLM group models, and publication PDF reports.',
+            style: TextStyle(fontSize: 11, color: Colors.white70),
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (widget.config != null)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Protocol', style: TextStyle(fontSize: 13)),
+            children: [
+              ProtocolTools(
+                config: widget.config!,
+                beforeSave: () {
+                  _options();
+                },
+                onChanged: () => setState(_restoreProtocol),
+              ),
+            ],
+          ),
+        _card('4  Run and export', [
+          if (_timingIssue != null)
+            Text(
+              _timingIssue!,
+              style: const TextStyle(color: Colors.orangeAccent),
+            ),
+          _field(_output, 'Output folder'),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _busy
+                    ? null
+                    : () async {
+                        final path = await FilePicker.getDirectoryPath();
+                        if (path != null && mounted) {
+                          setState(() => _output.text = path);
+                        }
+                      },
+                icon: const Icon(Icons.folder_open, size: 15),
+                label: const Text('Choose output folder'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _openResultFolder,
+                icon: const Icon(Icons.analytics_outlined, size: 15),
+                label: const Text('Load ERP Folder'),
+              ),
+            ],
+          ),
+          if (_busy) ...[
+            const SizedBox(height: 10),
+            LinearProgressIndicator(value: _progress > 0 ? _progress : null),
+          ],
+          const SizedBox(height: 8),
+          SelectableText(
+            _busy || !_isPrepared
+                ? _status
+                : (_canRun
+                      ? 'Ready: ${_conditions.length} conditions · ${_roi.text} · ${_window0.text}–${_window1.text} ms'
+                      : 'Choose saved groups for each condition before averaging.'),
+            style: const TextStyle(fontSize: 11),
+          ),
+          if (_result != null) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _groupModels(difference: false),
+                  icon: const Icon(Icons.groups, size: 15),
+                  label: const Text('Condition group models'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _groupModels(difference: true),
+                  icon: const Icon(Icons.compare_arrows, size: 15),
+                  label: const Text('Difference-wave group models'),
+                ),
+                TextButton.icon(
+                  onPressed: () => Process.run(
+                    Platform.isMacOS
+                        ? 'open'
+                        : Platform.isWindows
+                            ? 'explorer'
+                            : 'xdg-open',
+                    [_output.text],
+                  ),
+                  icon: const Icon(Icons.folder, size: 15),
+                  label: const Text('Open results folder'),
+                ),
+              ],
+            ),
+          ],
+        ]),
+      ],
+    );
+  }
   Future<void> _reviewInputs() async {
     await showDialog(
       context: context,

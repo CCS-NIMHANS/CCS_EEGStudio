@@ -4687,10 +4687,22 @@ class _FeatureHomeState extends State<FeatureHome>
       erp: ErpWorkbenchView(
         key: const ValueKey('erp-batch-profile'),
         config: _cfg,
+        stage1Builder: ({VoidCallback? onNext}) => _buildBatchStage1Card(
+          onNext: onNext,
+          folderButtonLabel: 'Add Folder',
+        ),
+        onRunPreprocessing: _runBatchPreprocessing,
+        onCloseBatch: () => setState(() => _batchMaximized = false),
       ),
-      microstates: const MicrostateAnalysisView(
-        key: ValueKey('microstate-batch-profile'),
+      microstates: MicrostateAnalysisView(
+        key: const ValueKey('microstate-batch-profile'),
         batchMode: true,
+        stage1Builder: ({VoidCallback? onNext}) => _buildBatchStage1Card(
+          onNext: onNext,
+          folderButtonLabel: 'Add Folder',
+        ),
+        onRunPreprocessing: _runBatchPreprocessing,
+        onCloseBatch: () => setState(() => _batchMaximized = false),
       ),
     ),
   );
@@ -5208,12 +5220,16 @@ class _FeatureHomeState extends State<FeatureHome>
     );
   }
 
-  Widget _buildBatchStage1Card({VoidCallback? onNext}) => _batchStageCard(
+  Widget _buildBatchStage1Card({
+    VoidCallback? onNext,
+    String folderButtonLabel = 'Folder',
+  }) => _batchStageCard(
     title: 'Stage 1: Preprocessing',
     icon: Icons.cleaning_services,
     color: _accentPurple,
     stageEnabled: _batchStage1Enabled,
     onStageEnabledChanged: (v) => setState(() => _batchStage1Enabled = v),
+    folderButtonLabel: folderButtonLabel,
     headerActions: [
       Tooltip(
         message: 'Load pipeline configuration (.ccspipeline / .json)',
@@ -5592,6 +5608,7 @@ class _FeatureHomeState extends State<FeatureHome>
     bool stageEnabled = true,
     ValueChanged<bool>? onStageEnabledChanged,
     List<Widget> headerActions = const [],
+    String folderButtonLabel = 'Folder',
   }) {
     final linked = usePrevious == true;
     return Material(
@@ -5798,9 +5815,9 @@ class _FeatureHomeState extends State<FeatureHome>
                                   padding: EdgeInsets.zero,
                                   minimumSize: const Size(52, 24),
                                 ),
-                                child: const Text(
-                                  'Folder',
-                                  style: TextStyle(fontSize: 11),
+                                child: Text(
+                                  folderButtonLabel,
+                                  style: const TextStyle(fontSize: 11),
                                 ),
                               ),
                             TextButton(

@@ -697,11 +697,46 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
         file: String,
         win_count: usize,
         t_start: Vec<f64>,
+        t_end: Vec<f64>,
         t_center: Vec<f64>,
+        step_s: f64,
         events: Vec<EventMarker>,
         band_mean: Vec<f64>,
         band_ci95: Vec<f64>,
         repr_chan: Vec<f64>,
+    }
+
+    fn split_csv_line(line: &str) -> Vec<String> {
+        if !line.contains('"') {
+            return line.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        let mut out = Vec::new();
+        let mut buf = String::new();
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        let mut in_quotes = false;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '"' {
+                if in_quotes && i + 1 < chars.len() && chars[i + 1] == '"' {
+                    buf.push('"');
+                    i += 2;
+                    continue;
+                } else {
+                    in_quotes = !in_quotes;
+                    i += 1;
+                    continue;
+                }
+            } else if c == ',' && !in_quotes {
+                out.push(buf.trim().to_string());
+                buf.clear();
+            } else {
+                buf.push(c);
+            }
+            i += 1;
+        }
+        out.push(buf.trim().to_string());
+        out
     }
 
     let mut rec_data_list = Vec::new();
@@ -711,7 +746,7 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
             .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
         let mut lines = content.lines();
         let header_line = lines.next().ok_or("Empty feature file")?;
-        let header: Vec<String> = header_line.split(',').map(|s| s.trim().to_string()).collect();
+        let header: Vec<String> = split_csv_line(header_line);
 
         let chan_col = header.iter().position(|h| h == "Chan").ok_or("Missing Chan column")?;
         let epoch_col = header.iter().position(|h| h == "Epoch").ok_or("Missing Epoch column")?;
@@ -734,7 +769,7 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
             if line.trim().is_empty() {
                 continue;
             }
-            let parts: Vec<&str> = line.split(',').collect();
+            let parts: Vec<String> = split_csv_line(line);
             if parts.len() < header.len() {
                 continue;
             }
@@ -774,6 +809,7 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
         });
 
         let mut t_start_vec = Vec::with_capacity(n_win);
+        let mut t_end_vec = Vec::with_capacity(n_win);
         let mut t_center_vec = Vec::with_capacity(n_win);
         let mut events_map: BTreeMap<(i64, String), String> = BTreeMap::new();
         let mut band_mean_vec = Vec::with_capacity(n_win);
@@ -784,8 +820,10 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
 
         for (_epoch_num, ch_rows) in rows_by_epoch {
             let t_s = ch_rows.first().map(|r| r.t_start).unwrap_or(0.0);
+            let t_e = ch_rows.first().map(|r| r.t_end).unwrap_or(t_s + job.win_s);
             t_start_vec.push(t_s);
-            t_center_vec.push(t_s + job.win_s / 2.0);
+            t_end_vec.push(t_e);
+            t_center_vec.push((t_s + t_e) / 2.0);
 
             // Extract events if present
             for r in &ch_rows {
@@ -1026,13 +1064,27 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
             })
             .collect();
 
+        let mut diffs: Vec<f64> = t_start_vec
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .filter(|&d| d > 1e-6)
+            .collect();
+        diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let inferred_step = if !diffs.is_empty() {
+            diffs[diffs.len() / 2]
+        } else {
+            job.step_s
+        };
+
         rec_data_list.push(RecData {
             key,
             label,
             file: file_path.clone(),
             win_count: n_win,
             t_start: t_start_vec,
+            t_end: t_end_vec,
             t_center: t_center_vec,
+            step_s: inferred_step,
             events,
             band_mean: band_mean_vec,
             band_ci95: band_ci95_vec,
@@ -1151,7 +1203,12 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
         let rec_pcs = pcs.rows(start_row, n).into_owned();
         start_row = end_row;
 
-        let total_t_s = n as f64 * job.step_s;
+        let total_t_s = rec
+            .t_end
+            .last()
+            .copied()
+            .unwrap_or(n as f64 * rec.step_s)
+            .max(n as f64 * rec.step_s);
         let kmax = (n / 2).clamp(1, 240);
         let cost = seg_cost(&rec_pcs);
         let (_sse, back) = dp_segmentation(&cost, kmax, 2);
@@ -1204,6 +1261,16 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
                 stage_assignments[w] = gid;
             }
 
+            let stage_dur = if b > a && a < rec.t_start.len() {
+                if b < rec.t_start.len() {
+                    (rec.t_start[b] - rec.t_start[a]).max((b - a) as f64 * rec.step_s)
+                } else {
+                    let end_t = rec.t_end.last().copied().unwrap_or(rec.t_start[b - 1] + rec.step_s);
+                    (end_t - rec.t_start[a]).max((b - a) as f64 * rec.step_s)
+                }
+            } else {
+                (b - a) as f64 * rec.step_s
+            };
             stages.push(Stage {
                 rec_idx,
                 stage_idx: s_idx,
@@ -1211,7 +1278,7 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
                 win_b: b,
                 global_win_a: global_a,
                 global_win_b: global_b,
-                dur_s: (b - a) as f64 * job.step_s,
+                dur_s: stage_dur,
             });
         }
         g_offset += rec.win_count;
@@ -1457,12 +1524,19 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
             g_win_idx += 1;
         }
 
+        let rec_duration = rec
+            .t_end
+            .last()
+            .copied()
+            .unwrap_or(rec.win_count as f64 * rec.step_s)
+            .max(rec.win_count as f64 * rec.step_s);
+
         recordings.push(RecordingTimeline {
             key: rec.key.clone(),
             label: rec.label.clone(),
             file: rec.file.clone(),
             n_windows: rec.win_count,
-            duration_s: rec.win_count as f64 * job.step_s,
+            duration_s: rec_duration,
             windows: win_points,
             events: rec.events.clone(),
             cut_points: rec_segs[&rec.key].clone(),

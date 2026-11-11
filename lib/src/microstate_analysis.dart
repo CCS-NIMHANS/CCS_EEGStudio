@@ -337,9 +337,15 @@ class MicrostateAnalysisView extends StatefulWidget {
     super.key,
     this.activeRecording,
     this.batchMode = false,
+    this.stage1Builder,
+    this.onRunPreprocessing,
+    this.onCloseBatch,
   });
   final EegRecording? activeRecording;
   final bool batchMode;
+  final Widget Function({VoidCallback? onNext})? stage1Builder;
+  final Future<List<String>> Function()? onRunPreprocessing;
+  final VoidCallback? onCloseBatch;
 
   @override
   State<MicrostateAnalysisView> createState() => _MicrostateAnalysisViewState();
@@ -351,13 +357,28 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   final _states = TextEditingController(text: '8');
   final _peaks = TextEditingController(text: '300');
   final _segment = TextEditingController(text: '30');
+  final _batchLimit = TextEditingController(text: '0');
   final List<String> _batchPaths = [];
+  final List<String> _prepFiles = [];
   bool get _batch => widget.batchMode;
   bool _running = false;
   double _progress = 0;
   int _syntaxWordLength = 6;
   bool _syntaxLegacyWindows = false;
   bool _removeEpochDc = true;
+  bool _batchPreprocessedInput = false;
+  bool _batchSkipExisting = false;
+  bool _batchTabbedView = false;
+  int _batchActiveStage = 0;
+  bool _batchStage1Enabled = true;
+  bool _batchStage2Enabled = true;
+  bool _batchStage3Enabled = true;
+  bool _batchUseStage1Outputs = true;
+  bool _batchShowResults = false;
+  bool _msPrepFilter = true;
+  bool _msPrepBadChannels = true;
+  bool _msPrepRereference = true;
+  bool _msPrepGedai = true;
   bool _cancelRequested = false;
   String _message = '';
   String? _outputDirectory;
@@ -379,6 +400,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
     _states.dispose();
     _peaks.dispose();
     _segment.dispose();
+    _batchLimit.dispose();
     super.dispose();
   }
 
@@ -500,6 +522,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         setState(() {
           _analysisInputs = recordings;
           _result = result;
+          _batchShowResults = true;
           _recordingIndex = 0;
           _timelineStartSeconds = 0;
         });
@@ -511,7 +534,1155 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   }
 
   @override
-  Widget build(BuildContext context) => Row(
+  Widget build(BuildContext context) {
+    if (_batch) {
+      return _buildUniformMicrostateBatchWorkspace(context);
+    }
+    return _buildInteractiveMicrostateLayout(context);
+  }
+
+  Future<void> _runMicrostateStage1Only() async {
+    if (widget.onRunPreprocessing != null) {
+      setState(() {
+        _running = true;
+        _message = 'Running Stage 1 Preprocessing…';
+      });
+      try {
+        final written = await widget.onRunPreprocessing!();
+        if (written.isNotEmpty && mounted) {
+          setState(() {
+            _batchPaths
+              ..clear()
+              ..addAll(written);
+            _result = null;
+          });
+        }
+      } finally {
+        if (mounted) setState(() => _running = false);
+      }
+      return;
+    }
+    if (_prepFiles.isNotEmpty) {
+      setState(() {
+        _batchPaths
+          ..clear()
+          ..addAll(_prepFiles);
+        _result = null;
+      });
+    }
+  }
+
+  Future<void> _runFullMicrostatePipeline() async {
+    if (_batchStage1Enabled && !_batchPreprocessedInput) {
+      await _runMicrostateStage1Only();
+    }
+    if (_batchPaths.isNotEmpty && !_running) {
+      await _run();
+    }
+  }
+
+  Widget _buildUniformMicrostateBatchWorkspace(BuildContext context) {
+    const bgColor = Color(0xFF060D1A);
+    const cardColor = Color(0xFF0F1D32);
+    const borderColor = Color(0xFF1E293B);
+    const textMuted = Color(0xFF94A3B8);
+    const accentBlue = Color(0xFF3B82F6);
+    const accentGreen = Color(0xFF10B981);
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: bgColor,
+        border: Border(top: BorderSide(color: borderColor)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 1. Uniform BATCH QUEUE Header Bar
+          SizedBox(
+            height: 36,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.queue_play_next,
+                    size: 13,
+                    color: accentBlue,
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'BATCH QUEUE',
+                    style: TextStyle(
+                      color: accentBlue,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    '${_batchPaths.length} files queued',
+                    style: const TextStyle(color: textMuted, fontSize: 11),
+                  ),
+                  const Spacer(),
+                  if (_result != null) ...[
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          setState(() => _batchShowResults = !_batchShowResults),
+                      icon: Icon(
+                        _batchShowResults
+                            ? Icons.view_column_outlined
+                            : Icons.analytics_outlined,
+                        size: 15,
+                      ),
+                      label: Text(
+                        _batchShowResults
+                            ? 'Pipeline Stages'
+                            : 'View Microstate Results',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  if (_running)
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() => _cancelRequested = true);
+                        _service.cancel();
+                      },
+                      icon: const Icon(Icons.stop_circle, size: 14),
+                      label: const Text('Cancel', style: TextStyle(fontSize: 11)),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.redAccent,
+                      ),
+                    )
+                  else
+                    FilledButton.icon(
+                      onPressed: _batchPaths.isNotEmpty ||
+                              (_batchStage1Enabled &&
+                                  !_batchPreprocessedInput &&
+                                  _prepFiles.isNotEmpty)
+                          ? _runFullMicrostatePipeline
+                          : null,
+                      icon: const Icon(Icons.play_circle_filled, size: 14),
+                      label: Text(
+                        _batchStage1Enabled && !_batchPreprocessedInput
+                            ? 'Run Full Pipeline'
+                            : 'Run Microstate Batch',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: accentGreen,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: cardColor,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                      ),
+                    ),
+                  if (widget.onCloseBatch != null) ...[
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Close batch workspace',
+                      icon: const Icon(Icons.close, size: 17, color: textMuted),
+                      onPressed: widget.onCloseBatch,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 28,
+                        minHeight: 28,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          const Divider(color: borderColor, height: 1),
+
+          if (_batchShowResults && _result != null)
+            Expanded(child: _buildInteractiveMicrostateLayout(context))
+          else ...[
+            // 2. Info Banner
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: accentBlue.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: accentBlue.withValues(alpha: 0.3)),
+                ),
+                child: const Text(
+                  'Batch parameters are configured inside each stage below. Preprocess raw recordings in Stage 1, configure canonical microstate clustering in Stage 2, set back-fitting & syntax parameters in Stage 3, and inspect/export group microstate maps in Stage 4.',
+                  style: TextStyle(color: Colors.white70, fontSize: 11),
+                ),
+              ),
+            ),
+
+            // 3. Global Batch Output Directory Bar
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: borderColor),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.folder_shared_outlined,
+                    size: 18,
+                    color: accentBlue,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'BATCH OUTPUT DIRECTORY (ALL STAGES)',
+                          style: TextStyle(
+                            color: accentBlue,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _outputDirectory == null
+                              ? 'Next to source files (default for each recording)'
+                              : _outputDirectory!,
+                          style: TextStyle(
+                            color: _outputDirectory == null
+                                ? textMuted
+                                : Colors.white,
+                            fontSize: 12,
+                            fontWeight: _outputDirectory == null
+                                ? FontWeight.normal
+                                : FontWeight.w600,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed: _running
+                        ? null
+                        : () async {
+                            final x = await FilePicker.getDirectoryPath(
+                              dialogTitle:
+                                  'Select Microstates batch output directory',
+                            );
+                            if (x != null && mounted) {
+                              setState(() => _outputDirectory = x);
+                            }
+                          },
+                    icon: const Icon(Icons.folder_open, size: 14),
+                    label: const Text('Browse…'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                    ),
+                  ),
+                  if (_outputDirectory != null) ...[
+                    const SizedBox(width: 6),
+                    IconButton(
+                      tooltip: 'Reset to default output location',
+                      icon: const Icon(Icons.clear, size: 16, color: textMuted),
+                      onPressed: _running
+                          ? null
+                          : () => setState(() => _outputDirectory = null),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+
+            // 4. Batch Workspace Toolbar Row
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: SwitchListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text(
+                              'Already preprocessed: start with microstates',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            value: _batchPreprocessedInput,
+                            onChanged: _running
+                                ? null
+                                : (v) => setState(() {
+                                    _batchPreprocessedInput = v;
+                                    _batchUseStage1Outputs = !v;
+                                    if (v && _batchActiveStage == 0) {
+                                      _batchActiveStage = 1;
+                                    }
+                                  }),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: SwitchListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text(
+                              'Skip already processed files (resume batch)',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            value: _batchSkipExisting,
+                            onChanged: _running
+                                ? null
+                                : (v) => setState(() => _batchSkipExisting = v),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  SizedBox(
+                    width: 260,
+                    child: _field(
+                      _batchLimit,
+                      'Folder import limit (0 = all subjects)',
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment(
+                        value: true,
+                        icon: Icon(Icons.tab, size: 14),
+                        label: Text('Tabs', style: TextStyle(fontSize: 11)),
+                      ),
+                      ButtonSegment(
+                        value: false,
+                        icon: Icon(Icons.view_column, size: 14),
+                        label: Text('Columns', style: TextStyle(fontSize: 11)),
+                      ),
+                    ],
+                    selected: {_batchTabbedView},
+                    onSelectionChanged: (set) =>
+                        setState(() => _batchTabbedView = set.first),
+                  ),
+                ],
+              ),
+            ),
+
+            // 5. 4-Stage Pipeline Step Tabs
+            _buildMicrostateBatchStageTabs(),
+
+            // 6. 4 Stage Cards (Columns or Tabs)
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                child: _batchTabbedView
+                    ? switch (_batchActiveStage) {
+                        0 => _buildMsStage1Card(
+                            onNext: () => setState(() => _batchActiveStage = 1),
+                          ),
+                        1 => _buildMsStage2Card(
+                            onPrevious: _batchPreprocessedInput
+                                ? null
+                                : () => setState(() => _batchActiveStage = 0),
+                            onNext: () => setState(() => _batchActiveStage = 2),
+                          ),
+                        2 => _buildMsStage3Card(
+                            onPrevious: () =>
+                                setState(() => _batchActiveStage = 1),
+                            onNext: () => setState(() => _batchActiveStage = 3),
+                          ),
+                        _ => _buildMsStage4Card(
+                            onPrevious: () =>
+                                setState(() => _batchActiveStage = 2),
+                          ),
+                      }
+                    : Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (!_batchPreprocessedInput) ...[
+                            Expanded(child: _buildMsStage1Card()),
+                            const SizedBox(width: 10),
+                          ],
+                          Expanded(child: _buildMsStage2Card()),
+                          const SizedBox(width: 10),
+                          Expanded(child: _buildMsStage3Card()),
+                          const SizedBox(width: 10),
+                          Expanded(child: _buildMsStage4Card()),
+                        ],
+                      ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMicrostateBatchStageTabs() {
+    const borderColor = Color(0xFF1E293B);
+    const textMuted = Color(0xFF94A3B8);
+    final stages = [
+      (
+        index: 0,
+        title: 'Stage 1: Preprocessing',
+        color: const Color(0xFF8B5CF6),
+        icon: Icons.cleaning_services,
+        badge: !_batchStage1Enabled || _batchPreprocessedInput
+            ? 'Skipped'
+            : '${_prepFiles.length} files',
+        enabled: !_batchPreprocessedInput,
+        stageActive: _batchStage1Enabled && !_batchPreprocessedInput,
+      ),
+      (
+        index: 1,
+        title: 'Stage 2: Template & Clustering',
+        color: const Color(0xFF10B981),
+        icon: Icons.grain,
+        badge: !_batchStage2Enabled
+            ? 'Skipped'
+            : (_batchUseStage1Outputs && _batchPaths.isEmpty
+                ? 'Stage 1 output'
+                : '${_batchPaths.length} files'),
+        enabled: true,
+        stageActive: _batchStage2Enabled,
+      ),
+      (
+        index: 2,
+        title: 'Stage 3: Dynamics & Syntax',
+        color: const Color(0xFFF59E0B),
+        icon: Icons.timeline,
+        badge: !_batchStage3Enabled ? 'Skipped' : 'Back-fit / Syntax',
+        enabled: true,
+        stageActive: _batchStage3Enabled,
+      ),
+      (
+        index: 3,
+        title: 'Stage 4: Maps & Group Stats',
+        color: const Color(0xFF3B82F6),
+        icon: Icons.auto_graph,
+        badge: _result != null
+            ? '${_result!.recordings.length} results'
+            : 'Canonical Maps',
+        enabled: true,
+        stageActive: true,
+      ),
+    ];
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A1628),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < stages.length; i++) ...[
+            if (i > 0)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 2),
+                child: Icon(Icons.chevron_right, size: 16, color: borderColor),
+              ),
+            Expanded(
+              child: InkWell(
+                onTap: !stages[i].enabled
+                    ? null
+                    : () => setState(() => _batchActiveStage = stages[i].index),
+                borderRadius: BorderRadius.circular(8),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: _batchActiveStage == stages[i].index
+                        ? stages[i].color.withValues(alpha: 0.18)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _batchActiveStage == stages[i].index
+                          ? stages[i].color
+                          : Colors.transparent,
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        stages[i].icon,
+                        size: 14,
+                        color: stages[i].enabled
+                            ? (_batchActiveStage == stages[i].index
+                                ? stages[i].color
+                                : textMuted)
+                            : borderColor,
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          stages[i].title,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: stages[i].enabled
+                                ? (_batchActiveStage == stages[i].index
+                                    ? Colors.white
+                                    : textMuted)
+                                : borderColor,
+                            fontWeight: _batchActiveStage == stages[i].index
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                            fontSize: 11.5,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: !stages[i].stageActive
+                              ? Colors.orange.withValues(alpha: 0.18)
+                              : stages[i].color.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          stages[i].badge,
+                          style: TextStyle(
+                            color: !stages[i].stageActive
+                                ? Colors.orangeAccent
+                                : stages[i].color,
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _msBatchCardShell({
+    required String title,
+    required IconData icon,
+    required Color color,
+    required List<Widget> children,
+    required String runLabel,
+    required VoidCallback? onRun,
+    bool stageEnabled = true,
+    ValueChanged<bool>? onStageEnabledChanged,
+    VoidCallback? onPrevious,
+    VoidCallback? onNext,
+  }) {
+    const cardColor = Color(0xFF0F1D32);
+    const borderColor = Color(0xFF1E293B);
+    const textMuted = Color(0xFF94A3B8);
+
+    return Material(
+      color: cardColor,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: borderColor),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.08),
+                border: const Border(bottom: BorderSide(color: borderColor)),
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, size: 16, color: stageEnabled ? color : textMuted),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: stageEnabled ? color : textMuted,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  if (onStageEnabledChanged != null)
+                    InkWell(
+                      onTap: _running
+                          ? null
+                          : () => onStageEnabledChanged(!stageEnabled),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: stageEnabled
+                              ? color.withValues(alpha: 0.18)
+                              : Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: stageEnabled
+                                ? color.withValues(alpha: 0.7)
+                                : borderColor,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              stageEnabled ? Icons.check_circle : Icons.do_not_disturb_on,
+                              size: 13,
+                              color: stageEnabled ? color : textMuted,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              stageEnabled ? 'Enabled' : 'Skip Stage',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: stageEnabled ? color : textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.all(12),
+                children: children,
+              ),
+            ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: borderColor)),
+              ),
+              child: Row(
+                children: [
+                  if (onPrevious != null) ...[
+                    OutlinedButton.icon(
+                      onPressed: onPrevious,
+                      icon: const Icon(Icons.arrow_back, size: 14),
+                      label: const Text('Previous', style: TextStyle(fontSize: 11)),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: onRun,
+                      icon: const Icon(Icons.play_arrow, size: 15),
+                      label: Text(
+                        runLabel,
+                        style: const TextStyle(fontSize: 11.5),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: color,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: const Color(0xFF1E293B),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    ),
+                  ),
+                  if (onNext != null) ...[
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: onNext,
+                      icon: const Icon(Icons.arrow_forward, size: 14),
+                      label: const Text('Next', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMsStage1Card({VoidCallback? onNext}) {
+    if (widget.stage1Builder != null) {
+      return widget.stage1Builder!(onNext: onNext);
+    }
+    const accentPurple = Color(0xFF8B5CF6);
+    const borderColor = Color(0xFF1E293B);
+    const textMuted = Color(0xFF94A3B8);
+
+    return _msBatchCardShell(
+      title: 'Stage 1: Preprocessing',
+      icon: Icons.cleaning_services,
+      color: accentPurple,
+      stageEnabled: _batchStage1Enabled,
+      onStageEnabledChanged: (v) => setState(() => _batchStage1Enabled = v),
+      onNext: onNext,
+      runLabel: 'Run Preprocessing Only',
+      onRun: !_running && _prepFiles.isNotEmpty ? _runMicrostateStage1Only : null,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Files (${_prepFiles.length})',
+              style: const TextStyle(
+                color: textMuted,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            Row(
+              children: [
+                TextButton(
+                  onPressed: _running
+                      ? null
+                      : () async {
+                          final picked = await pickFilteredFiles(
+                            context,
+                            allowMultiple: true,
+                            type: FileType.custom,
+                            allowedExtensions: const [
+                              'edf',
+                              'set',
+                              'fif',
+                              'mat',
+                              'vhdr',
+                              'json',
+                              'orb',
+                              'signal',
+                            ],
+                          );
+                          if (picked == null || !mounted) return;
+                          setState(() {
+                            for (final f in picked.files) {
+                              if (f.path != null && !_prepFiles.contains(f.path)) {
+                                _prepFiles.add(f.path!);
+                              }
+                            }
+                          });
+                        },
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(40, 24),
+                  ),
+                  child: const Text('Add', style: TextStyle(fontSize: 11)),
+                ),
+                TextButton(
+                  onPressed: _running || _prepFiles.isEmpty
+                      ? null
+                      : () => setState(() => _prepFiles.clear()),
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(40, 24),
+                  ),
+                  child: const Text(
+                    'Clear',
+                    style: TextStyle(color: Colors.red, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Container(
+          height: 110,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0A1628),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: borderColor),
+          ),
+          child: _prepFiles.isEmpty
+              ? const Center(
+                  child: Text(
+                    'No raw files queued for preprocessing',
+                    style: TextStyle(color: textMuted, fontSize: 11),
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: _prepFiles.length,
+                  itemBuilder: (context, idx) => ListTile(
+                    dense: true,
+                    visualDensity: VisualDensity.compact,
+                    title: Text(
+                      File(_prepFiles[idx]).uri.pathSegments.last,
+                      style: const TextStyle(fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close, size: 13),
+                      onPressed: _running
+                          ? null
+                          : () => setState(() => _prepFiles.removeAt(idx)),
+                    ),
+                  ),
+                ),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'BATCH PARAMETERS · SHARED WITH SINGLE RECORDING',
+          style: TextStyle(
+            color: textMuted,
+            fontSize: 9.5,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 0.6,
+          ),
+        ),
+        const SizedBox(height: 6),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          initiallyExpanded: true,
+          title: const Text(
+            '1. Channel setup & montage',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          subtitle: const Text(
+            'Average reference & bad channel interpolation for scalp topographies',
+            style: TextStyle(fontSize: 10.5, color: textMuted),
+          ),
+          children: [
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text(
+                'Interpolate bad channels automatically',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: _msPrepBadChannels,
+              onChanged: _running
+                  ? null
+                  : (v) => setState(() => _msPrepBadChannels = v ?? true),
+            ),
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text(
+                'Re-reference to Common Average Reference',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: _msPrepRereference,
+              onChanged: _running
+                  ? null
+                  : (v) => setState(() => _msPrepRereference = v ?? true),
+            ),
+          ],
+        ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          initiallyExpanded: true,
+          title: const Text(
+            '2. Filtering & signal preparation',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          subtitle: const Text(
+            'Microstate bandpass 2.0–20.0 Hz · GEDAI artifact removal',
+            style: TextStyle(fontSize: 10.5, color: textMuted),
+          ),
+          children: [
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text(
+                'Microstate bandpass filter (2.0–20.0 Hz)',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: _msPrepFilter,
+              onChanged: _running
+                  ? null
+                  : (v) => setState(() => _msPrepFilter = v ?? true),
+            ),
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text(
+                'GEDAI artifact cleaning',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: _msPrepGedai,
+              onChanged: _running
+                  ? null
+                  : (v) => setState(() => _msPrepGedai = v ?? true),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMsStage2Card({VoidCallback? onPrevious, VoidCallback? onNext}) {
+    const accentGreen = Color(0xFF10B981);
+
+    return _msBatchCardShell(
+      title: 'Stage 2: Template & Clustering',
+      icon: Icons.grain,
+      color: accentGreen,
+      stageEnabled: _batchStage2Enabled,
+      onStageEnabledChanged: (v) => setState(() => _batchStage2Enabled = v),
+      onPrevious: onPrevious,
+      onNext: onNext,
+      runLabel: 'Add recordings to queue',
+      onRun: _running ? null : _addBatch,
+      children: [
+        CheckboxListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: const Text(
+            'Use Stage 1 outputs (or choose recordings directly)',
+            style: TextStyle(fontSize: 11, color: Colors.white),
+          ),
+          value: _batchUseStage1Outputs,
+          onChanged: _running
+              ? null
+              : (v) => setState(() => _batchUseStage1Outputs = v ?? true),
+        ),
+        const SizedBox(height: 6),
+        _sectionTitle('1', 'Input'),
+        const SizedBox(height: 8),
+        const Text(
+          'Batch inputs · shared template and per-recording results',
+          style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: _running ? null : _addBatch,
+          icon: const Icon(Icons.add),
+          label: const Text('Add recordings'),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '${_batchPaths.length} files. One shared group template will be learned and back-fitted to every recording.',
+          style: const TextStyle(
+            color: Color(0xFF94A3B8),
+            fontSize: 11,
+          ),
+        ),
+        for (final (i, path) in _batchPaths.indexed)
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Text(
+              File(path).uri.pathSegments.last,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11),
+            ),
+            trailing: IconButton(
+              icon: const Icon(Icons.close, size: 14),
+              onPressed: _running
+                  ? null
+                  : () => setState(() => _batchPaths.removeAt(i)),
+            ),
+          ),
+        const SizedBox(height: 16),
+        _sectionTitle('2', 'Configure'),
+        const SizedBox(height: 9),
+        const Text(
+          'Number of states',
+          style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          children: [
+            for (final count in [4, 5, 6, 7, 8])
+              ChoiceChip(
+                label: Text('$count'),
+                selected: _states.text == '$count',
+                onSelected: _running
+                    ? null
+                    : (_) => setState(() => _states.text = '$count'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _field(_peaks, 'GFP peaks / recording'),
+        const SizedBox(height: 8),
+        _field(_segment, 'Minimum segment (ms)'),
+      ],
+    );
+  }
+
+  Widget _buildMsStage3Card({VoidCallback? onPrevious, VoidCallback? onNext}) {
+    const accentAmber = Color(0xFFF59E0B);
+
+    return _msBatchCardShell(
+      title: 'Stage 3: Dynamics & Syntax',
+      icon: Icons.timeline,
+      color: accentAmber,
+      stageEnabled: _batchStage3Enabled,
+      onStageEnabledChanged: (v) => setState(() => _batchStage3Enabled = v),
+      onPrevious: onPrevious,
+      onNext: onNext,
+      runLabel: _running ? 'Analysing…' : 'Run Microstate Analysis',
+      onRun: _running || _batchPaths.isEmpty ? null : _run,
+      children: [
+        _sectionTitle('3', 'Run & export'),
+        const SizedBox(height: 9),
+        OutlinedButton.icon(
+          onPressed: _running
+              ? null
+              : () async {
+                  final x = await FilePicker.getDirectoryPath();
+                  if (x != null) setState(() => _outputDirectory = x);
+                },
+          icon: const Icon(Icons.folder),
+          label: Text(
+            _outputDirectory == null
+                ? 'Choose output folder…'
+                : 'Output: ${File(_outputDirectory!).uri.pathSegments.where((x) => x.isNotEmpty).last}',
+          ),
+        ),
+        const SizedBox(height: 8),
+        CheckboxListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Remove per-epoch channel DC before fitting'),
+          subtitle: const Text(
+            'Analysis only. Original GFP is retained in sample exports.',
+          ),
+          value: _removeEpochDc,
+          onChanged: _running
+              ? null
+              : (v) => setState(() => _removeEpochDc = v!),
+        ),
+        const SizedBox(height: 6),
+        DropdownButtonFormField<int>(
+          initialValue: _syntaxWordLength,
+          decoration: const InputDecoration(
+            labelText: 'Syntax word length',
+          ),
+          items: [
+            for (final w in [2, 3, 4, 5, 6, 7])
+              DropdownMenuItem(value: w, child: Text('$w')),
+          ],
+          onChanged: _running
+              ? null
+              : (v) => setState(() => _syntaxWordLength = v!),
+        ),
+        const SizedBox(height: 6),
+        CheckboxListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Legacy microsynt.py window count'),
+          subtitle: const Text(
+            'Default includes the final valid word, as in the paper.',
+          ),
+          value: _syntaxLegacyWindows,
+          onChanged: _running
+              ? null
+              : (v) => setState(() => _syntaxLegacyWindows = v!),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Parity defaults: average reference, dataset normalization, 10 ms peak distance, 1.5 SD GFP threshold, modified k-means ×10, polarity ignored, CV models 3–8.',
+          style: TextStyle(
+            color: Color(0xFF94A3B8),
+            fontSize: 10.5,
+            height: 1.4,
+          ),
+        ),
+        if (_running) ...[
+          const SizedBox(height: 10),
+          ProcessingProgress(
+            progress: _progress,
+            message: _message,
+            stopping: _cancelRequested,
+            onCancel: () {
+              setState(() => _cancelRequested = true);
+              _service.cancel();
+            },
+          ),
+        ],
+        if (_message.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            _message,
+            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildMsStage4Card({VoidCallback? onPrevious}) {
+    const accentBlue = Color(0xFF3B82F6);
+
+    return _msBatchCardShell(
+      title: 'Stage 4: Maps & Group Stats',
+      icon: Icons.auto_graph,
+      color: accentBlue,
+      onPrevious: onPrevious,
+      runLabel: _result != null
+          ? 'Open Interactive Microstate Results'
+          : 'Open Microstate Results Workbench',
+      onRun: _result != null
+          ? () => setState(() => _batchShowResults = true)
+          : (!_running && _batchPaths.isNotEmpty ? _run : null),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: accentBlue.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: accentBlue.withValues(alpha: 0.3)),
+          ),
+          child: const Text(
+            'Shared group canonical headmaps, global explained variance (GEV), state duration/coverage/occurrence, Markov transition matrices, and Lempel-Ziv / entropy syntax complexity.',
+            style: TextStyle(fontSize: 11, color: Colors.white70),
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (_result == null)
+          const Text(
+            'Run Stage 3 Microstate Analysis to inspect canonical maps, per-recording state dynamics, transition graphs, and CSV exports.',
+            style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+          )
+        else ...[
+          Text(
+            '✓ ${_result!.selectedStates}-state group template computed across ${_result!.recordings.length} recording(s).',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF10B981),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Output folder: ${_result!.outputDirectory}',
+            style: const TextStyle(fontSize: 11, color: Colors.white70),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildInteractiveMicrostateLayout(BuildContext context) => Row(
     children: [
       SizedBox(
         width: 300,
