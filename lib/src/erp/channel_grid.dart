@@ -313,7 +313,7 @@ class _ErpChannelGridState extends State<ErpChannelGrid> {
                 ),
                 ActionChip(
                   visualDensity: VisualDensity.compact,
-                  label: const Text('Clear', style: TextStyle(fontSize: 11)),
+                  label: const Text('None', style: TextStyle(fontSize: 11)),
                   onPressed: () => _updateSelected({}),
                 ),
               ],

@@ -1210,7 +1210,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       padding: const EdgeInsets.only(bottom: 16),
       children: [
         _section('RECORDINGS', icon: Icons.folder_copy_outlined, [
-          if (_groups.isNotEmpty) ...[
+          if (_groups.length > 1) ...[
             Row(
               children: [
                 Expanded(
@@ -1285,7 +1285,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 child: OutlinedButton.icon(
                   onPressed: _running ? null : _addNewGroup,
                   icon: const Icon(Icons.add_to_photos_outlined, size: 14),
-                  label: const Text('+ New group', style: TextStyle(fontSize: 11)),
+                  label: const Text('Add group', style: TextStyle(fontSize: 11)),
                 ),
               ),
             ],
