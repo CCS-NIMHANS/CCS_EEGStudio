@@ -13,7 +13,7 @@
 #define AppPublisher "Centre for Consciousness Studies, NIMHANS"
 #define AppURL       "https://github.com/CCS-NIMHANS/CCS_EEGStudio"
 #ifndef AppVersion
-  #define AppVersion "1.2.35"
+  #define AppVersion "1.2.36"
 #endif
 #define BuildDir     "..\build\windows\x64\runner\Release"
 #define OutputDir    "..\dist"

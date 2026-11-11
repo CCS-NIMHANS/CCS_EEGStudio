@@ -4,6 +4,25 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.36]
+
+### State dynamics port, multi-file ERP loading & non-overwriting outputs
+
+- **State dynamics analysis & interactive visualization**:
+  - Full Rust port of State Dynamics approach (`bridge/src/state_dynamics.rs`) based on *Scientific Reports* (`s41598-026-45893-4`) with exact numerical parity on Gyudmed Monastery recordings (135 stages, identical silhouette scores and state distributions across recordings).
+  - Integrated into Plots & Reports: stable-state segmentation timeline with band PSD mean $\pm$ CI95, Fz trajectory, task event markers, categorical state strips, and multi-scale boundary rasters.
+  - Interactive Feature Mapping heatmap with clickable states, Bonferroni-corrected Mann-Whitney significance dots, and dynamic feature family filtering (`All`, `PSD`, `Ratio`, `Coh`, `MIC`, `FOOOF_band`, `FOOOF_param`, `IRASA_band`, `IRASA_param`, `Nonlinear`, `ACW`).
+- **Non-overwriting ERP output naming**:
+  - Individual ERP analyses now automatically save with clean recording-stem prefixes (`<stem>_erp_results.ccserp`, `<stem>_erp_measurements.csv`, `<stem>_erp_waveforms.csv`, `<stem>_erp_report.pdf`, etc.) alongside canonical names, completely preventing accidental overwriting when running successive recordings in the same output directory.
+  - Multi-recording batch runs preserve individual participant `.ccserp` files alongside the pooled batch results.
+- **Direct & multi-file ERP loading and merging**:
+  - Enabled multi-selection of `.ccserp` and `erp_results*.json` files in the workbench.
+  - Added folder-based ERP result scanning and automatic composite grand-average merging (`mergeErpResults`), computing multi-participant pooled waveforms with $\pm 1$ SEM shading and full interactive batch review support.
+  - Added direct action buttons in the ERP review toolbar, workbench sidebar, and the Open Recording start screen for instantaneous loading of saved ERP results and epoched EEG files.
+- **ERP interactive workflow improvements**:
+  - Interactive missing-condition alert banner in the ERP workbench with one-click removal/skip of empty protocol conditions.
+  - Clear visual progress checkmarks across top workflow modules with automatic forward guidance after preprocessing.
+
 ## [1.2.35]
 
 ### GEDAI performance acceleration, pipeline persistence and batch resume
