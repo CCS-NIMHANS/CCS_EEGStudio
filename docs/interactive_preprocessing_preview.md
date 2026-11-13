@@ -36,7 +36,7 @@ The ICA bar reports the actual number of ocular components removed. Blink detect
 
 Re-referencing now offers a searchable multiple-channel picker. It lists retained EEG electrodes; auxiliary reference electrodes must first be retained in Channel setup.
 
-## GEDAI correction in 1.2.39
+## GEDAI correction in 1.2.40
 
 GEDAI now uses the MATLAB reference's gentle broadband pass and nine-level MODWT/MRA decomposition. Threshold optimization samples more of the recording and scans the hard-mask objective before local refinement, avoiding an arbitrary result on a flat starting plateau. The internal full-rank pseudo-average reference is inverted after cleaning so that the requested final output reference is honoured. This transforms cleaned signals only; it never adds the original recording or an untouched alpha band back into the output.
 

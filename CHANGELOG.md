@@ -4,7 +4,7 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
-## [1.2.39]
+## [1.2.40]
 
 ### Interactive preprocessing, retained ICA review and linked source analysis
 
@@ -16,6 +16,7 @@ its matching section is missing.
 - **Waveform-first layout:** move linked head plots, ROI selection and model controls into the Source analysis side panel. Use one waveform timeline/cursor instead of an independent map slider. Support point, mean and RMS window summaries without crossing trial boundaries.
 - **Honest amplitude comparison:** label scalp µV and source model amplitudes separately. Offer standardized, dimensionless z-score patterns with the same fixed colour scale and palette across channel/source maps; retain original waveform units. Keep native-unit colour ranges stable while navigating a recording/trial.
 - **Reference selection:** searchable existing-channel picker with linked-electrode support and visible selected chips. Only retained EEG electrodes are offered; retain auxiliary reference electrodes in Channel setup when required.
+- **Windows cache regression coverage:** compare canonical file identities rather than slash spelling when validating reuse of saved combinations.
 - **Viewer fixes:** reset raw/processed display state when changing recordings, preserve linked cursor timing across channel/source switches, provide readable ROI label gutters, and defer selection callbacks until after widget updates.
 
 ### Upgrade notes

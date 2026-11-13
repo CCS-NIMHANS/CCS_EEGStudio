@@ -247,7 +247,10 @@ void main() {
         settings: settings,
         onProgress: (_, _) {},
       );
-      expect(result.path, legacy);
+      expect(
+        await File(result.path).resolveSymbolicLinks(),
+        await File(legacy).resolveSymbolicLinks(),
+      );
       expect(engine.calls, isEmpty);
     },
   );
