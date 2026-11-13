@@ -18,6 +18,7 @@ import 'package:pdf/pdf.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/widgets.dart' as pw;
 
+import '../feature_plotter.dart' show generateSourceFeaturePlots;
 import 'topostats_engine.dart';
 import 'topostats_figure.dart';
 import 'topostats_runner.dart';
@@ -156,6 +157,45 @@ Future<List<TopoBatchOutput>> generateTopoStatsFigures({
         s = s.copyWith(reprChan: s.channels.contains('Fz') ? 'Fz' : null);
       }
     } catch (_) {}
+    final labels = detectChannels(files.first);
+    if (labels.isNotEmpty &&
+        labels.every((label) => !isStandard1020Channel(label))) {
+      onProgress?.call(
+        gi / groups.length,
+        'Rendering source ROI traces and heatmaps…',
+      );
+      final plots = await generateSourceFeaturePlots(
+        csvPaths: files,
+        outputDir: outDir,
+        epochSeconds: base.epochSize,
+        features: features,
+        onProgress: onProgress,
+      );
+      for (final plot in plots) {
+        var path = plot.path;
+        if (writePdf) {
+          final doc = pw.Document();
+          final bytes = await File(path).readAsBytes();
+          doc.addPage(
+            pw.Page(
+              pageFormat: PdfPageFormat.a3.landscape,
+              build: (_) => pw.Center(
+                child: pw.Image(pw.MemoryImage(bytes), fit: pw.BoxFit.contain),
+              ),
+            ),
+          );
+          final pdfPath = path.replaceFirst(RegExp(r'\.png$'), '.pdf');
+          await File(pdfPath).writeAsBytes(await doc.save());
+          if (!writePng) {
+            await File(path).delete();
+            path = pdfPath;
+          }
+        }
+        saved.add(TopoBatchOutput(path, recId, plot.feature));
+      }
+      gi++;
+      continue;
+    }
     final cols = numericFeatureColumns(files.first);
     var feats = (features ?? kReferenceFeatureList)
         .where(cols.contains)
@@ -277,7 +317,10 @@ Future<Uint8List> _topoReportPdf(
   String cleanSessionHeader(String raw) {
     var s = raw.split(RegExp(r'[\\/]')).last;
     s = s.replaceAll(
-      RegExp(r'\.features\.csv$|\.csv$|-epo_clean$|_clean$', caseSensitive: false),
+      RegExp(
+        r'\.features\.csv$|\.csv$|-epo_clean$|_clean$',
+        caseSensitive: false,
+      ),
       '',
     );
     if (s.length > 14) {
@@ -288,7 +331,7 @@ Future<Uint8List> _topoReportPdf(
 
   final sessions = [
     for (var i = 0; i < first.sessions.length; i++)
-      'S${i + 1}: ${cleanSessionHeader(first.sessions[i].name)}'
+      'S${i + 1}: ${cleanSessionHeader(first.sessions[i].name)}',
   ];
   const ink = PdfColor.fromInt(0xFF111827);
   const muted = PdfColor.fromInt(0xFF4B5563);

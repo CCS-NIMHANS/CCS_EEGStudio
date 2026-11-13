@@ -1395,6 +1395,7 @@ class _FeatureHomeState extends State<FeatureHome>
     final path = await saveRecordingDialog(
       context,
       dialogTitle: 'Save cleaned EEG file',
+      initialDirectory: File(input.path).parent.path,
       fileName: erpOutputName(
         input.path,
         extension: RecordingStorage.extension,

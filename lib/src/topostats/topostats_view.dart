@@ -12,6 +12,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import '../filtered_file_picker.dart';
+import '../feature_plotter.dart' show generateSourceFeaturePlots;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -21,7 +22,8 @@ import 'package:pdf/widgets.dart' as pw;
 import 'mpl_colormaps.dart';
 import 'topo_interp.dart' show isStandard1020Channel;
 import 'topostats_engine.dart';
-import 'topostats_batch.dart' show prepareSessionFeatureCsvs, groupByRecording;
+import 'topostats_batch.dart'
+    show prepareSessionFeatureCsvs, groupByRecording, generateTopoStatsFigures;
 import 'topostats_figure.dart';
 import 'topostats_runner.dart';
 import '../state_dynamics/state_dynamics_view.dart';
@@ -64,7 +66,8 @@ class TopoPlotGroup {
   ];
 
   List<String> get sessionNames => [
-    for (final f in activeFiles) cleanSegmentName(TopoStatsView.baseName(f), recId),
+    for (final f in activeFiles)
+      cleanSegmentName(TopoStatsView.baseName(f), recId),
   ];
 }
 
@@ -101,6 +104,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   List<String> _features = [];
 
   final Map<String, TopoStatsResult> _cache = {};
+  final Map<String, List<String>> _sourceFigures = {};
 
   bool _running = false;
   double _progress = 0;
@@ -396,7 +400,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     if (_currentGroup != null) {
       s = s.copyWith(
         recId: _currentGroup!.recId,
-        baselineSession: _currentGroup!.baselineSession ??
+        baselineSession:
+            _currentGroup!.baselineSession ??
             (_sessionNames.isEmpty ? '' : _sessionNames.first),
       );
     }
@@ -595,11 +600,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     final gName = nameCtrl.text.trim().isEmpty
         ? 'Group ${_groups.length + 1}'
         : nameCtrl.text.trim();
-    final g = TopoPlotGroup(
-      id: gName,
-      recId: gName,
-      files: prep,
-    );
+    final g = TopoPlotGroup(id: gName, recId: gName, files: prep);
     if (g.files.length > 8) g.disabled.addAll(g.files.skip(8));
     setState(() {
       _groups.add(g);
@@ -688,9 +689,13 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     final targets = _showAllGroups
         ? _groups
         : (_currentGroup != null ? [_currentGroup!] : <TopoPlotGroup>[]);
-    final runnableTargets = targets.where((g) => g.activeFiles.isNotEmpty).toList();
+    final runnableTargets = targets
+        .where((g) => g.activeFiles.isNotEmpty)
+        .toList();
     if (runnableTargets.isEmpty) {
-      setState(() => _error = 'Select at least one active file in the plot group.');
+      setState(
+        () => _error = 'Select at least one active file in the plot group.',
+      );
       return;
     }
 
@@ -715,10 +720,31 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         final sNames = g.sessionNames;
         if (g.baselineSession != null &&
             sNames.any((n) => n.contains(g.baselineSession!))) {
-          groupSettings = groupSettings.copyWith(baselineSession: g.baselineSession!);
+          groupSettings = groupSettings.copyWith(
+            baselineSession: g.baselineSession!,
+          );
         }
         groupSettings = settingsForSessions(groupSettings, sNames);
 
+        final labels = detectChannels(g.activeFiles.first);
+        if (labels.isNotEmpty &&
+            labels.every((label) => !isStandard1020Channel(label))) {
+          _sessionScratch ??= Directory.systemTemp.createTempSync(
+            'ccs_plot_sessions_',
+          );
+          final plots = await generateSourceFeaturePlots(
+            csvPaths: g.activeFiles,
+            outputDir: _sessionScratch!.path,
+            epochSeconds: groupSettings.epochSize,
+            features: [groupSettings.feature],
+          );
+          if (!mounted) return;
+          setState(
+            () => _sourceFigures[g.id] = plots.map((p) => p.path).toList(),
+          );
+          continue;
+        }
+        _sourceFigures.remove(g.id);
         final key = groupSettings.statsKey(g.activeFiles);
         final cached = _cache[key];
         if (cached != null) {
@@ -728,7 +754,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
           continue;
         }
 
-        final groupLabel = groupRecId.isNotEmpty ? groupRecId : 'Group ${i + 1}';
+        final groupLabel = groupRecId.isNotEmpty
+            ? groupRecId
+            : 'Group ${i + 1}';
         setState(() {
           _status = runnableTargets.length > 1
               ? 'Computing [$groupLabel] (${i + 1}/${runnableTargets.length})…'
@@ -835,7 +863,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   Future<void> _exportPng() async {
     final active = _showAllGroups
         ? _groups.where((g) => g.figure != null).toList()
-        : (_currentGroup?.figure != null ? [_currentGroup!] : <TopoPlotGroup>[]);
+        : (_currentGroup?.figure != null
+              ? [_currentGroup!]
+              : <TopoPlotGroup>[]);
     if (active.isEmpty) return;
     if (active.length == 1) {
       final fig = active.first.figure!;
@@ -854,7 +884,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       if (dir == null) return;
       for (final g in active) {
         final fig = g.figure!;
-        final p = '$dir${Platform.pathSeparator}${fig.result.outputFileName}.png';
+        final p =
+            '$dir${Platform.pathSeparator}${fig.result.outputFileName}.png';
         await File(p).writeAsBytes(await fig.toPng(dpi: _s.dpi.toDouble()));
       }
       _snack('Saved ${active.length} figure PNGs to ${_base(dir)}');
@@ -864,7 +895,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   Future<void> _exportPdf() async {
     final active = _showAllGroups
         ? _groups.where((g) => g.figure != null).toList()
-        : (_currentGroup?.figure != null ? [_currentGroup!] : <TopoPlotGroup>[]);
+        : (_currentGroup?.figure != null
+              ? [_currentGroup!]
+              : <TopoPlotGroup>[]);
     if (active.isEmpty) return;
 
     final firstFig = active.first.figure!;
@@ -874,10 +907,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     final path = await _savePath(defaultName, 'pdf');
     if (path == null) return;
 
-    final doc = pw.Document(
-      title: defaultName,
-      creator: 'CCS EEG Studio',
-    );
+    final doc = pw.Document(title: defaultName, creator: 'CCS EEG Studio');
     for (final g in active) {
       final fig = g.figure!;
       final png = await fig.toPng(dpi: math.max(300, _s.dpi).toDouble());
@@ -894,13 +924,17 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       );
     }
     await File(path).writeAsBytes(await doc.save());
-    _snack('Saved ${_base(path)} (${active.length} page${active.length == 1 ? '' : 's'})');
+    _snack(
+      'Saved ${_base(path)} (${active.length} page${active.length == 1 ? '' : 's'})',
+    );
   }
 
   Future<void> _exportCsv() async {
     final active = _showAllGroups
         ? _groups.where((g) => g.result != null).toList()
-        : (_currentGroup?.result != null ? [_currentGroup!] : <TopoPlotGroup>[]);
+        : (_currentGroup?.result != null
+              ? [_currentGroup!]
+              : <TopoPlotGroup>[]);
     if (active.isEmpty) return;
     if (active.length == 1) {
       final r = active.first.result!;
@@ -938,7 +972,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     if (_running) return;
     final active = _showAllGroups
         ? _groups.where((g) => g.activeFiles.isNotEmpty).toList()
-        : (_currentGroup?.activeFiles.isNotEmpty == true ? [_currentGroup!] : <TopoPlotGroup>[]);
+        : (_currentGroup?.activeFiles.isNotEmpty == true
+              ? [_currentGroup!]
+              : <TopoPlotGroup>[]);
     if (active.isEmpty) return;
     final dir = await FilePicker.getDirectoryPath(
       dialogTitle: 'Output folder for all feature figures',
@@ -951,7 +987,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     setState(() {
       _running = true;
       _progress = 0;
-      _status = 'Exporting ${features.length} features across ${active.length} groups…';
+      _status =
+          'Exporting ${features.length} features across ${active.length} groups…';
       _error = null;
     });
     var saved = 0;
@@ -965,7 +1002,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         final sNames = g.sessionNames;
         if (g.baselineSession != null &&
             sNames.any((n) => n.contains(g.baselineSession!))) {
-          groupSettings = groupSettings.copyWith(baselineSession: g.baselineSession!);
+          groupSettings = groupSettings.copyWith(
+            baselineSession: g.baselineSession!,
+          );
         }
         groupSettings = settingsForSessions(groupSettings, sNames);
 
@@ -1014,7 +1053,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       if (mounted) {
         setState(() {
           _running = false;
-          _status = 'Exported $saved / ${features.length * active.length} figures → $dir';
+          _status =
+              'Exported $saved / ${features.length * active.length} figures → $dir';
         });
       }
     }
@@ -1227,7 +1267,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                         if (_currentGroup != null) {
                           _s = _s.copyWith(
                             recId: _currentGroup!.recId,
-                            baselineSession: _currentGroup!.baselineSession ?? '',
+                            baselineSession:
+                                _currentGroup!.baselineSession ?? '',
                           );
                         }
                       });
@@ -1242,7 +1283,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                       icon: const Icon(Icons.delete_outline, size: 18),
                       tooltip: 'Delete active group',
                       visualDensity: VisualDensity.compact,
-                      onPressed: _running ? null : () => _removeGroup(_currentGroup!),
+                      onPressed: _running
+                          ? null
+                          : () => _removeGroup(_currentGroup!),
                     ),
                   ),
               ],
@@ -1257,7 +1300,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     value: _showAllGroups,
                     visualDensity: VisualDensity.compact,
                     activeColor: _amber,
-                    onChanged: (v) => setState(() => _showAllGroups = v ?? true),
+                    onChanged: (v) =>
+                        setState(() => _showAllGroups = v ?? true),
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -1277,7 +1321,10 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 child: OutlinedButton.icon(
                   onPressed: _running ? null : () => _pickFolder(append: false),
                   icon: const Icon(Icons.folder_open, size: 14),
-                  label: const Text('Open folder', style: TextStyle(fontSize: 11)),
+                  label: const Text(
+                    'Open folder',
+                    style: TextStyle(fontSize: 11),
+                  ),
                 ),
               ),
               const SizedBox(width: 6),
@@ -1285,7 +1332,10 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 child: OutlinedButton.icon(
                   onPressed: _running ? null : _addNewGroup,
                   icon: const Icon(Icons.add_to_photos_outlined, size: 14),
-                  label: const Text('Add group', style: TextStyle(fontSize: 11)),
+                  label: const Text(
+                    'Add group',
+                    style: TextStyle(fontSize: 11),
+                  ),
                 ),
               ),
             ],
@@ -1297,7 +1347,10 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 child: OutlinedButton.icon(
                   onPressed: _running ? null : () => _pickFiles(append: false),
                   icon: const Icon(Icons.description_outlined, size: 14),
-                  label: const Text('Choose CSVs', style: TextStyle(fontSize: 11)),
+                  label: const Text(
+                    'Choose CSVs',
+                    style: TextStyle(fontSize: 11),
+                  ),
                 ),
               ),
               const SizedBox(width: 6),
@@ -1305,7 +1358,10 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 child: OutlinedButton.icon(
                   onPressed: _running ? null : _addCsvsToActiveGroup,
                   icon: const Icon(Icons.add, size: 14),
-                  label: const Text('+ Add to active', style: TextStyle(fontSize: 11)),
+                  label: const Text(
+                    '+ Add to active',
+                    style: TextStyle(fontSize: 11),
+                  ),
                 ),
               ),
             ],
@@ -1316,7 +1372,11 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               width: double.infinity,
               child: OutlinedButton.icon(
                 onPressed: _running ? null : _clearAll,
-                icon: const Icon(Icons.delete_sweep_outlined, size: 14, color: Colors.redAccent),
+                icon: const Icon(
+                  Icons.delete_sweep_outlined,
+                  size: 14,
+                  color: Colors.redAccent,
+                ),
                 label: const Text(
                   'Clear all files',
                   style: TextStyle(fontSize: 11, color: Colors.redAccent),
@@ -1361,7 +1421,10 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                         });
                         _run();
                       },
-                child: const Text('Compare matching', style: TextStyle(fontSize: 11)),
+                child: const Text(
+                  'Compare matching',
+                  style: TextStyle(fontSize: 11),
+                ),
               ),
               TextButton(
                 onPressed: _running || _files.isEmpty
@@ -1670,11 +1733,15 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               _topoW,
               'Topo width',
               suffix: 'in',
-              tip: 'TARGET_TOPO_WIDTH_IN: reduce (e.g. 0.35 in) to decrease lateral spread for long sessions',
+              tip:
+                  'TARGET_TOPO_WIDTH_IN: reduce (e.g. 0.35 in) to decrease lateral spread for long sessions',
               onSubmitted: (_) {
                 final w = double.tryParse(_topoW.text.trim());
                 if (w != null) {
-                  setState(() => _s = _s.copyWith(targetTopoWidthIn: w.clamp(0.15, 3.0)));
+                  setState(
+                    () =>
+                        _s = _s.copyWith(targetTopoWidthIn: w.clamp(0.15, 3.0)),
+                  );
                   _redisplay();
                 }
               },
@@ -1688,7 +1755,10 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               runSpacing: 4,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                const Text('Width:', style: TextStyle(color: _muted, fontSize: 10)),
+                const Text(
+                  'Width:',
+                  style: TextStyle(color: _muted, fontSize: 10),
+                ),
                 for (final (label, val) in [
                   ('Compact', 0.35),
                   ('Medium', 0.5),
@@ -1699,12 +1769,17 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                         ? null
                         : () {
                             _topoW.text = '$val';
-                            setState(() => _s = _s.copyWith(targetTopoWidthIn: val));
+                            setState(
+                              () => _s = _s.copyWith(targetTopoWidthIn: val),
+                            );
                             _redisplay();
                           },
                     borderRadius: BorderRadius.circular(4),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 2,
+                      ),
                       decoration: BoxDecoration(
                         color: _panel,
                         border: Border.all(
@@ -1743,7 +1818,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     InkWell(
                       onTap: () {
                         setState(
-                          () => _s = _s.copyWith(showEventLabels: !_s.showEventLabels),
+                          () => _s = _s.copyWith(
+                            showEventLabels: !_s.showEventLabels,
+                          ),
                         );
                         _redisplay();
                       },
@@ -1782,12 +1859,17 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     ])
                       InkWell(
                         onTap: () {
-                          setState(() => _s = _s.copyWith(eventMarkerOpacity: val));
+                          setState(
+                            () => _s = _s.copyWith(eventMarkerOpacity: val),
+                          );
                           _redisplay();
                         },
                         borderRadius: BorderRadius.circular(4),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 2,
+                          ),
                           decoration: BoxDecoration(
                             color: _panel,
                             border: Border.all(
@@ -1888,7 +1970,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   Widget _buildToolbar() {
     final active = _showAllGroups
         ? _groups.where((g) => g.figure != null).toList()
-        : (_currentGroup?.figure != null ? [_currentGroup!] : <TopoPlotGroup>[]);
+        : (_currentGroup?.figure != null
+              ? [_currentGroup!]
+              : <TopoPlotGroup>[]);
     final hasFig = active.isNotEmpty && !_running;
     return Container(
       height: 44,
@@ -1968,7 +2052,11 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<double>(
                   value: [0.0, 0.15, 0.30, 0.50, 0.80, 1.0].reduce(
-                    (a, b) => (a - _s.eventMarkerOpacity).abs() < (b - _s.eventMarkerOpacity).abs() ? a : b,
+                    (a, b) =>
+                        (a - _s.eventMarkerOpacity).abs() <
+                            (b - _s.eventMarkerOpacity).abs()
+                        ? a
+                        : b,
                   ),
                   isDense: true,
                   dropdownColor: _card,
@@ -1998,7 +2086,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             active.isEmpty ? null : () => _zoomBy(1 / 1.25),
           ),
           TextButton(
-            onPressed: active.isEmpty ? null : () => setState(() => _fit = true),
+            onPressed: active.isEmpty
+                ? null
+                : () => setState(() => _fit = true),
             child: Text(
               _fit ? 'Fit' : '${(_ppi / 72 * 100).round()}%',
               style: TextStyle(color: _fit ? _amber : _text, fontSize: 12),
@@ -2013,17 +2103,23 @@ class _TopoStatsViewState extends State<TopoStatsView> {
           const SizedBox(height: 24, child: VerticalDivider(color: _border)),
           _tbButton(
             Icons.image_outlined,
-            active.length > 1 ? 'Export PNGs for all groups' : 'Export PNG (${_s.dpi} dpi)',
+            active.length > 1
+                ? 'Export PNGs for all groups'
+                : 'Export PNG (${_s.dpi} dpi)',
             hasFig ? _exportPng : null,
           ),
           _tbButton(
             Icons.picture_as_pdf_outlined,
-            active.length > 1 ? 'Export multi-page PDF (all groups)' : 'Export PDF',
+            active.length > 1
+                ? 'Export multi-page PDF (all groups)'
+                : 'Export PDF',
             hasFig ? _exportPdf : null,
           ),
           _tbButton(
             Icons.table_view_outlined,
-            active.length > 1 ? 'Export statistics CSVs for all groups' : 'Export statistics CSV',
+            active.length > 1
+                ? 'Export statistics CSVs for all groups'
+                : 'Export statistics CSV',
             hasFig ? _exportCsv : null,
           ),
           _tbButton(
@@ -2055,7 +2151,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     final c = _lastConstraints;
     final active = _showAllGroups
         ? _groups.where((g) => g.figure != null).toList()
-        : (_currentGroup?.figure != null ? [_currentGroup!] : <TopoPlotGroup>[]);
+        : (_currentGroup?.figure != null
+              ? [_currentGroup!]
+              : <TopoPlotGroup>[]);
     if (c == null || active.isEmpty) return;
     final old = _fit ? _fitPpi(c, active) : _ppi;
     final next = (old * f).clamp(20.0, 1200.0);
@@ -2131,7 +2229,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               ),
             ),
           MouseRegion(
-            cursor: isHovered && (_hoverHit!.isTopo || _hoverHit!.stateLabel != null)
+            cursor:
+                isHovered &&
+                    (_hoverHit!.isTopo || _hoverHit!.stateLabel != null)
                 ? SystemMouseCursors.click
                 : SystemMouseCursors.precise,
             onHover: (e) {
@@ -2189,9 +2289,74 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   }
 
   Widget _buildCanvas() {
+    final targets = _showAllGroups
+        ? _groups
+        : [_currentGroup].whereType<TopoPlotGroup>();
+    final sourcePaths = targets
+        .expand((g) => _sourceFigures[g.id] ?? <String>[])
+        .toList();
+    if (sourcePaths.isNotEmpty) {
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Source ROI traces and feature heatmaps',
+                    style: TextStyle(color: _text),
+                  ),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.save_alt),
+                  label: const Text('Export ROI figures…'),
+                  onPressed: _running
+                      ? null
+                      : () async {
+                          final folder = await FilePicker.getDirectoryPath(
+                            dialogTitle: 'Export source ROI figures',
+                          );
+                          if (folder == null) return;
+                          await generateTopoStatsFigures(
+                            csvPaths: targets
+                                .expand((g) => g.activeFiles)
+                                .toList(),
+                            outputDir: folder,
+                            base: _s,
+                            features: [_s.feature],
+                          );
+                          if (mounted)
+                            setState(
+                              () => _status =
+                                  'ROI PNG and PDF figures saved to $folder',
+                            );
+                        },
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              children: [
+                for (final path in sourcePaths)
+                  InteractiveViewer(
+                    minScale: 0.5,
+                    maxScale: 5,
+                    child: Image.file(File(path), fit: BoxFit.fitWidth),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
     final active = _showAllGroups
         ? _groups.where((g) => g.figure != null).toList()
-        : (_currentGroup?.figure != null ? [_currentGroup!] : <TopoPlotGroup>[]);
+        : (_currentGroup?.figure != null
+              ? [_currentGroup!]
+              : <TopoPlotGroup>[]);
 
     if (_error != null && active.isEmpty) {
       return Center(
@@ -2243,10 +2408,10 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               _running
                   ? _status
                   : (_activeFiles.isEmpty
-                      ? (_files.isEmpty
-                          ? 'Run feature extraction first, then view results.'
-                          : 'Select a recording to view its results.')
-                      : 'Press "${widget.runLabel}" to compute the figure.'),
+                        ? (_files.isEmpty
+                              ? 'Run feature extraction first, then view results.'
+                              : 'Select a recording to view its results.')
+                        : 'Press "${widget.runLabel}" to compute the figure.'),
               style: const TextStyle(color: _muted, fontSize: 13),
             ),
           ],
@@ -2288,7 +2453,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                       featureFilePaths: _activeFiles,
                       result: _stateDynamicsResult,
                       selectedStateLabel: _selectedStateLabel,
-                      hideTimeline: active.isNotEmpty && _stateDynamicsResult != null,
+                      hideTimeline:
+                          active.isNotEmpty && _stateDynamicsResult != null,
                       eventMarkerOpacity: _s.eventMarkerOpacity,
                       showEventLabels: _s.showEventLabels,
                       onEventMarkerOpacityChanged: (v) {
@@ -2375,7 +2541,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   Widget _buildStatusBar() {
     final active = _showAllGroups
         ? _groups.where((g) => g.figure != null).toList()
-        : (_currentGroup?.figure != null ? [_currentGroup!] : <TopoPlotGroup>[]);
+        : (_currentGroup?.figure != null
+              ? [_currentGroup!]
+              : <TopoPlotGroup>[]);
     final r = _result;
 
     return Container(

@@ -89,15 +89,12 @@ Future<List<String>> generateFeaturePlots({
   required String outputDir,
   required PlotOptions options,
   void Function(double progress, String message)? onProgress,
-}) async =>
-    (await generateFeaturePlotsDetailed(
-      csvPaths: csvPaths,
-      outputDir: outputDir,
-      options: options,
-      onProgress: onProgress,
-    ))
-        .map((r) => r.path)
-        .toList();
+}) async => (await generateFeaturePlotsDetailed(
+  csvPaths: csvPaths,
+  outputDir: outputDir,
+  options: options,
+  onProgress: onProgress,
+)).map((r) => r.path).toList();
 
 /// Same as [generateFeaturePlots] but returns which recording each plot
 /// belongs to.
@@ -132,7 +129,9 @@ Future<List<FeaturePlotResult>> generateFeaturePlotsDetailed({
       datasets.addAll(parsed);
       if (parsed.length > 1) {
         onProgress?.call(
-            0.0, '  ${_baseName(p)} → ${parsed.length} recordings');
+          0.0,
+          '  ${_baseName(p)} → ${parsed.length} recordings',
+        );
       }
     } catch (e) {
       onProgress?.call(0.0, '⚠ Skipped $p: $e');
@@ -148,10 +147,11 @@ Future<List<FeaturePlotResult>> generateFeaturePlotsDetailed({
   for (final ds in datasets) {
     allFeatures.addAll(ds.features.keys);
   }
-  final featureList = options.features.isNotEmpty
-      ? options.features.where(allFeatures.contains).toList()
-      : allFeatures.toList()
-    ..sort();
+  final featureList =
+      options.features.isNotEmpty
+            ? options.features.where(allFeatures.contains).toList()
+            : allFeatures.toList()
+        ..sort();
 
   // 3. Load montage.
   final montage = Montage.build(options.montagePath);
@@ -160,7 +160,8 @@ Future<List<FeaturePlotResult>> generateFeaturePlotsDetailed({
 
   // 4. Decide which render passes to run.
   //    Each pass is (subfolder, datasets to include, overlay?, scope name).
-  final passes = <({String dir, List<_Dataset> data, bool overlay, String scope})>[];
+  final passes =
+      <({String dir, List<_Dataset> data, bool overlay, String scope})>[];
 
   final singleRecording = datasets.length == 1;
   if (options.perFilePlots && !singleRecording) {
@@ -218,15 +219,14 @@ Future<List<FeaturePlotResult>> generateFeaturePlotsDetailed({
               );
         final outPath = '${pass.dir}/${_safeFilename(feature)}.png';
         await File(outPath).writeAsBytes(bytes);
-        saved.add(FeaturePlotResult(
-          path: outPath,
-          feature: feature,
-          scope: pass.scope,
-        ));
+        saved.add(
+          FeaturePlotResult(path: outPath, feature: feature, scope: pass.scope),
+        );
       } catch (e) {
         onProgress?.call(
-            done / (totalUnits == 0 ? 1 : totalUnits),
-            '⚠ Error plotting $feature (${pass.scope}): $e');
+          done / (totalUnits == 0 ? 1 : totalUnits),
+          '⚠ Error plotting $feature (${pass.scope}): $e',
+        );
       }
       done++;
       if (totalUnits > 0) {
@@ -278,6 +278,9 @@ class _CsvReader {
     'bin_idx', 'bin_start_s', 'bin_end_s', 'mode',
     // Legacy / alternative spellings.
     'Segment', 'Time', 'File', 'Recording', 'channel', 'chan',
+    'epoch_start_s', 'epoch_end_s', 'dfa_fei_window_s',
+    'dfa_fei_context_start_s', 'dfa_fei_context_end_s',
+    'connectivity_settings', 'event_markers',
   };
 
   /// Reads [path] into one dataset per source recording.
@@ -312,8 +315,9 @@ class _CsvReader {
       throw const FormatException('CSV contains no feature columns');
     }
 
-    final csvName = _baseName(path).replaceAll(
-        RegExp(r'(\.features)?\.csv$', caseSensitive: false), '');
+    final csvName = _baseName(
+      path,
+    ).replaceAll(RegExp(r'(\.features)?\.csv$', caseSensitive: false), '');
 
     // group key → (feature → chan → samples), plus per-group max time.
     final groups = <String, Map<String, Map<String, List<_Sample>>>>{};
@@ -432,7 +436,8 @@ class Montage {
 
     for (var line in lines) {
       line = line.trim();
-      if (line.isEmpty || line.startsWith('#') || line.startsWith('%')) continue;
+      if (line.isEmpty || line.startsWith('#') || line.startsWith('%'))
+        continue;
 
       List<String> parts;
       if (ext == 'csv') {
@@ -491,13 +496,13 @@ class Montage {
   static const Map<String, ui.Offset> _standard1010 = {
     // Midline
     'Fpz': ui.Offset(0.500, 0.115),
-    'Fz':  ui.Offset(0.500, 0.270),
+    'Fz': ui.Offset(0.500, 0.270),
     'FCz': ui.Offset(0.500, 0.370),
-    'Cz':  ui.Offset(0.500, 0.500),
+    'Cz': ui.Offset(0.500, 0.500),
     'CPz': ui.Offset(0.500, 0.630),
-    'Pz':  ui.Offset(0.500, 0.730),
+    'Pz': ui.Offset(0.500, 0.730),
     'POz': ui.Offset(0.500, 0.830),
-    'Oz':  ui.Offset(0.500, 0.885),
+    'Oz': ui.Offset(0.500, 0.885),
 
     // Fp row
     'Fp1': ui.Offset(0.385, 0.125),
@@ -510,14 +515,14 @@ class Montage {
     'AF8': ui.Offset(0.730, 0.175),
 
     // F row
-    'F7':  ui.Offset(0.175, 0.260),
-    'F5':  ui.Offset(0.275, 0.258),
-    'F3':  ui.Offset(0.378, 0.255),
-    'F1':  ui.Offset(0.440, 0.255),
-    'F2':  ui.Offset(0.560, 0.255),
-    'F4':  ui.Offset(0.622, 0.255),
-    'F6':  ui.Offset(0.725, 0.258),
-    'F8':  ui.Offset(0.825, 0.260),
+    'F7': ui.Offset(0.175, 0.260),
+    'F5': ui.Offset(0.275, 0.258),
+    'F3': ui.Offset(0.378, 0.255),
+    'F1': ui.Offset(0.440, 0.255),
+    'F2': ui.Offset(0.560, 0.255),
+    'F4': ui.Offset(0.622, 0.255),
+    'F6': ui.Offset(0.725, 0.258),
+    'F8': ui.Offset(0.825, 0.260),
 
     // FT / FC row
     'FT7': ui.Offset(0.140, 0.355),
@@ -530,14 +535,14 @@ class Montage {
     'FC6': ui.Offset(0.760, 0.355),
 
     // T / C row
-    'T7':  ui.Offset(0.105, 0.500),
-    'T8':  ui.Offset(0.895, 0.500),
-    'C5':  ui.Offset(0.205, 0.500),
-    'C3':  ui.Offset(0.320, 0.500),
-    'C1':  ui.Offset(0.430, 0.500),
-    'C2':  ui.Offset(0.570, 0.500),
-    'C4':  ui.Offset(0.680, 0.500),
-    'C6':  ui.Offset(0.795, 0.500),
+    'T7': ui.Offset(0.105, 0.500),
+    'T8': ui.Offset(0.895, 0.500),
+    'C5': ui.Offset(0.205, 0.500),
+    'C3': ui.Offset(0.320, 0.500),
+    'C1': ui.Offset(0.430, 0.500),
+    'C2': ui.Offset(0.570, 0.500),
+    'C4': ui.Offset(0.680, 0.500),
+    'C6': ui.Offset(0.795, 0.500),
 
     // Inferior Temporal
     'FT9': ui.Offset(0.050, 0.355),
@@ -555,14 +560,14 @@ class Montage {
     'TP8': ui.Offset(0.868, 0.632),
 
     // P row
-    'P7':  ui.Offset(0.170, 0.740),
-    'P5':  ui.Offset(0.268, 0.745),
-    'P3':  ui.Offset(0.373, 0.745),
-    'P1':  ui.Offset(0.445, 0.745),
-    'P2':  ui.Offset(0.555, 0.745),
-    'P4':  ui.Offset(0.627, 0.745),
-    'P6':  ui.Offset(0.732, 0.745),
-    'P8':  ui.Offset(0.830, 0.740),
+    'P7': ui.Offset(0.170, 0.740),
+    'P5': ui.Offset(0.268, 0.745),
+    'P3': ui.Offset(0.373, 0.745),
+    'P1': ui.Offset(0.445, 0.745),
+    'P2': ui.Offset(0.555, 0.745),
+    'P4': ui.Offset(0.627, 0.745),
+    'P6': ui.Offset(0.732, 0.745),
+    'P8': ui.Offset(0.830, 0.740),
 
     // PO row
     'PO7': ui.Offset(0.225, 0.835),
@@ -571,21 +576,21 @@ class Montage {
     'PO8': ui.Offset(0.775, 0.835),
 
     // O row
-    'O1':  ui.Offset(0.365, 0.880),
-    'O2':  ui.Offset(0.635, 0.880),
+    'O1': ui.Offset(0.365, 0.880),
+    'O2': ui.Offset(0.635, 0.880),
 
     // Iz
-    'Iz':  ui.Offset(0.500, 0.955),
+    'Iz': ui.Offset(0.500, 0.955),
 
     // Common aliases
-    'T3':  ui.Offset(0.105, 0.500),
-    'T4':  ui.Offset(0.895, 0.500),
-    'T5':  ui.Offset(0.170, 0.740),
-    'T6':  ui.Offset(0.830, 0.740),
-    'A1':  ui.Offset(0.060, 0.530),
-    'A2':  ui.Offset(0.940, 0.530),
+    'T3': ui.Offset(0.105, 0.500),
+    'T4': ui.Offset(0.895, 0.500),
+    'T5': ui.Offset(0.170, 0.740),
+    'T6': ui.Offset(0.830, 0.740),
+    'A1': ui.Offset(0.060, 0.530),
+    'A2': ui.Offset(0.940, 0.530),
     'Nasion': ui.Offset(0.500, 0.050),
-    'Inion':  ui.Offset(0.500, 0.970),
+    'Inion': ui.Offset(0.500, 0.970),
   };
 }
 
@@ -614,7 +619,12 @@ ui.Color _jetColor(double t) {
   double r = (1.5 - (abs(t - 0.75)) * 4).clamp(0.0, 1.0);
   double g = (1.5 - (abs(t - 0.50)) * 4).clamp(0.0, 1.0);
   double b = (1.5 - (abs(t - 0.25)) * 4).clamp(0.0, 1.0);
-  return ui.Color.fromARGB(255, (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt());
+  return ui.Color.fromARGB(
+    255,
+    (r * 255).toInt(),
+    (g * 255).toInt(),
+    (b * 255).toInt(),
+  );
 }
 
 double abs(double x) => x < 0 ? -x : x;
@@ -675,7 +685,8 @@ void _renderTopo({
       // Gaussian kernel: smooth spatial interpolation, no font/IDW artifacts
       double wSum = 0.0;
       double vSum = 0.0;
-      const double sigma2 = 0.04; // controls spatial blur (~0.2 * headRadius units)
+      const double sigma2 =
+          0.04; // controls spatial blur (~0.2 * headRadius units)
 
       for (final entry in chanValues.entries) {
         final pos = allPos[entry.key];
@@ -697,8 +708,14 @@ void _renderTopo({
       paint.color = _jetColor(t);
 
       canvas.drawRect(
-          ui.Rect.fromLTWH(px - step / 2 - 0.5, py - step / 2 - 0.5, step + 1, step + 1),
-          paint);
+        ui.Rect.fromLTWH(
+          px - step / 2 - 0.5,
+          py - step / 2 - 0.5,
+          step + 1,
+          step + 1,
+        ),
+        paint,
+      );
     }
   }
 
@@ -762,8 +779,16 @@ void _drawHeadOutline(ui.Canvas canvas, double cx, double cy, double r) {
 }
 
 void _drawTopoLabel(ui.Canvas canvas, ui.Rect rect, String label) {
-  _drawText(canvas, label, ui.Offset(rect.left + rect.width / 2 - label.length * 4.5, rect.bottom - 16),
-      color: const ui.Color(0xFF000000), scale: 0.9);
+  _drawText(
+    canvas,
+    label,
+    ui.Offset(
+      rect.left + rect.width / 2 - label.length * 4.5,
+      rect.bottom - 16,
+    ),
+    color: const ui.Color(0xFF000000),
+    scale: 0.9,
+  );
 }
 
 // ── Line plot renderer ──────────────────────────────────────────────────────
@@ -854,26 +879,45 @@ void _renderLinePlot({
     for (var i = 0; i <= 4; i++) {
       final val = globalMin + (yRange / 4) * (4 - i);
       final y = plotRect.top + (plotRect.height / 4) * i;
-      canvas.drawLine(ui.Offset(plotRect.left, y), ui.Offset(plotRect.left - 6, y), tickPaint);
+      canvas.drawLine(
+        ui.Offset(plotRect.left, y),
+        ui.Offset(plotRect.left - 6, y),
+        tickPaint,
+      );
       _drawSmallText(
-          canvas,
-          val.toStringAsFixed(2),
-          ui.Offset(plotRect.left - 110, y - 8),
-          width: 100,
-          fontSize: 14.0,
-          align: ui.TextAlign.right);
+        canvas,
+        val.toStringAsFixed(2),
+        ui.Offset(plotRect.left - 110, y - 8),
+        width: 100,
+        fontSize: 14.0,
+        align: ui.TextAlign.right,
+      );
     }
-    
+
     // Draw rotated label
     canvas.save();
-    canvas.translate(plotRect.left - 90, plotRect.top + plotRect.height / 2 + 100);
+    canvas.translate(
+      plotRect.left - 90,
+      plotRect.top + plotRect.height / 2 + 100,
+    );
     canvas.rotate(-1.57079632679); // -pi/2
-    _drawSmallText(canvas, 'Average PSD', const ui.Offset(0, 0), width: 200, fontSize: 16.0, align: ui.TextAlign.center);
+    _drawSmallText(
+      canvas,
+      'Average PSD',
+      const ui.Offset(0, 0),
+      width: 200,
+      fontSize: 16.0,
+      align: ui.TextAlign.center,
+    );
     canvas.restore();
   } else {
     for (var i = 0; i <= 4; i++) {
       final y = plotRect.top + (plotRect.height / 4) * i;
-      canvas.drawLine(ui.Offset(plotRect.left, y), ui.Offset(plotRect.left + 4, y), tickPaint);
+      canvas.drawLine(
+        ui.Offset(plotRect.left, y),
+        ui.Offset(plotRect.left + 4, y),
+        tickPaint,
+      );
     }
   }
 
@@ -882,14 +926,44 @@ void _renderLinePlot({
     if (t == 0) continue;
     final tx = toX(t.toDouble());
     if (tx > plotRect.right) break;
-    canvas.drawLine(ui.Offset(tx, plotRect.bottom), ui.Offset(tx, plotRect.bottom + 6), tickPaint);
-    _drawSmallText(canvas, t.toString(), ui.Offset(tx - 40, plotRect.bottom + 10), width: 80, fontSize: 14.0, align: ui.TextAlign.center);
+    canvas.drawLine(
+      ui.Offset(tx, plotRect.bottom),
+      ui.Offset(tx, plotRect.bottom + 6),
+      tickPaint,
+    );
+    _drawSmallText(
+      canvas,
+      t.toString(),
+      ui.Offset(tx - 40, plotRect.bottom + 10),
+      width: 80,
+      fontSize: 14.0,
+      align: ui.TextAlign.center,
+    );
   }
-  canvas.drawLine(ui.Offset(plotRect.left, plotRect.bottom), ui.Offset(plotRect.left, plotRect.bottom + 6), tickPaint);
-  _drawSmallText(canvas, '0', ui.Offset(plotRect.left - 40, plotRect.bottom + 10), width: 80, fontSize: 14.0, align: ui.TextAlign.center);
+  canvas.drawLine(
+    ui.Offset(plotRect.left, plotRect.bottom),
+    ui.Offset(plotRect.left, plotRect.bottom + 6),
+    tickPaint,
+  );
+  _drawSmallText(
+    canvas,
+    '0',
+    ui.Offset(plotRect.left - 40, plotRect.bottom + 10),
+    width: 80,
+    fontSize: 14.0,
+    align: ui.TextAlign.center,
+  );
 
   // Segment title
-  _drawSmallText(canvas, segName, ui.Offset(plotRect.left, plotRect.top - 25), width: plotRect.width, align: ui.TextAlign.center, fontSize: 16.0, fontWeight: ui.FontWeight.w600);
+  _drawSmallText(
+    canvas,
+    segName,
+    ui.Offset(plotRect.left, plotRect.top - 25),
+    width: plotRect.width,
+    align: ui.TextAlign.center,
+    fontSize: 16.0,
+    fontWeight: ui.FontWeight.w600,
+  );
 }
 
 void _drawSmallText(
@@ -908,7 +982,13 @@ void _drawSmallText(
   double startX = offset.dx;
   if (align == ui.TextAlign.center) startX = offset.dx + (width - totalW) / 2;
   if (align == ui.TextAlign.right) startX = offset.dx + width - totalW;
-  _drawText(canvas, text, ui.Offset(startX, offset.dy), color: color, scale: fontSize / 12.0);
+  _drawText(
+    canvas,
+    text,
+    ui.Offset(startX, offset.dy),
+    color: color,
+    scale: fontSize / 12.0,
+  );
 }
 
 // ── Path-based text renderer (no font dependency) ─────────────────────────
@@ -916,8 +996,13 @@ void _drawSmallText(
 // Draws ASCII text using a minimal stroke-based glyph set. Each glyph is
 // 5 wide × 7 tall in local units, scaled by [scale], stroked with [color].
 
-void _drawText(ui.Canvas canvas, String text, ui.Offset origin,
-    {ui.Color color = const ui.Color(0xFF000000), double scale = 1.0}) {
+void _drawText(
+  ui.Canvas canvas,
+  String text,
+  ui.Offset origin, {
+  ui.Color color = const ui.Color(0xFF000000),
+  double scale = 1.0,
+}) {
   final paint = ui.Paint()
     ..color = color
     ..style = ui.PaintingStyle.stroke
@@ -951,58 +1036,99 @@ List<List<double>> _glyphSegments(int c) {
   const t = 0.0, m = 0.45, b = 0.9;
   const l = 0.0, r = 0.85;
   // Segment templates: [x1,y1,x2,y2]
-  const topSeg    = [l, t, r, t];
-  const tLSeg     = [l, t, l, m];
-  const tRSeg     = [r, t, r, m];
-  const midSeg    = [l, m, r, m];
-  const bLSeg     = [l, m, l, b];
-  const bRSeg     = [r, m, r, b];
-  const botSeg    = [l, b, r, b];
-  const dotSeg    = [r, b, r, b]; // single dot at bottom-right
-  const dashSeg   = [0.15, m, 0.7, m];
+  const topSeg = [l, t, r, t];
+  const tLSeg = [l, t, l, m];
+  const tRSeg = [r, t, r, m];
+  const midSeg = [l, m, r, m];
+  const bLSeg = [l, m, l, b];
+  const bRSeg = [r, m, r, b];
+  const botSeg = [l, b, r, b];
+  const dotSeg = [r, b, r, b]; // single dot at bottom-right
+  const dashSeg = [0.15, m, 0.7, m];
 
   switch (c) {
-    case 48: return [topSeg, tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // 0
-    case 49: return [tRSeg, bRSeg]; // 1
-    case 50: return [topSeg, tRSeg, midSeg, bLSeg, botSeg]; // 2
-    case 51: return [topSeg, tRSeg, midSeg, bRSeg, botSeg]; // 3
-    case 52: return [tLSeg, tRSeg, midSeg, bRSeg]; // 4
-    case 53: return [topSeg, tLSeg, midSeg, bRSeg, botSeg]; // 5
-    case 54: return [topSeg, tLSeg, midSeg, bLSeg, bRSeg, botSeg]; // 6
-    case 55: return [topSeg, tRSeg, bRSeg]; // 7
-    case 56: return [topSeg, tLSeg, tRSeg, midSeg, bLSeg, bRSeg, botSeg]; // 8
-    case 57: return [topSeg, tLSeg, tRSeg, midSeg, bRSeg, botSeg]; // 9
-    case 45: return [dashSeg]; // -
-    case 46: return [dotSeg]; // .
-    case 65: return [topSeg, tLSeg, tRSeg, midSeg, bLSeg, bRSeg]; // A
-    case 66: return [topSeg, tLSeg, midSeg, bLSeg, bRSeg, botSeg, tRSeg]; // B (approx)
-    case 67: return [topSeg, tLSeg, bLSeg, botSeg]; // C
-    case 68: return [topSeg, tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // D same as O
-    case 69: return [topSeg, tLSeg, midSeg, bLSeg, botSeg]; // E
-    case 70: return [topSeg, tLSeg, midSeg, bLSeg]; // F
-    case 71: return [topSeg, tLSeg, bLSeg, bRSeg, botSeg]; // G
-    case 72: return [tLSeg, tRSeg, midSeg, bLSeg, bRSeg]; // H
-    case 73: return [tRSeg, bRSeg]; // I
-    case 74: return [tRSeg, bRSeg, botSeg, bLSeg]; // J
-    case 75: return [tLSeg, bLSeg, midSeg, tRSeg, bRSeg]; // K (approx)
-    case 76: return [tLSeg, bLSeg, botSeg]; // L
-    case 77: return [tLSeg, tRSeg, bLSeg, bRSeg, topSeg]; // M (approx)
-    case 78: return [tLSeg, tRSeg, bLSeg, bRSeg, topSeg]; // N (approx)
-    case 79: return [topSeg, tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // O
-    case 80: return [topSeg, tLSeg, tRSeg, midSeg]; // P
-    case 81: return [topSeg, tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // Q
-    case 82: return [topSeg, tLSeg, tRSeg, midSeg, bLSeg]; // R
-    case 83: return [topSeg, tLSeg, midSeg, bRSeg, botSeg]; // S = 5
-    case 84: return [topSeg, tRSeg, bRSeg]; // T approx
-    case 85: return [tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // U
-    case 86: return [tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // V approx
-    case 87: return [tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // W approx
-    case 88: return [tLSeg, tRSeg, midSeg, bLSeg, bRSeg]; // X
-    case 89: return [tLSeg, tRSeg, midSeg, bRSeg]; // Y
-    case 90: return [topSeg, tRSeg, midSeg, bLSeg, botSeg]; // Z
-    case 95: return [botSeg]; // _
-    case 32: return []; // space
-    default: return [midSeg]; // unknown → dash
+    case 48:
+      return [topSeg, tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // 0
+    case 49:
+      return [tRSeg, bRSeg]; // 1
+    case 50:
+      return [topSeg, tRSeg, midSeg, bLSeg, botSeg]; // 2
+    case 51:
+      return [topSeg, tRSeg, midSeg, bRSeg, botSeg]; // 3
+    case 52:
+      return [tLSeg, tRSeg, midSeg, bRSeg]; // 4
+    case 53:
+      return [topSeg, tLSeg, midSeg, bRSeg, botSeg]; // 5
+    case 54:
+      return [topSeg, tLSeg, midSeg, bLSeg, bRSeg, botSeg]; // 6
+    case 55:
+      return [topSeg, tRSeg, bRSeg]; // 7
+    case 56:
+      return [topSeg, tLSeg, tRSeg, midSeg, bLSeg, bRSeg, botSeg]; // 8
+    case 57:
+      return [topSeg, tLSeg, tRSeg, midSeg, bRSeg, botSeg]; // 9
+    case 45:
+      return [dashSeg]; // -
+    case 46:
+      return [dotSeg]; // .
+    case 65:
+      return [topSeg, tLSeg, tRSeg, midSeg, bLSeg, bRSeg]; // A
+    case 66:
+      return [topSeg, tLSeg, midSeg, bLSeg, bRSeg, botSeg, tRSeg]; // B (approx)
+    case 67:
+      return [topSeg, tLSeg, bLSeg, botSeg]; // C
+    case 68:
+      return [topSeg, tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // D same as O
+    case 69:
+      return [topSeg, tLSeg, midSeg, bLSeg, botSeg]; // E
+    case 70:
+      return [topSeg, tLSeg, midSeg, bLSeg]; // F
+    case 71:
+      return [topSeg, tLSeg, bLSeg, bRSeg, botSeg]; // G
+    case 72:
+      return [tLSeg, tRSeg, midSeg, bLSeg, bRSeg]; // H
+    case 73:
+      return [tRSeg, bRSeg]; // I
+    case 74:
+      return [tRSeg, bRSeg, botSeg, bLSeg]; // J
+    case 75:
+      return [tLSeg, bLSeg, midSeg, tRSeg, bRSeg]; // K (approx)
+    case 76:
+      return [tLSeg, bLSeg, botSeg]; // L
+    case 77:
+      return [tLSeg, tRSeg, bLSeg, bRSeg, topSeg]; // M (approx)
+    case 78:
+      return [tLSeg, tRSeg, bLSeg, bRSeg, topSeg]; // N (approx)
+    case 79:
+      return [topSeg, tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // O
+    case 80:
+      return [topSeg, tLSeg, tRSeg, midSeg]; // P
+    case 81:
+      return [topSeg, tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // Q
+    case 82:
+      return [topSeg, tLSeg, tRSeg, midSeg, bLSeg]; // R
+    case 83:
+      return [topSeg, tLSeg, midSeg, bRSeg, botSeg]; // S = 5
+    case 84:
+      return [topSeg, tRSeg, bRSeg]; // T approx
+    case 85:
+      return [tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // U
+    case 86:
+      return [tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // V approx
+    case 87:
+      return [tLSeg, tRSeg, bLSeg, bRSeg, botSeg]; // W approx
+    case 88:
+      return [tLSeg, tRSeg, midSeg, bLSeg, bRSeg]; // X
+    case 89:
+      return [tLSeg, tRSeg, midSeg, bRSeg]; // Y
+    case 90:
+      return [topSeg, tRSeg, midSeg, bLSeg, botSeg]; // Z
+    case 95:
+      return [botSeg]; // _
+    case 32:
+      return []; // space
+    default:
+      return [midSeg]; // unknown → dash
   }
 }
 
@@ -1052,7 +1178,7 @@ Future<Uint8List> _renderFeaturePlot({
         byTime.putIfAbsent(s.timeMin, () => []).add(s.value);
       }
     }
-    
+
     final sortedT = byTime.keys.toList()..sort();
     final xRaw = sortedT;
     final yMeanRaw = <double>[];
@@ -1062,7 +1188,9 @@ Future<Uint8List> _renderFeaturePlot({
       final double mean = vals.reduce((a, b) => a + b) / vals.length;
       yMeanRaw.add(mean);
       if (vals.length > 1) {
-        final double variance = vals.map((v) => math.pow(v - mean, 2)).reduce((a, b) => a + b) / vals.length;
+        final double variance =
+            vals.map((v) => math.pow(v - mean, 2)).reduce((a, b) => a + b) /
+            vals.length;
         yStdRaw.add(math.sqrt(variance));
       } else {
         yStdRaw.add(0.0);
@@ -1070,7 +1198,7 @@ Future<Uint8List> _renderFeaturePlot({
     }
     final yMeanSmooth = _rollMean(yMeanRaw, options.smoothingWindow);
     final yStdSmooth = _rollMean(yStdRaw, options.smoothingWindow);
-    
+
     segXData.add(xRaw);
     segYMean.add(yMeanSmooth);
     segYStd.add(yStdSmooth);
@@ -1092,7 +1220,6 @@ Future<Uint8List> _renderFeaturePlot({
   lineGMax += yRange * 0.1;
   lineGMin -= yRange * 0.1;
 
-
   // ── Layout constants ──────────────────────────────────────────────────────
   const double titleH = 80.0;
   const double lineH = 300.0;
@@ -1105,11 +1232,17 @@ Future<Uint8List> _renderFeaturePlot({
 
   // Distribute nTopoWindows across segments
   List<int> toposPerSeg = List.filled(nSeg, 0);
-  int targetTotal = datasets.length > options.nTopoWindows ? datasets.length : options.nTopoWindows;
+  int targetTotal = datasets.length > options.nTopoWindows
+      ? datasets.length
+      : options.nTopoWindows;
   double totalTime = datasets.fold(0.0, (s, ds) => s + ds.maxTimeMin);
   int remaining = targetTotal - nSeg;
   for (int i = 0; i < nSeg; i++) {
-    toposPerSeg[i] = 1 + (totalTime > 0 ? (remaining * (datasets[i].maxTimeMin / totalTime)).round() : 0);
+    toposPerSeg[i] =
+        1 +
+        (totalTime > 0
+            ? (remaining * (datasets[i].maxTimeMin / totalTime)).round()
+            : 0);
   }
   // Adjust to exact targetTotal
   int currentSum = toposPerSeg.fold(0, (a, b) => a + b);
@@ -1125,7 +1258,8 @@ Future<Uint8List> _renderFeaturePlot({
       int maxIdx = -1;
       for (int i = 0; i < nSeg; i++) {
         if (toposPerSeg[i] > 1) {
-          if (maxIdx == -1 || datasets[i].maxTimeMin > datasets[maxIdx].maxTimeMin) {
+          if (maxIdx == -1 ||
+              datasets[i].maxTimeMin > datasets[maxIdx].maxTimeMin) {
             maxIdx = i;
           }
         }
@@ -1142,7 +1276,9 @@ Future<Uint8List> _renderFeaturePlot({
   // Calculate segment widths
   final List<double> segWidths = [];
   for (int i = 0; i < nSeg; i++) {
-    double w = datasets[i].maxTimeMin * 15.0; // Reduce pixels per minute for less elongated plot
+    double w =
+        datasets[i].maxTimeMin *
+        15.0; // Reduce pixels per minute for less elongated plot
     w = w < 140.0 ? 140.0 : w; // Min width 140
     double reqW = toposPerSeg[i] * topoW;
     segWidths.add(w < reqW ? reqW : w);
@@ -1166,14 +1302,14 @@ Future<Uint8List> _renderFeaturePlot({
 
   // Title
   _drawSmallText(
-    canvas, 
-    feature, 
-    const ui.Offset(0, 20), 
-    width: figW, 
-    color: const ui.Color(0xFF000000), 
-    fontSize: 24, 
+    canvas,
+    feature,
+    const ui.Offset(0, 20),
+    width: figW,
+    color: const ui.Color(0xFF000000),
+    fontSize: 24,
     fontWeight: ui.FontWeight.bold,
-    align: ui.TextAlign.center
+    align: ui.TextAlign.center,
   );
 
   final Map<String, ui.Offset> unknownPositions = {};
@@ -1219,7 +1355,8 @@ Future<Uint8List> _renderFeaturePlot({
       }
       final chanMeans = <String, double>{};
       for (final entry in chanAccum.entries) {
-        chanMeans[entry.key] = entry.value.reduce((a, b) => a + b) / entry.value.length;
+        chanMeans[entry.key] =
+            entry.value.reduce((a, b) => a + b) / entry.value.length;
       }
 
       final topoRect = ui.Rect.fromLTWH(
@@ -1255,8 +1392,20 @@ Future<Uint8List> _renderFeaturePlot({
       ui.Paint()..color = _jetColor(t),
     );
   }
-  _drawSmallText(canvas, topoGMax.toStringAsFixed(2), ui.Offset(barX + colorBarW + 5, barY - 8), width: 60, fontSize: 14.0);
-  _drawSmallText(canvas, topoGMin.toStringAsFixed(2), ui.Offset(barX + colorBarW + 5, barY + barH - 8), width: 60, fontSize: 14.0);
+  _drawSmallText(
+    canvas,
+    topoGMax.toStringAsFixed(2),
+    ui.Offset(barX + colorBarW + 5, barY - 8),
+    width: 60,
+    fontSize: 14.0,
+  );
+  _drawSmallText(
+    canvas,
+    topoGMin.toStringAsFixed(2),
+    ui.Offset(barX + colorBarW + 5, barY + barH - 8),
+    width: 60,
+    fontSize: 14.0,
+  );
 
   // ── Finalise ──────────────────────────────────────────────────────────────
 
@@ -1274,9 +1423,15 @@ Future<Uint8List> _renderFeaturePlot({
 
 /// Distinguishable qualitative palette for overlaying recordings.
 const List<ui.Color> _seriesPalette = [
-  ui.Color(0xFF1F77B4), ui.Color(0xFFD62728), ui.Color(0xFF2CA02C),
-  ui.Color(0xFFFF7F0E), ui.Color(0xFF9467BD), ui.Color(0xFF8C564B),
-  ui.Color(0xFFE377C2), ui.Color(0xFF17BECF), ui.Color(0xFFBCBD22),
+  ui.Color(0xFF1F77B4),
+  ui.Color(0xFFD62728),
+  ui.Color(0xFF2CA02C),
+  ui.Color(0xFFFF7F0E),
+  ui.Color(0xFF9467BD),
+  ui.Color(0xFF8C564B),
+  ui.Color(0xFFE377C2),
+  ui.Color(0xFF17BECF),
+  ui.Color(0xFFBCBD22),
   ui.Color(0xFF7F7F7F),
 ];
 
@@ -1311,7 +1466,8 @@ Future<Uint8List> _renderOverlayPlot({
 
     final xs = byTime.keys.toList()..sort();
     final raw = [
-      for (final t in xs) byTime[t]!.reduce((a, b) => a + b) / byTime[t]!.length,
+      for (final t in xs)
+        byTime[t]!.reduce((a, b) => a + b) / byTime[t]!.length,
     ];
     final ys = _rollMean(raw, options.smoothingWindow);
 
@@ -1382,7 +1538,10 @@ Future<Uint8List> _renderOverlayPlot({
     final frac = i / yTicks;
     final y = plotRect.bottom - frac * plotRect.height;
     canvas.drawLine(
-        ui.Offset(plotRect.left, y), ui.Offset(plotRect.right, y), gridPaint);
+      ui.Offset(plotRect.left, y),
+      ui.Offset(plotRect.right, y),
+      gridPaint,
+    );
     final value = yMin + frac * (yMax - yMin);
     _drawSmallText(
       canvas,
@@ -1400,8 +1559,11 @@ Future<Uint8List> _renderOverlayPlot({
   for (var i = 0; i <= xTicks; i++) {
     final frac = i / xTicks;
     final x = plotRect.left + frac * plotRect.width;
-    canvas.drawLine(ui.Offset(x, plotRect.bottom),
-        ui.Offset(x, plotRect.bottom + 5), axisPaint);
+    canvas.drawLine(
+      ui.Offset(x, plotRect.bottom),
+      ui.Offset(x, plotRect.bottom + 5),
+      axisPaint,
+    );
     _drawSmallText(
       canvas,
       (frac * xMax).toStringAsFixed(1),
@@ -1485,4 +1647,131 @@ String _safeFilename(String feature) =>
 String _safeDirname(String name) {
   final cleaned = name.replaceAll(RegExp(r'[^\w\-.]'), '_');
   return cleaned.isEmpty ? 'recording' : cleaned;
+}
+
+/// Source features have atlas labels, not scalp electrode positions.
+/// Keep every ROI and show feature values with one shared scale per figure.
+Future<List<FeaturePlotResult>> generateSourceFeaturePlots({
+  required List<String> csvPaths,
+  required String outputDir,
+  required double epochSeconds,
+  List<String>? features,
+  void Function(double, String)? onProgress,
+}) async {
+  final saved = <FeaturePlotResult>[];
+  await Directory(outputDir).create(recursive: true);
+  for (final path in csvPaths) {
+    final datasets = _CsvReader.read(path, epochSeconds);
+    for (final ds in datasets) {
+      for (final feature in features ?? ds.features.keys) {
+        final regions = ds.features[feature];
+        if (regions == null || regions.values.every((v) => v.isEmpty)) continue;
+        final labels = regions.keys.toList();
+        final values =
+            regions.values.expand((v) => v).map((s) => s.value).toList()
+              ..sort();
+        final lo = values.first, hi = values.last;
+        final span = hi > lo ? hi - lo : 1.0;
+        const width = 1400;
+        final height = 150 + labels.length * 30;
+        final recorder = ui.PictureRecorder();
+        final canvas = ui.Canvas(recorder);
+        canvas.drawColor(const ui.Color(0xFFFFFFFF), ui.BlendMode.src);
+        void text(String value, double x, double y, {double size = 13}) {
+          final paragraph =
+              (ui.ParagraphBuilder(
+                      ui.ParagraphStyle(
+                        fontSize: size,
+                        fontFamily: 'DejaVuSans',
+                      ),
+                    )
+                    ..pushStyle(ui.TextStyle(color: const ui.Color(0xFF182238)))
+                    ..addText(value))
+                  .build()
+                ..layout(const ui.ParagraphConstraints(width: 1380));
+          canvas.drawParagraph(paragraph, ui.Offset(x, y));
+        }
+
+        text(
+          '${ds.name.length > 65 ? '${ds.name.substring(0, 62)}…' : ds.name} | $feature | Source ROI features',
+          20,
+          12,
+          size: 19,
+        );
+        text('ROI traces (each row scaled to its own range)', 310, 44);
+        text(
+          'Feature heatmap: ${lo.toStringAsPrecision(4)} to ${hi.toStringAsPrecision(4)}',
+          855,
+          44,
+        );
+        final duration = ds.maxTimeMin > 0 ? ds.maxTimeMin : 1.0;
+        for (var i = 0; i < labels.length; i++) {
+          final y = 80.0 + i * 30;
+          text(labels[i], 12, y + 3, size: 12);
+          final samples = regions[labels[i]]!
+            ..sort((a, b) => a.timeMin.compareTo(b.timeMin));
+          final min = samples.map((s) => s.value).reduce(math.min);
+          final max = samples.map((s) => s.value).reduce(math.max);
+          final range = max > min ? max - min : 1.0;
+          final trace = ui.Path();
+          for (var j = 0; j < samples.length; j++) {
+            final sample = samples[j];
+            final x = 310 + 510 * sample.timeMin / duration;
+            final ty = y + 24 - 22 * (sample.value - min) / range;
+            if (j == 0) {
+              trace.moveTo(x, ty);
+            } else {
+              trace.lineTo(x, ty);
+            }
+            final hx = 855 + 515 * sample.timeMin / duration;
+            final next = j + 1 < samples.length
+                ? samples[j + 1].timeMin
+                : duration;
+            final w = math.max(1.0, 515 * (next - sample.timeMin) / duration);
+            final t = ((sample.value - lo) / span).clamp(0.0, 1.0);
+            canvas.drawRect(
+              ui.Rect.fromLTWH(hx, y, w, 26),
+              ui.Paint()
+                ..color = ui.Color.lerp(
+                  const ui.Color(0xFF2166AC),
+                  const ui.Color(0xFFB2182B),
+                  t,
+                )!,
+            );
+          }
+          canvas.drawPath(
+            trace,
+            ui.Paint()
+              ..color = const ui.Color(0xFF2166AC)
+              ..style = ui.PaintingStyle.stroke
+              ..strokeWidth = 1,
+          );
+        }
+        text('0 - ${duration.toStringAsFixed(2)} minutes', 310, height - 55.0);
+        text(
+          'Feature values in CSV units. Atlas regions are not scalp electrodes.',
+          20,
+          height - 28.0,
+        );
+        final picture = recorder.endRecording();
+        final img = await picture.toImage(width, height);
+        final data = await img.toByteData(format: ui.ImageByteFormat.png);
+        img.dispose();
+        picture.dispose();
+        if (data == null)
+          throw StateError('Cannot encode source feature figure');
+        final out =
+            '$outputDir/${_safeFilename(ds.name)}_${_safeFilename(feature)}_ROI.png';
+        await File(out).writeAsBytes(
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+        );
+        saved.add(
+          FeaturePlotResult(path: out, feature: feature, scope: ds.name),
+        );
+        onProgress?.call(0, 'Source ROI figure: $feature');
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+  }
+  return saved;
 }

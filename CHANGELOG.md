@@ -4,6 +4,15 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.41]
+
+### Recording save and source-feature plotting fixes
+
+- **Mac recording saves:** replace the native Save sheet with an in-app filename and output-folder form. Browse folders or enter the path, validate filenames, and confirm before replacing an existing recording. Processing starts after the dialog closes.
+- **Source-feature plots:** route atlas ROI labels to labelled regional traces and a ROI-by-time feature heatmap instead of electrode interpolation. Display these figures in the interactive Plots & Report workspace, with PNG/PDF export, and support automatic and batch plotting.
+- Keep all source regions, show a shared feature-value heatmap scale, label individually scaled regional traces, and exclude timing/settings metadata from feature figures.
+- Includes all interactive preprocessing, ICA review, GEDAI corrections and linked source-analysis improvements from v1.2.40.
+
 ## [1.2.40]
 
 ### Interactive preprocessing, retained ICA review and linked source analysis

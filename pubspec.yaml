@@ -1,7 +1,7 @@
 name: ccs_eeg_app
 description: Lightweight EEG feature extraction and connectivity desktop app.
 publish_to: none
-version: 1.2.40+41
+version: 1.2.41+42
 
 environment:
   sdk: ^3.11.0
