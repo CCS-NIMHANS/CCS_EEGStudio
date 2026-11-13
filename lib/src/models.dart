@@ -6,6 +6,8 @@ import 'erp/stim_epochs.dart';
 
 export 'erp/stim_epochs.dart' show StimEpochSpec;
 
+const gedaiImplementation = 'gedai-v4-reference-broadband-mra9';
+
 class LoadedEeg {
   const LoadedEeg({
     required this.sampleRateHz,
@@ -132,6 +134,7 @@ class ViewerSelection {
 
 class PreprocessingOptions {
   const PreprocessingOptions({
+    this.previewCacheDir,
     required this.downsample,
     required this.downsampleFreq,
     required this.filter,
@@ -191,6 +194,7 @@ class PreprocessingOptions {
   factory PreprocessingOptions.fromJson(
     Map<String, dynamic> json,
   ) => PreprocessingOptions(
+    previewCacheDir: json['preview_cache_dir'] as String?,
     downsample: json['downsample'] as bool? ?? true,
     downsampleFreq: (json['downsample_freq'] as num?)?.toDouble() ?? 250,
     filter: json['filter'] as bool? ?? true,
@@ -259,6 +263,7 @@ class PreprocessingOptions {
   /// filtering and before bad-channel detection / GEDAI / interpolation.
   final StimEpochSpec? stimEpochs;
 
+  final String? previewCacheDir;
   final bool downsample;
   final double downsampleFreq;
   final bool filter;
@@ -326,6 +331,7 @@ class PreprocessingOptions {
   final List<String> nonEegChannels;
 
   Map<String, dynamic> toJson() => {
+    if (previewCacheDir != null) 'preview_cache_dir': previewCacheDir,
     'downsample': downsample,
     'downsample_freq': downsampleFreq,
     'filter': filter,
@@ -334,6 +340,7 @@ class PreprocessingOptions {
     'notch_hz': notchHz,
     'badchannel': badchannel,
     'gedai': gedai,
+    if (gedai) 'gedai_implementation': gedaiImplementation,
     'interpolate': interpolate,
     'gedai_epoch_seconds': gedaiEpochSeconds,
     'gedai_threshold': gedaiThreshold,
@@ -920,76 +927,127 @@ class AnalysisConfig {
 
   void applyPreprocessingJson(Map<String, dynamic> json) {
     if (json['downsample'] is bool) downsample = json['downsample'] as bool;
-    if (json['downsample_freq'] is num) downsampleFreq = (json['downsample_freq'] as num).toDouble();
+    if (json['downsample_freq'] is num)
+      downsampleFreq = (json['downsample_freq'] as num).toDouble();
     if (json['filter'] is bool) filter = json['filter'] as bool;
     if (json['low_hz'] is num) lowHz = (json['low_hz'] as num).toDouble();
     if (json['high_hz'] is num) highHz = (json['high_hz'] as num).toDouble();
     if (json['notch_hz'] is num) notchHz = (json['notch_hz'] as num).toDouble();
-    if (json['bad_channels'] is bool) badChannels = json['bad_channels'] as bool;
+    if (json['bad_channels'] is bool)
+      badChannels = json['bad_channels'] as bool;
     if (json['interpolate'] is bool) interpolate = json['interpolate'] as bool;
     if (json['gedai'] is bool) gedai = json['gedai'] as bool;
-    if (json['gedai_epoch_seconds'] is num) gedaiEpochSeconds = (json['gedai_epoch_seconds'] as num).toDouble();
-    if (json['gedai_threshold'] is String) gedaiThreshold = json['gedai_threshold'] as String;
-    if (json['epoch_before_gedai'] is bool) epochBeforeGedai = json['epoch_before_gedai'] as bool;
-    if (json['preprocessing_epoch_seconds'] is num) preprocessingEpochSeconds = (json['preprocessing_epoch_seconds'] as num).toDouble();
+    if (json['gedai_epoch_seconds'] is num)
+      gedaiEpochSeconds = (json['gedai_epoch_seconds'] as num).toDouble();
+    if (json['gedai_threshold'] is String)
+      gedaiThreshold = json['gedai_threshold'] as String;
+    if (json['epoch_before_gedai'] is bool)
+      epochBeforeGedai = json['epoch_before_gedai'] as bool;
+    if (json['preprocessing_epoch_seconds'] is num)
+      preprocessingEpochSeconds = (json['preprocessing_epoch_seconds'] as num)
+          .toDouble();
     if (json['ica_method'] is String) icaMethod = json['ica_method'] as String;
     if (json['ica_blink'] is bool) icaBlink = json['ica_blink'] as bool;
     if (json['ica_other'] is bool) icaOther = json['ica_other'] as bool;
-    if (json['ica_eye_channel'] is String) icaEyeChannel = json['ica_eye_channel'] as String;
-    if (json['ica_blink_epochs'] is num) icaBlinkEpochs = (json['ica_blink_epochs'] as num).toInt();
-    if (json['ica_blink_threshold'] is num) icaBlinkThreshold = (json['ica_blink_threshold'] as num).toDouble();
-    if (json['ica_blink_threshold_floor'] is num) icaBlinkThresholdFloor = (json['ica_blink_threshold_floor'] as num).toDouble();
-    if (json['ica_remove_ecg'] is bool) icaRemoveEcg = json['ica_remove_ecg'] as bool;
-    if (json['ica_fit_asr_cutoff'] is num) icaFitAsrCutoff = (json['ica_fit_asr_cutoff'] as num).toDouble();
-    if (json['ica_artefacts'] is List) icaArtefacts = (json['ica_artefacts'] as List).cast<String>();
-    if (json['ica_other_threshold'] is num) icaOtherThreshold = (json['ica_other_threshold'] as num).toDouble();
-    if (json['ica_other_threshold_floor'] is num) icaOtherThresholdFloor = (json['ica_other_threshold_floor'] as num).toDouble();
+    if (json['ica_eye_channel'] is String)
+      icaEyeChannel = json['ica_eye_channel'] as String;
+    if (json['ica_blink_epochs'] is num)
+      icaBlinkEpochs = (json['ica_blink_epochs'] as num).toInt();
+    if (json['ica_blink_threshold'] is num)
+      icaBlinkThreshold = (json['ica_blink_threshold'] as num).toDouble();
+    if (json['ica_blink_threshold_floor'] is num)
+      icaBlinkThresholdFloor = (json['ica_blink_threshold_floor'] as num)
+          .toDouble();
+    if (json['ica_remove_ecg'] is bool)
+      icaRemoveEcg = json['ica_remove_ecg'] as bool;
+    if (json['ica_fit_asr_cutoff'] is num)
+      icaFitAsrCutoff = (json['ica_fit_asr_cutoff'] as num).toDouble();
+    if (json['ica_artefacts'] is List)
+      icaArtefacts = (json['ica_artefacts'] as List).cast<String>();
+    if (json['ica_other_threshold'] is num)
+      icaOtherThreshold = (json['ica_other_threshold'] as num).toDouble();
+    if (json['ica_other_threshold_floor'] is num)
+      icaOtherThresholdFloor = (json['ica_other_threshold_floor'] as num)
+          .toDouble();
     if (json['ica_fit_asr'] is bool) icaFitAsr = json['ica_fit_asr'] as bool;
     if (json['ica_seed'] is num) icaSeed = (json['ica_seed'] as num).toInt();
     if (json['asr_mode'] is String) asrMode = json['asr_mode'] as String;
-    if (json['asr_cutoff'] is num) asrCutoff = (json['asr_cutoff'] as num).toDouble();
-    if (json['asr_variant'] is String) asrVariant = json['asr_variant'] as String;
-    if (json['asr_adapt_alpha'] is num) asrAdaptAlpha = (json['asr_adapt_alpha'] as num).toDouble();
-    if (json['asr_embed_dim'] is num) asrEmbedDim = (json['asr_embed_dim'] as num).toInt();
-    if (json['asr_embed_tau'] is num) asrEmbedTau = (json['asr_embed_tau'] as num).toInt();
+    if (json['asr_cutoff'] is num)
+      asrCutoff = (json['asr_cutoff'] as num).toDouble();
+    if (json['asr_variant'] is String)
+      asrVariant = json['asr_variant'] as String;
+    if (json['asr_adapt_alpha'] is num)
+      asrAdaptAlpha = (json['asr_adapt_alpha'] as num).toDouble();
+    if (json['asr_embed_dim'] is num)
+      asrEmbedDim = (json['asr_embed_dim'] as num).toInt();
+    if (json['asr_embed_tau'] is num)
+      asrEmbedTau = (json['asr_embed_tau'] as num).toInt();
     if (json['asr_modes'] is num) asrModes = (json['asr_modes'] as num).toInt();
-    if (json['muscle_method'] is String) muscleMethod = json['muscle_method'] as String;
-    if (json['bssca_n_remove'] is num) bsscaNRemove = (json['bssca_n_remove'] as num).toInt();
-    if (json['icc_threshold'] is num) iccThreshold = (json['icc_threshold'] as num).toDouble();
-    if (json['wica_levels'] is num) wicaLevels = (json['wica_levels'] as num).toInt();
-    if (json['reference_mode'] is String) referenceMode = json['reference_mode'] as String;
-    if (json['reference_channels'] is List) referenceChannels = (json['reference_channels'] as List).cast<String>();
+    if (json['muscle_method'] is String)
+      muscleMethod = json['muscle_method'] as String;
+    if (json['bssca_n_remove'] is num)
+      bsscaNRemove = (json['bssca_n_remove'] as num).toInt();
+    if (json['icc_threshold'] is num)
+      iccThreshold = (json['icc_threshold'] as num).toDouble();
+    if (json['wica_levels'] is num)
+      wicaLevels = (json['wica_levels'] as num).toInt();
+    if (json['reference_mode'] is String)
+      referenceMode = json['reference_mode'] as String;
+    if (json['reference_channels'] is List)
+      referenceChannels = (json['reference_channels'] as List).cast<String>();
     if (json['fir_taps'] is num) firTaps = (json['fir_taps'] as num).toInt();
-    if (json['bad_variance_ratio'] is num) badVarianceRatio = (json['bad_variance_ratio'] as num).toDouble();
-    if (json['spline_regularization'] is num) splineRegularization = (json['spline_regularization'] as num).toDouble();
-    if (json['spline_stiffness'] is num) splineStiffness = (json['spline_stiffness'] as num).toInt();
-    if (json['filter_type'] is String) filterType = json['filter_type'] as String;
+    if (json['bad_variance_ratio'] is num)
+      badVarianceRatio = (json['bad_variance_ratio'] as num).toDouble();
+    if (json['spline_regularization'] is num)
+      splineRegularization = (json['spline_regularization'] as num).toDouble();
+    if (json['spline_stiffness'] is num)
+      splineStiffness = (json['spline_stiffness'] as num).toInt();
+    if (json['filter_type'] is String)
+      filterType = json['filter_type'] as String;
     if (json['iir_order'] is num) iirOrder = (json['iir_order'] as num).toInt();
-    if (json['notch_width_hz'] is num) notchWidthHz = (json['notch_width_hz'] as num).toDouble();
-    if (json['notch_transition_hz'] is num) notchTransitionHz = (json['notch_transition_hz'] as num).toDouble();
-    if (json['source_localization'] is bool) sourceLocalization = json['source_localization'] as bool;
-    if (json['source_method'] is String) sourceMethod = json['source_method'] as String;
-    if (json['source_model_path'] is String) sourceModelPath = json['source_model_path'] as String;
-    if (json['source_snr'] is num) sourceSnr = (json['source_snr'] as num).toDouble();
-    if (json['source_regions'] is List) sourceRegions = (json['source_regions'] as List).cast<String>();
+    if (json['notch_width_hz'] is num)
+      notchWidthHz = (json['notch_width_hz'] as num).toDouble();
+    if (json['notch_transition_hz'] is num)
+      notchTransitionHz = (json['notch_transition_hz'] as num).toDouble();
+    if (json['source_localization'] is bool)
+      sourceLocalization = json['source_localization'] as bool;
+    if (json['source_method'] is String)
+      sourceMethod = json['source_method'] as String;
+    if (json['source_model_path'] is String)
+      sourceModelPath = json['source_model_path'] as String;
+    if (json['source_snr'] is num)
+      sourceSnr = (json['source_snr'] as num).toDouble();
+    if (json['source_regions'] is List)
+      sourceRegions = (json['source_regions'] as List).cast<String>();
     if (json['stim_epochs'] is bool) stimEpochs = json['stim_epochs'] as bool;
-    if (json['stim_markers'] is List) stimMarkers = (json['stim_markers'] as List).cast<String>();
-    if (json['stim_pattern'] is String) stimPattern = json['stim_pattern'] as String;
+    if (json['stim_markers'] is List)
+      stimMarkers = (json['stim_markers'] as List).cast<String>();
+    if (json['stim_pattern'] is String)
+      stimPattern = json['stim_pattern'] as String;
     if (json['stim_marker_groups'] is Map) {
       stimMarkerGroups = (json['stim_marker_groups'] as Map).map(
         (k, v) => MapEntry(k.toString(), (v as List).cast<String>()),
       );
     }
     if (json['stim_response_rules'] is Map) {
-      stimResponseRules = Map<String, dynamic>.from(json['stim_response_rules'] as Map);
+      stimResponseRules = Map<String, dynamic>.from(
+        json['stim_response_rules'] as Map,
+      );
     }
-    if (json['stim_tmin'] is num) stimTmin = (json['stim_tmin'] as num).toDouble();
-    if (json['stim_tmax'] is num) stimTmax = (json['stim_tmax'] as num).toDouble();
-    if (json['stim_baseline'] is bool) stimBaseline = json['stim_baseline'] as bool;
-    if (json['stim_baseline_start'] is num) stimBaselineStart = (json['stim_baseline_start'] as num).toDouble();
-    if (json['stim_baseline_end'] is num) stimBaselineEnd = (json['stim_baseline_end'] as num).toDouble();
-    if (json['stim_crop_marker'] is String) stimCropMarker = json['stim_crop_marker'] as String;
-    if (json['stim_crop_minutes'] is num) stimCropMinutes = (json['stim_crop_minutes'] as num).toDouble();
+    if (json['stim_tmin'] is num)
+      stimTmin = (json['stim_tmin'] as num).toDouble();
+    if (json['stim_tmax'] is num)
+      stimTmax = (json['stim_tmax'] as num).toDouble();
+    if (json['stim_baseline'] is bool)
+      stimBaseline = json['stim_baseline'] as bool;
+    if (json['stim_baseline_start'] is num)
+      stimBaselineStart = (json['stim_baseline_start'] as num).toDouble();
+    if (json['stim_baseline_end'] is num)
+      stimBaselineEnd = (json['stim_baseline_end'] as num).toDouble();
+    if (json['stim_crop_marker'] is String)
+      stimCropMarker = json['stim_crop_marker'] as String;
+    if (json['stim_crop_minutes'] is num)
+      stimCropMinutes = (json['stim_crop_minutes'] as num).toDouble();
   }
 
   static String get defaultPipelinePath {
@@ -1002,7 +1060,9 @@ class AnalysisConfig {
     try {
       final file = File(defaultPipelinePath);
       await file.parent.create(recursive: true);
-      await file.writeAsString(const JsonEncoder.withIndent('  ').convert(toPreprocessingJson()));
+      await file.writeAsString(
+        const JsonEncoder.withIndent('  ').convert(toPreprocessingJson()),
+      );
     } catch (_) {}
   }
 
@@ -1010,7 +1070,8 @@ class AnalysisConfig {
     try {
       final file = File(defaultPipelinePath);
       if (file.existsSync()) {
-        final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+        final json =
+            jsonDecode(await file.readAsString()) as Map<String, dynamic>;
         applyPreprocessingJson(json);
         return true;
       }

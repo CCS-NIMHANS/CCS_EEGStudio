@@ -26,11 +26,22 @@ class EegViewer extends StatefulWidget {
     this.onRequestEpochs,
     required this.selection,
     required this.onSelectionChanged,
+    this.autoscaleByDefault = false,
+    this.traceColors = const {},
+    this.cursorSeconds,
+    this.highlightWindowSeconds = 0,
+    this.onTimeSelected,
     this.filterEnabled = false,
     this.lowHz = 0.5,
     this.highHz = 40.0,
     this.notchHz = 50.0,
   });
+
+  final bool autoscaleByDefault;
+  final Map<String, Color> traceColors;
+  final double? cursorSeconds;
+  final double highlightWindowSeconds;
+  final ValueChanged<double>? onTimeSelected;
 
   /// Primary (preprocessed) recording.
   final EegRecording? recording;
@@ -149,9 +160,34 @@ class _EegViewerState extends State<EegViewer> {
   @override
   void didUpdateWidget(covariant EegViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.autoscaleByDefault != oldWidget.autoscaleByDefault)
+      _autoscale = widget.autoscaleByDefault;
+    if (widget.cursorSeconds != null &&
+        widget.cursorSeconds != oldWidget.cursorSeconds) {
+      final next = widget.recording;
+      if (next != null) {
+        final cursor = widget.cursorSeconds!.clamp(
+          0.0,
+          math.max(0.0, next.durationSeconds - 1 / next.sampleRate),
+        );
+        if (next.isEpoched && !_stitchEpochs) {
+          _currentEpochIndex = (cursor / next.epochDurationSeconds)
+              .floor()
+              .clamp(0, next.epochCount - 1);
+          _startSeconds = _currentEpochIndex * next.epochDurationSeconds;
+        } else if (cursor < _startSeconds ||
+            cursor >= _startSeconds + _windowSeconds) {
+          _startSeconds = (cursor - _windowSeconds / 2).clamp(
+            0.0,
+            math.max(0.0, next.durationSeconds - _windowSeconds),
+          );
+        }
+      }
+    }
     final newPath = widget.recording?.path ?? widget.rawRecording?.path;
     final oldPath = oldWidget.recording?.path ?? oldWidget.rawRecording?.path;
     if (newPath != oldPath) {
+      _showRaw = false;
       // Keep an absolute timeline position when comparing raw and derived
       // recordings. For an epoched target, map that position to its epoch;
       // for a continuous target, retain the epoch's absolute onset.
@@ -177,7 +213,11 @@ class _EegViewerState extends State<EegViewer> {
           0;
       if (n > 0) _selectedChannel = _selectedChannel.clamp(0, n - 1);
       _visible = List.filled(n, true);
-      widget.onSelectionChanged(const ViewerSelection.empty());
+      final nextRecording = widget.recording;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && identical(widget.recording, nextRecording))
+          widget.onSelectionChanged(const ViewerSelection.empty());
+      });
     } else if (widget.filterEnabled != oldWidget.filterEnabled ||
         widget.lowHz != oldWidget.lowHz ||
         widget.highHz != oldWidget.highHz ||
@@ -192,6 +232,7 @@ class _EegViewerState extends State<EegViewer> {
   @override
   void initState() {
     super.initState();
+    _autoscale = widget.autoscaleByDefault;
     _bandpassEnabled = widget.filterEnabled;
     _notchEnabled = widget.filterEnabled;
     final n =
@@ -213,6 +254,7 @@ class _EegViewerState extends State<EegViewer> {
   void _setEpochIndex(EegRecording eeg, int index) {
     _currentEpochIndex = index.clamp(0, eeg.epochCount - 1);
     _startSeconds = _currentEpochIndex * eeg.epochDurationSeconds;
+    widget.onTimeSelected?.call(_startSeconds);
   }
 
   void _adjustGain(double factor) =>
@@ -264,7 +306,10 @@ class _EegViewerState extends State<EegViewer> {
                 markers: _markersForView(eeg),
                 start: _startSeconds,
                 window: _viewWindow(eeg),
-                onNavigate: (t) => setState(() => _startSeconds = t),
+                onNavigate: (t) {
+                  setState(() => _startSeconds = t);
+                  widget.onTimeSelected?.call(t);
+                },
               ),
               const SizedBox(height: 4),
             ],
@@ -434,7 +479,7 @@ class _EegViewerState extends State<EegViewer> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                eeg.path.split('/').last,
+                recordingViewerName(eeg),
                 style: const TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.w600,
@@ -546,7 +591,7 @@ class _EegViewerState extends State<EegViewer> {
   Widget _stageBtn(EegRecording rec, bool active) {
     String label;
     Color color;
-    final fileName = rec.path.split('/').last;
+    final fileName = recordingViewerName(rec);
     if (rec.labels.length == 68 &&
         (rec.labels.contains('bankssts-lh') || rec.path.contains('_source'))) {
       label = '🧠 $fileName';
@@ -1295,6 +1340,8 @@ class _EegViewerState extends State<EegViewer> {
               }
             }
           }
+          if (!isVert || signal.scrollDelta.dx.abs() > 1.0)
+            widget.onTimeSelected?.call(_startSeconds);
         }
       },
       child: Focus(
@@ -1320,6 +1367,7 @@ class _EegViewerState extends State<EegViewer> {
                     _startSeconds = (_startSeconds + step).clamp(0.0, maxStart),
               );
             }
+            widget.onTimeSelected?.call(_startSeconds);
             return KeyEventResult.handled;
           } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
             if (eeg.isEpoched && !_stitchEpochs) {
@@ -1337,6 +1385,7 @@ class _EegViewerState extends State<EegViewer> {
                     _startSeconds = (_startSeconds - step).clamp(0.0, maxStart),
               );
             }
+            widget.onTimeSelected?.call(_startSeconds);
             return KeyEventResult.handled;
           } else if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
             if (_stacked && _pageSize > 0) {
@@ -1366,7 +1415,21 @@ class _EegViewerState extends State<EegViewer> {
           return KeyEventResult.ignored;
         },
         child: GestureDetector(
-          onTapDown: (_) => _focusNode.requestFocus(),
+          onTapDown: (details) {
+            _focusNode.requestFocus();
+            if (widget.onTimeSelected != null) {
+              final width = context.size?.width ?? 800;
+              final left = _waveformLabelGutter(eeg, width);
+              final fraction =
+                  ((details.localPosition.dx - left) /
+                          math.max(1, width - left))
+                      .clamp(0.0, 1.0);
+              final start = eeg.isEpoched && !_stitchEpochs
+                  ? _currentEpochIndex * eeg.epochDurationSeconds
+                  : _startSeconds;
+              widget.onTimeSelected!(start + fraction * _viewWindow(eeg));
+            }
+          },
           onScaleStart: (_) => _baseGain = _gain,
           onScaleUpdate: (details) => setState(
             () => _gain = (_baseGain * details.scale).clamp(0.1, 16.0),
@@ -1395,11 +1458,15 @@ class _EegViewerState extends State<EegViewer> {
                     ),
               );
             }
+            widget.onTimeSelected?.call(_startSeconds);
           },
           child: ClipRect(
             child: CustomPaint(
               painter: _EegSignalPainter(
                 eeg: eeg,
+                traceColors: widget.traceColors,
+                cursorSeconds: widget.cursorSeconds,
+                highlightWindowSeconds: widget.highlightWindowSeconds,
                 effectivePreview: _getEffectivePreview(eeg),
                 currentEpochIndex: _currentEpochIndex,
                 channelIndices: channelIndices,
@@ -1944,6 +2011,9 @@ class _EegViewerState extends State<EegViewer> {
 class _EegSignalPainter extends CustomPainter {
   const _EegSignalPainter({
     required this.eeg,
+    this.traceColors = const {},
+    this.cursorSeconds,
+    this.highlightWindowSeconds = 0,
     required this.effectivePreview,
     required this.currentEpochIndex,
     required this.channelIndices,
@@ -1957,6 +2027,9 @@ class _EegSignalPainter extends CustomPainter {
     this.visibleMarkers = const [],
   });
 
+  final Map<String, Color> traceColors;
+  final double? cursorSeconds;
+  final double highlightWindowSeconds;
   final EegRecording eeg;
   final List<Float32List> effectivePreview;
   final int currentEpochIndex;
@@ -1971,7 +2044,6 @@ class _EegSignalPainter extends CustomPainter {
   final List<EegMarker> visibleMarkers;
 
   static const _timeAxisH = 20.0;
-  static const _labelGutter = 76.0;
   static const _traceColor = Color(0xFF172033);
 
   @override
@@ -1983,7 +2055,7 @@ class _EegSignalPainter extends CustomPainter {
     if (channelIndices.isEmpty) return;
 
     final drawH = size.height - _timeAxisH;
-    final plotLeft = math.min(_labelGutter, size.width * 0.22);
+    final plotLeft = _waveformLabelGutter(eeg, size.width);
     final plotW = math.max(1.0, size.width - plotLeft);
     final numLanes = channelIndices.length;
     final laneH = drawH / numLanes;
@@ -2089,12 +2161,47 @@ class _EegSignalPainter extends CustomPainter {
       }
     }
 
+    if (cursorSeconds != null) {
+      final origin = eeg.isEpoched && !stitchedEpochs
+          ? currentEpochIndex * eeg.epochDurationSeconds
+          : startSeconds;
+      final local = cursorSeconds! - origin;
+      if (local >= 0 && local <= windowSeconds) {
+        final x = plotLeft + local / windowSeconds * plotW;
+        if (highlightWindowSeconds > 0)
+          canvas.drawRect(
+            Rect.fromLTWH(
+              x,
+              0,
+              math.min(
+                highlightWindowSeconds / windowSeconds * plotW,
+                size.width - x,
+              ),
+              drawH,
+            ),
+            Paint()..color = const Color(0x223B82F6),
+          );
+        canvas.drawLine(
+          Offset(x, 0),
+          Offset(x, drawH),
+          Paint()
+            ..color = const Color(0xFF2563EB)
+            ..strokeWidth = 1.3,
+        );
+      }
+    }
+
     // ── Per-channel signal ───────────────────────────────────────────
-    final labelPainter = TextPainter(textDirection: TextDirection.ltr);
+    final labelPainter = TextPainter(
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+      ellipsis: '…',
+    );
 
     for (var lane = 0; lane < numLanes; lane++) {
       final chIdx = channelIndices[lane];
       final label = chIdx < eeg.labels.length ? eeg.labels[chIdx] : 'Ch $chIdx';
+      final traceColor = traceColors[label] ?? _traceColor;
       final centerY = lane * laneH + laneH * 0.5;
 
       // A dedicated gutter keeps labels readable instead of drawing signals
@@ -2103,7 +2210,7 @@ class _EegSignalPainter extends CustomPainter {
         text: label,
         style: TextStyle(
           fontFamily: 'DejaVuSans',
-          color: _traceColor,
+          color: traceColor,
           fontSize: math.max(7.0, math.min(11.0, laneH * 0.52)),
           fontWeight: FontWeight.w600,
         ),
@@ -2166,7 +2273,7 @@ class _EegSignalPainter extends CustomPainter {
       canvas.drawPath(
         path,
         Paint()
-          ..color = _traceColor
+          ..color = traceColor
           ..strokeWidth = stacked ? 1.2 : 1.6
           ..style = PaintingStyle.stroke
           ..isAntiAlias = true
@@ -2347,6 +2454,9 @@ class _EegSignalPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _EegSignalPainter old) =>
+      old.cursorSeconds != cursorSeconds ||
+      old.highlightWindowSeconds != highlightWindowSeconds ||
+      old.traceColors != traceColors ||
       old.effectivePreview != effectivePreview ||
       old.currentEpochIndex != currentEpochIndex ||
       old.eeg != eeg ||
@@ -2489,3 +2599,24 @@ Future<List<Float32List>> _filterViewerPreview(
       ),
   ],
 );
+
+double _waveformLabelGutter(EegRecording eeg, double width) => math.min(
+  eeg.labels.any((label) => label.length > 12) ? 190.0 : 76.0,
+  width * .30,
+);
+
+String recordingViewerName(EegRecording rec) {
+  final file = rec.path.split('/').last;
+  if (!RegExp(r'^(combination|source)-[a-f0-9]+\.ccseeg$').hasMatch(file))
+    return file;
+  var provenance = rec.provenance;
+  var source = file;
+  for (var i = 0; i < 8; i++) {
+    final path = provenance['source_path'];
+    if (path is String) source = path.split('/').last;
+    final parent = provenance['parent_provenance'];
+    if (parent is! Map) break;
+    provenance = Map<String, dynamic>.from(parent);
+  }
+  return '$source · ${file.startsWith('source-') ? 'source ROIs' : 'interactive preview'}';
+}

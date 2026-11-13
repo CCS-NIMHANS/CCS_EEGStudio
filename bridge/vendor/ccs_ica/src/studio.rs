@@ -68,6 +68,8 @@ pub struct StageReport {
     pub removed_class: Vec<String>,
     pub signals_lost: f64,
     pub note: String,
+    /// Retained decomposition and bounded display traces for post-cleaning review.
+    pub review: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,6 +103,47 @@ fn dominant_class(classif: &Mat, comp1: usize) -> String {
         }
     }
     CLASSES[best].to_string()
+}
+
+fn component_review(r: &crate::pipeline::StageResult, target: &Mat, srate: f64, epoch_samples: Option<usize>) -> serde_json::Value {
+    let w = &r.ica.icaweights * &r.ica.icasphere;
+    // Keep display activations across the full recording, including every saved trial.
+    let n = target.ncols();
+    let stride = ((srate / 200.0).ceil() as usize).max(1);
+    let indices = &r.ica.icachansind;
+    let epoch_size = epoch_samples.unwrap_or(n).max(1);
+    let display_indices: Vec<usize> = (0..n).step_by(epoch_size).flat_map(|start| (start..(start+epoch_size).min(n)).step_by(stride)).collect();
+    let traces: Vec<Vec<f64>> = (0..w.nrows()).map(|ic| display_indices.iter().map(|&t|
+        (0..w.ncols()).map(|ch| w[(ic,ch)] * target[(indices[ch],t)]).sum()
+    ).collect()).collect();
+    serde_json::json!({
+        "class_names": CLASSES,
+        "probabilities": from_mat(&r.classifications),
+        "mixing": from_mat(&r.ica.icawinv),
+        "unmixing": from_mat(&w),
+        "channel_indices": indices,
+        "traces": traces,
+        "trace_sample_rate": srate / stride as f64,
+        "trace_start_seconds": 0.0,
+        "trace_duration_seconds": n as f64 / srate,
+        "epoch_duration_seconds": epoch_samples.map(|n| n as f64 / srate),
+        "trace_points_per_epoch": epoch_samples.map(|n| n.div_ceil(stride)),
+        "trace_note": "Full recording; display traces sampled at up to 200 Hz. ICA amplitude has arbitrary scale. Saved trials are shown separately.",
+    })
+}
+
+fn removal_criteria(r: &crate::pipeline::StageResult, thresholds: &[f64], classes: &[String], max_components: f64, max_brain: f64) -> serde_json::Value {
+    // Selection.final_threshold is decremented AFTER each test. Report the threshold actually tested.
+    let applied = r.selection.final_threshold + if r.selection.iterations > 0 {0.0005} else {0.0};
+    serde_json::json!({
+        "target_classes": classes,
+        "initial_threshold": thresholds[0], "floor_threshold": thresholds.get(1),
+        "applied_threshold": applied, "comparison": ">=", "threshold_step": 0.0005,
+        "iterations": r.selection.iterations,
+        "max_component_fraction": max_components, "max_brain_probability_sum": max_brain,
+        "accumulated_brain_probability": r.selection.signalslost,
+        "explanation": "Remove components whose score for any targeted class meets the last tested threshold. The threshold decreases by 0.05 percentage points until the component-count limit, cumulative Brain-score limit, or threshold floor stops the search. Limits stop the search; they are not hard caps on the final removal count. Brain score is a classifier probability, not measured signal variance.",
+    })
 }
 
 fn pick_eye_channel(locs: &[ChanLoc], wanted: &Option<String>) -> usize {
@@ -212,6 +255,13 @@ pub fn clean_ica(target: &[Vec<f64>], hp: &[Vec<f64>], locs: &[ChanLoc], srate: 
                 removed_class: r.selection.comp2remove.iter().map(|&k| dominant_class(&r.classifications, k)).collect(),
                 signals_lost: r.selection.signalslost,
                 note: String::new(),
+                review: {
+                    let mut v = component_review(&r, &data, srate, o.epoch_samples);
+                    let mut classes = vec!["Eye".to_string()];
+                    if o.remove_ecg { classes.push("Heart".to_string()); }
+                    v["criteria"] = removal_criteria(&r, &o.blink_threshold, &classes, 0.1, 0.4);
+                    v
+                },
             };
             if !r.selection.comp2remove.is_empty() {
                 // the cleaning is a linear projection, so applying it to the high-passed copy equals high-passing the cleaned data
@@ -275,6 +325,11 @@ pub fn clean_ica(target: &[Vec<f64>], hp: &[Vec<f64>], locs: &[ChanLoc], srate: 
             removed_class: r.selection.comp2remove.iter().map(|&k| dominant_class(&r.classifications, k)).collect(),
             signals_lost: r.selection.signalslost,
             note: String::new(),
+            review: {
+                let mut v = component_review(&r, &data, srate, o.epoch_samples);
+                v["criteria"] = removal_criteria(&r, &o.other_threshold, &o.other_artefacts, o.maxcomp2rem, o.maxsig2rem);
+                v
+            },
         };
         data = r.clean;
     }

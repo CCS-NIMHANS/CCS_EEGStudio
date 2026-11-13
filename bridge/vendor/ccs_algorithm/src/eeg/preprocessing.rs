@@ -5,8 +5,11 @@ use std::{collections::HashMap, f64::consts::PI, fs, io::Write, path::Path};
 use crate::eeg::{spectral::resample_poly, Recording};
 use rayon::prelude::*;
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PreprocessOptions {
+    /// Private persistent interactive checkpoint directory; identity verified by the caller.
+    #[serde(default)]
+    pub preview_cache_dir: Option<String>,
     #[serde(default = "default_true")]
     pub downsample: bool,
     #[serde(default = "default_target_rate")]
@@ -150,7 +153,7 @@ pub struct PreprocessOptions {
     pub wica_threshold_mult: f64,
 }
 
-#[derive(Deserialize, Clone, Default, Debug)]
+# [derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct StimEpochOptions {
     /// Event onsets in seconds from the start of the recording.
     pub onsets: Vec<f64>,
@@ -244,6 +247,8 @@ pub fn cut_stim_epochs(
 
 #[derive(Serialize)]
 pub struct PreprocessSummary {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cache_hits: Vec<String>,
     pub input: String,
     pub output: String,
     pub sample_rate: f64,
@@ -258,6 +263,8 @@ pub struct PreprocessSummary {
     pub ica: Option<serde_json::Value>,
     /// GEDAI reference actually used: "leadfield", "identity" (labels unknown: not valid GEDAI) or null when GEDAI did not run.
     pub gedai_reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gedai_quality: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -278,6 +285,7 @@ struct GedaiResult {
     clean: Vec<Vec<f64>>,
     score: f64,
     thresholds: Vec<f64>,
+    quality: serde_json::Value,
 }
 
 pub fn run(
@@ -309,6 +317,10 @@ pub fn run(
     if options.asr_mode == "reject" && options.stim_epochs.as_ref().is_some_and(|s| !s.onsets.is_empty()) {
         return Err("ASR reject removes time samples and cannot precede event-locked epoching; use ASR correct to preserve event timing".into());
     }
+    if options.gedai && !["auto", "auto+", "auto-"].contains(&options.gedai_threshold.as_str()) {
+        let valid=options.gedai_threshold.parse::<f64>().ok().is_some_and(|v|v.is_finite() && (0.0..=12.0).contains(&v));
+        if !valid {return Err("GEDAI strength must be auto-, auto, auto+ or a numeric threshold from 0 to 12".into());}
+    }
     let mut warnings = Vec::new();
     let mut ica_report: Option<serde_json::Value> = None;
     normalize_channel_set(rec, &options.non_eeg_channels);
@@ -321,6 +333,13 @@ pub fn run(
         .map(|ch| ch.iter().map(|v| *v as f64).collect())
         .collect();
 
+    let mut cache = super::preprocessing_cache::PrefixCache::new(options.preview_cache_dir.as_deref(), &rec.labels, &options.non_eeg_channels);
+    let option_json = serde_json::to_value(options).map_err(err)?;
+    let params = |keys: &[&str]| -> serde_json::Value {
+        serde_json::Value::Object(keys.iter().map(|&k| (k.to_string(), option_json[k].clone())).collect())
+    };
+    if options.downsample && (options.downsample_freq - rec.rate).abs() > 0.5 && options.downsample_freq > 0.0 {
+        cache.apply("resample", params(&["downsample_freq"]), &mut f64_channels, rec, &mut warnings, |f64_channels, rec, _| {
     if options.downsample && (options.downsample_freq - rec.rate).abs() > 0.5 && options.downsample_freq > 0.0 {
         eprintln!(
             "PROGRESS 30 Downsampling from {} Hz to {} Hz...",
@@ -357,6 +376,11 @@ pub fn run(
         // an unusual requested rate is rounded to millihertz precision.
         rec.rate = output_rate;
     }
+            Ok(serde_json::Value::Null)
+        })?;
+    }
+    if options.filter {
+        cache.apply("filter", params(&["low_hz","high_hz","notch_hz","filter_type","iir_order","fir_taps","notch_width_hz","notch_transition_hz"]), &mut f64_channels, rec, &mut warnings, |f64_channels, rec, _| {
     if options.filter {
         eprintln!("PROGRESS 40 Applying {} bandpass / FIR notch filters...",options.filter_type);
         let rate = rec.rate;
@@ -382,15 +406,49 @@ pub fn run(
             }
         });
     }
+            Ok(serde_json::Value::Null)
+        })?;
+    }
 
     let bad_channels = if options.badchannel {
         detect_bad_channels_configured(rec,options.bad_variance_ratio)
     } else {
         Vec::new()
     };
+    if options.badchannel { cache.add("badchannels", params(&["bad_variance_ratio"])); }
     let ica_on = matches!(options.ica_method.as_str(), "runica" | "picard");
     let asr_on = matches!(options.asr_mode.as_str(), "correct" | "reject");
     let muscle_on = matches!(options.muscle_method.as_str(), "bss_cca" | "icanclean" | "wica");
+    if cache.enabled() {
+        let mut merged = serde_json::json!({});
+        // Keep exactly the same scientific order: ICA -> muscle -> output ASR.
+        for (name, enabled, keys) in [
+            ("ica", ica_on, vec!["ica_method","ica_blink","ica_other","ica_eye_channel","ica_blink_epochs","ica_blink_threshold","ica_blink_threshold_floor","ica_remove_ecg","ica_artefacts","ica_other_threshold","ica_other_threshold_floor","ica_fit_asr","ica_fit_asr_cutoff","ica_seed","filter","low_hz","fir_taps"]),
+            ("muscle", muscle_on, vec!["muscle_method","bsscca_n_remove","bsscca_rho","icc_threshold","icc_segment_seconds","icc_stop_low_hz","icc_stop_high_hz","wica_levels","wica_threshold_mult","ica_seed","filter","low_hz","fir_taps"]),
+            ("asr", asr_on, vec!["asr_mode","asr_cutoff","asr_variant","asr_adapt_alpha","asr_adapt_block_seconds","asr_embed_dim","asr_embed_tau","asr_modes","asr_dbscan_top_k","ica_seed","filter","low_hz","fir_taps"]),
+        ] {
+            if !enabled { continue; }
+            let report = cache.apply(name, params(&keys), &mut f64_channels, rec, &mut warnings, |data, rec, warnings| {
+                let mut stage_options = options.clone();
+                if name != "ica" { stage_options.ica_method = "none".into(); }
+                if name != "muscle" { stage_options.muscle_method = "none".into(); }
+                if name != "asr" { stage_options.asr_mode = "off".into(); }
+                if rec.source_epoch_samples.is_some() && name != "ica" {
+                    warnings.push("Standalone ASR / muscle cleaning skipped for epoched input; ICA keeps trial boundaries and uses ASR only on its training copy".into());
+                    return Ok(serde_json::json!({}));
+                }
+                match run_ica_asr(data, rec.rate, &rec.labels, &bad_channels, &stage_options, rec.source_epoch_samples, warnings) {
+                    Ok((report, mask)) => {
+                        if let Some(mask) = mask { for ch in data { *ch = ch.iter().zip(&mask).filter(|(_,k)| **k).map(|(v,_)|*v).collect(); } }
+                        Ok(report)
+                    }
+                    Err(e) => { warnings.push(format!("ICA/ASR skipped: {e}")); Ok(serde_json::json!({})) }
+                }
+            })?;
+            if let Some(obj) = report.as_object() { for (k,v) in obj { merged[k] = v.clone(); } }
+        }
+        if ica_on || muscle_on || asr_on { ica_report = Some(merged); }
+    } else {
     if ica_on || asr_on || muscle_on {
         {
             let mut trial_options = options.clone();
@@ -412,6 +470,7 @@ pub fn run(
                 Err(e) => warnings.push(format!("ICA/ASR skipped: {e}")),
             }
         }
+    }
     }
     let mut epoch_meta: Option<EpochMeta> = None;
     if let Some(stim) = options.stim_epochs.as_ref().filter(|s| !s.onsets.is_empty()) {
@@ -465,9 +524,16 @@ pub fn run(
             }
         }
     }
+    let mut gedai_quality = None;
     let mut sensai_score = None;
     let mut gedai_reference = "";
     let mut thresholds = Vec::new();
+    if options.gedai && rec.channels.len() >= 4 {
+        let extra = cache.apply("gedai", serde_json::json!({"settings":params(&["gedai_epoch_seconds","gedai_threshold","epoch_before_gedai","epoch_length_seconds","stim_epochs"]),"implementation":"gedai-v4-reference-broadband-mra9"}), &mut f64_channels, rec, &mut warnings, |f64_channels, rec, warnings| {
+            let mut sensai_score = None;
+            let mut gedai_reference = "";
+            let mut thresholds = Vec::new();
+            let mut quality = serde_json::Value::Null;
     if options.gedai && rec.channels.len() >= 4 {
         // Epoched data: one epoch per GEDAI window, and the data are padded to
         // whole windows (then trimmed back) so no trial is cut off.
@@ -483,7 +549,7 @@ pub fn run(
             let win = if win % 2 == 0 { win } else { win + 1 };
             let padded = ((orig_len + win - 1) / win).max(2) * win;
             if padded > orig_len {
-                for ch in &mut f64_channels {
+                for ch in f64_channels.iter_mut() {
                     ch.resize(padded, 0.0);
                 }
             }
@@ -494,7 +560,7 @@ pub fn run(
             );
         }
         match gedai(
-            &mut f64_channels,
+            f64_channels,
             rec.rate,
             &rec.labels,
             gedai_seconds,
@@ -515,26 +581,44 @@ pub fn run(
                 }
                 let len = result.clean.first().map(Vec::len).unwrap_or(0);
                 let len = if epoched.is_some() { orig_len.min(len) } else { len };
-                f64_channels = result.clean;
-                for ch in &mut f64_channels {
+                *f64_channels = result.clean;
+                for ch in f64_channels.iter_mut() {
                     ch.truncate(len);
                 }
+                quality = result.quality;
                 sensai_score = Some(result.score);
                 thresholds = result.thresholds;
             }
             Err(err) => {
-                for ch in &mut f64_channels {
+                for ch in f64_channels.iter_mut() {
                     ch.truncate(orig_len);
                 }
                 warnings.push(format!("GEDAI skipped: {err}"))
             }
         }
     }
-    if options.interpolate && !bad_channels.is_empty() {
-        interpolate_bad_channels(&mut f64_channels, &rec.labels, &bad_channels,options.spline_stiffness,options.spline_regularization);
+            Ok(serde_json::json!({"score":sensai_score,"reference":gedai_reference,"thresholds":thresholds,"quality":quality}))
+        })?;
+        gedai_quality = Some(extra["quality"].clone());
+        if let Some(ratio) = extra["quality"]["median_alpha_power_ratio_common_average"].as_f64() {
+            if ratio < 0.5 { warnings.push(format!("GEDAI reduced median 8–13 Hz power by {:.0}% on a matched common-average reference; compare gentle GEDAI (auto-) or disable this additional cleaner",100.0*(1.0-ratio))); }
+        }
+        sensai_score = extra["score"].as_f64();
+        gedai_reference = if extra["reference"] == "leadfield" { "leadfield" } else if extra["reference"] == "identity" { "identity" } else { "" };
+        thresholds = serde_json::from_value(extra["thresholds"].clone()).map_err(err)?;
     }
-
-    apply_output_reference(&mut f64_channels, &rec.labels, &options.reference_mode, &options.reference_channels)?;
+    if options.interpolate && !bad_channels.is_empty() {
+        cache.apply("interpolate", params(&["spline_stiffness","spline_regularization"]), &mut f64_channels, rec, &mut warnings, |data, rec, _| {
+            interpolate_bad_channels(data, &rec.labels, &bad_channels,options.spline_stiffness,options.spline_regularization);
+            Ok(serde_json::Value::Null)
+        })?;
+    }
+    if !options.reference_mode.is_empty() && options.reference_mode != "none" {
+        cache.apply("reference", params(&["reference_mode","reference_channels"]), &mut f64_channels, rec, &mut warnings, |data, rec, _| {
+            apply_output_reference(data, &rec.labels, &options.reference_mode, &options.reference_channels)?;
+            Ok(serde_json::Value::Null)
+        })?;
+    }
     let mut source_localized = false;
     if options.source_localization {
         eprintln!("PROGRESS 85 Converting to source space (selected inverse and atlas)...");
@@ -564,6 +648,8 @@ pub fn run(
     eprintln!("PROGRESS 90 Writing buffered recording transfer to {}...", output);
     save_portable_with(output, rec, epoch_meta)?;
     Ok(PreprocessSummary {
+        gedai_quality,
+        cache_hits: cache.hits,
         input: input.into(),
         output: output.into(),
         sample_rate: rec.rate,
@@ -986,8 +1072,13 @@ fn gedai(
     epoch_seconds: f64,
     threshold_type: &str,
 ) -> Result<GedaiResult, String> {
+    // Keep the operation transactional: a failed GEDAI fit must not leave an
+    // internal re-reference applied to the caller's otherwise unchanged signal.
+    let mut working = data.to_vec();
+    let data = working.as_mut_slice();
     let n = data.len();
     let samples = data[0].len();
+    let before_alpha = alpha_power_common_average(data, rate);
     for s in 0..samples {
         let avg = data.iter().map(|ch| ch[s]).sum::<f64>() / (n as f64 + 1.0);
         for ch in data.iter_mut() {
@@ -997,9 +1088,10 @@ fn gedai(
     let ref_cov = leadfield_cov(labels).unwrap_or_else(|| DMatrix::identity(n, n));
     eprintln!("PROGRESS 56 GEDAI: computing broadband spatial separation...");
     let (broad, _, broad_score, broad_threshold) =
-        gedai_per_band(&data, rate, epoch_seconds, &ref_cov, threshold_type, true)?;
+        gedai_per_band(&data, rate, epoch_seconds, &ref_cov, "auto-", true)?;
     eprintln!("PROGRESS 60 GEDAI: decomposing signal into MODWT MRA bands...");
-    let bands = modwt_mra_all(&broad, 3);
+    // MATLAB passes 2^3+1 (=9) to modwt as its decomposition level.
+    let bands = modwt_mra_all(&broad, 9);
     let exclude = (600.0 / rate).ceil() as usize;
     let process_bands = bands.len().saturating_sub(exclude).max(1).min(bands.len());
     let mut clean_sum = vec![vec![0.0; broad[0].len()]; n];
@@ -1032,11 +1124,59 @@ fn gedai(
     let template = make_template(&ref_cov, 3);
     let score = sensai_basic(&clean_sum, &artifacts, rate, epoch_seconds, &template, 1.0)
         .unwrap_or(broad_score);
+    // GEDAI uses R = I - 11'/(n+1) internally. R is full rank and its
+    // inverse is I + 11'. Restore the incoming reference before the app's
+    // explicit output-reference step; never add the original signal back.
+    restore_gedai_input_reference(&mut clean_sum);
+    let after_alpha = alpha_power_common_average(&clean_sum, rate);
+    let mut ratios: Vec<f64> = before_alpha.iter().zip(&after_alpha).filter(|(a,b)| **a>1e-12 && b.is_finite()).map(|(a,b)| b/a).collect();
+    ratios.sort_by(f64::total_cmp);
+    let median = if ratios.is_empty() { None } else { Some(ratios[ratios.len()/2]) };
     Ok(GedaiResult {
         clean: clean_sum,
         score,
         thresholds,
+        quality: serde_json::json!({
+            "implementation":"gedai-v4-reference-broadband-mra9",
+            "broadband_mode":"auto-", "mra_levels":9,
+            "internal_reference":"full_rank_pseudo_average", "output_reference":"input_reference_restored_before_requested_reference",
+            "alpha_band_hz":[8,13], "alpha_comparison_reference":"common_average_for_input_and_output",
+            "median_alpha_power_ratio_common_average":median,
+            "input_alpha_power_common_average":before_alpha, "output_alpha_power_common_average":after_alpha,
+        }),
     })
+}
+
+fn restore_gedai_input_reference(data: &mut [Vec<f64>]) {
+    for t in 0..data[0].len() {
+        let sum: f64 = data.iter().map(|ch| ch[t]).sum();
+        for ch in data.iter_mut() { ch[t] += sum; }
+    }
+}
+
+fn alpha_power_common_average(data: &[Vec<f64>], rate: f64) -> Vec<f64> {
+    use rustfft::{num_complex::Complex, FftPlanner};
+    let n=data.len(); let length=data[0].len();
+    let window=(4.0*rate).round() as usize;
+    if n==0 || window<4 || length<window || rate<=26.0 {return vec![0.0;n];}
+    let starts: Vec<usize> = (0..64.min((length-window)/(window/2)+1)).map(|i| {
+        let count=64.min((length-window)/(window/2)+1);
+        if count<=1 {0} else {i*(length-window)/(count-1)}
+    }).collect();
+    let taper: Vec<f64>=(0..window).map(|i|0.5-0.5*(2.0*PI*i as f64/window as f64).cos()).collect();
+    let norm=rate*taper.iter().map(|v|v*v).sum::<f64>();
+    let means: Vec<Vec<f64>>=starts.iter().map(|&start|(0..window).map(|t|data.iter().map(|ch|ch[start+t]).sum::<f64>()/n as f64).collect()).collect();
+    let mut planner=FftPlanner::<f64>::new(); let fft=planner.plan_fft_forward(window);
+    (0..n).into_par_iter().map(|c| {
+        let mut power=0.0;
+        for (k,&start) in starts.iter().enumerate() {
+            let avg=(0..window).map(|t|data[c][start+t]-means[k][t]).sum::<f64>()/window as f64;
+            let mut buffer:Vec<_>=(0..window).map(|t|Complex::new((data[c][start+t]-means[k][t]-avg)*taper[t],0.0)).collect();
+            fft.process(&mut buffer);
+            for i in 1..=window/2 {let frequency=i as f64*rate/window as f64;if frequency>=8.0 && frequency<=13.0 {power+=2.0*buffer[i].norm_sqr()/norm*rate/window as f64;}}
+        }
+        power/starts.len() as f64
+    }).collect()
 }
 
 pub fn gedai_per_band(
@@ -1258,7 +1398,7 @@ fn sensai_basic(
         return None;
     }
     let top = template.ncols();
-    let max_eval_epochs = 16;
+    let max_eval_epochs = 64;
     let eval_epochs: Vec<usize> = if epochs > max_eval_epochs {
         let step = epochs as f64 / max_eval_epochs as f64;
         (0..max_eval_epochs)
@@ -1312,7 +1452,7 @@ fn optimize_threshold(
     noise: f64,
 ) -> f64 {
     let template = make_template(ref_cov, 3);
-    let max_sample_epochs = 12;
+    let max_sample_epochs = 64;
     let (sample_epochs, sample_gevd) = if epochs.len() > max_sample_epochs {
         let step = epochs.len() as f64 / max_sample_epochs as f64;
         let mut se = Vec::with_capacity(max_sample_epochs);
@@ -1332,7 +1472,12 @@ fn optimize_threshold(
         -sensai_basic(&clean, &art, rate, epoch_seconds, &template, noise)
             .unwrap_or(f64::NEG_INFINITY)
     };
-    brent_minimize(&mut f, 0.0, 12.0, 0.15)
+    // The hard component mask makes SENSAI piecewise flat. A single bounded
+    // Brent search can settle on its starting plateau without finding a peak.
+    let mut best_t=0.0; let mut best=f(0.0);
+    for i in 1..=24 { let t=i as f64*0.5; let score=f(t); if score < best-1e-10 {best=score;best_t=t;} }
+    let refined=brent_minimize(&mut f,(best_t-0.5).max(0.0),(best_t+0.5).min(12.0),0.05);
+    if f(refined) < best-1e-10 {refined} else {best_t}
 }
 
 fn brent_minimize<F: FnMut(f64) -> f64>(f: &mut F, a: f64, b: f64, tol: f64) -> f64 {
@@ -1654,6 +1799,42 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_gedai_does_not_change_the_recording_reference() {
+        let mut input=vec![vec![12.0;100],vec![15.0;100],vec![-3.0;100],vec![8.0;100]];
+        let original=input.clone();let labels=vec!["Fz".into(),"Cz".into(),"Pz".into(),"Oz".into()];
+        assert!(gedai(&mut input,250.0,&labels,1.0,"auto").is_err());
+        assert_eq!(input,original);
+    }
+    #[test]
+    fn gedai_internal_reference_is_invertible_without_restoring_artifacts() {
+        let original=vec![vec![10.0,20.0,-4.0],vec![12.0,25.0,3.0],vec![15.0,18.0,7.0]];
+        let mut transformed=original.clone();
+        for t in 0..3 {let mean=original.iter().map(|c|c[t]).sum::<f64>()/4.0;for c in &mut transformed {c[t]-=mean;}}
+        restore_gedai_input_reference(&mut transformed);
+        for (a,b) in original.iter().flatten().zip(transformed.iter().flatten()) {assert!((a-b).abs()<1e-12);}
+    }
+    #[test]
+    fn nine_level_mra_reconstructs_alpha_without_band_loss() {
+        let input=vec![(0..4096).map(|i|(2.0*PI*10.0*i as f64/250.0).sin()).collect::<Vec<_>>()];
+        let bands=modwt_mra_all(&input,9);
+        assert_eq!(bands.len(),10);
+        for t in 0..4096 {let reconstructed=bands.iter().map(|b|b[0][t]).sum::<f64>();assert!((reconstructed-input[0][t]).abs()<1e-10);}
+    }
+    #[test]
+    fn gedai_preserves_brain_like_alpha_while_removing_focal_burst() {
+        let rate=100.0;let len=3000;let mut data=vec![vec![0.0;len];8];
+        for t in 0..len {for c in 0..3 {data[c][t]=(10.0-c as f64)*(2.0*PI*(10+c) as f64*t as f64/rate).sin();}
+            if (1000..1100).contains(&t) {data[7][t]=200.0*(2.0*PI*5.0*t as f64/rate).sin();}}
+        let reference=DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![5.0,3.0,1.0,0.01,0.01,0.01,0.01,0.01]));
+        let (clean,_,_,_)=gedai_per_band(&data,rate,1.0,&reference,"0",false).unwrap();
+        let before=data[7][1000..1100].iter().map(|x|x*x).sum::<f64>();
+        let after=clean[7][1000..1100].iter().map(|x|x*x).sum::<f64>();
+        assert!(after<before*0.1,"strong focal artifact must still be removed");
+        let before=data[0].iter().map(|x|x*x).sum::<f64>();let after=clean[0].iter().map(|x|x*x).sum::<f64>();
+        assert!(after/before>0.95,"brain-like alpha must be retained");
+    }
 
     #[test]
     fn cut_stim_epochs_follows_mne_sample_convention() {
@@ -2012,7 +2193,7 @@ fn run_ica_asr(
         }
         let stage = |s: &StageReport| serde_json::json!({
             "ran": s.ran, "components": s.components, "removed": s.removed, "removed_class": s.removed_class,
-            "signals_lost": s.signals_lost, "note": s.note,
+            "signals_lost": s.signals_lost, "note": s.note, "review": s.review,
         });
         for n in &rep.notes {
             if !n.starts_with("Blink detection filters saved trials independently") { warnings.push(n.clone()); }

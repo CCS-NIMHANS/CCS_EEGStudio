@@ -1,3 +1,4 @@
+import 'reference_channel_picker.dart';
 import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ Future<bool> showProcessingSettings(
   AnalysisConfig config,
   String stage, {
   String? section,
+  List<String> availableChannels = const [],
 }) async {
   final taps = TextEditingController(text: '${config.firTaps}'),
       width = TextEditingController(text: '${config.notchWidthHz}'),
@@ -40,7 +42,9 @@ Future<bool> showProcessingSettings(
       average = config.psdAverage,
       psdMethod = config.psdMethod,
       psdMultitaperAdaptive = config.psdMultitaperAdaptive;
-  final psdMultitaperNw = TextEditingController(text: '${config.psdMultitaperNw}');
+  final psdMultitaperNw = TextEditingController(
+    text: '${config.psdMultitaperNw}',
+  );
   final definitions = <String, (String, String, double, double, bool)>{
     'fooof_max_peaks': ('FOOOF maximum peaks', '20', 0, 20, true),
     'fooof_peak_threshold': ('FOOOF peak threshold (SD)', '2', 0.01, 10, false),
@@ -310,7 +314,19 @@ Future<bool> showProcessingSettings(
                         ],
                         onChanged: (v) => setState(() => reference = v!),
                       ),
-                      if (reference == 'channels')
+                      if (reference == 'channels' &&
+                          availableChannels.isNotEmpty)
+                        ReferenceChannelPicker(
+                          channels: availableChannels,
+                          selected: references.text
+                              .split(',')
+                              .map((s) => s.trim())
+                              .where((s) => s.isNotEmpty)
+                              .toList(),
+                          onChanged: (v) =>
+                              setState(() => references.text = v.join(', ')),
+                        ),
+                      if (reference == 'channels' && availableChannels.isEmpty)
                         field(
                           references,
                           'Reference channel labels',
@@ -608,7 +624,9 @@ Future<bool> showProcessingSettings(
                       ),
                       DropdownMenuItem(
                         value: 'multitaper',
-                        child: Text("Adaptive Multitaper (Thomson / Slepian DPSS)"),
+                        child: Text(
+                          "Adaptive Multitaper (Thomson / Slepian DPSS)",
+                        ),
                       ),
                     ],
                     onChanged: (v) => setState(() => psdMethod = v!),
@@ -623,7 +641,9 @@ Future<bool> showProcessingSettings(
                       items: const [
                         DropdownMenuItem(
                           value: 'median',
-                          child: Text('Median average (robust against transients)'),
+                          child: Text(
+                            'Median average (robust against transients)',
+                          ),
                         ),
                         DropdownMenuItem(
                           value: 'mean',
@@ -839,12 +859,16 @@ Future<bool> showProcessingSettings(
                   if (psdMethod == 'welch') {
                     final value = double.parse(window.text);
                     if (!value.isFinite || value <= 0)
-                      throw const FormatException('PSD window must be positive.');
+                      throw const FormatException(
+                        'PSD window must be positive.',
+                      );
                     psdWinVal = value;
                   } else {
                     final nw = double.parse(psdMultitaperNw.text);
                     if (!nw.isFinite || nw < 1.0 || nw > 20.0)
-                      throw const FormatException('Multitaper NW must be between 1.0 and 20.0.');
+                      throw const FormatException(
+                        'Multitaper NW must be between 1.0 and 20.0.',
+                      );
                   }
                   final parsed = <Map<String, dynamic>>[];
                   for (final line
@@ -911,7 +935,8 @@ Future<bool> showProcessingSettings(
                     ..psdMethod = psdMethod
                     ..psdAverage = average
                     ..psdWindowSeconds = psdWinVal
-                    ..psdMultitaperNw = double.tryParse(psdMultitaperNw.text) ?? 3.0
+                    ..psdMultitaperNw =
+                        double.tryParse(psdMultitaperNw.text) ?? 3.0
                     ..psdMultitaperAdaptive = psdMultitaperAdaptive
                     ..psdBands = parsed
                     ..featureParameters = advancedValues;

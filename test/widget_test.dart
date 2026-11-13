@@ -46,7 +46,7 @@ void main() {
 
     await tester.tap(find.text('Source Space'));
     await tester.pumpAndSettle();
-    expect(find.text('Run Source Localisation'), findsOneWidget);
+    expect(find.text('Apply source projection'), findsOneWidget);
 
     await tester.tap(find.text('Plots & Report'));
     await tester.pumpAndSettle();
@@ -81,6 +81,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Fixed window length'), findsNothing);
+      await tester.ensureVisible(find.text('6. Saved output data structure'));
+      await tester.tap(find.text('6. Saved output data structure'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Continuous recording'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Fixed-length windows').last);
@@ -102,6 +105,9 @@ void main() {
     await tester.tap(find.text('Batch Workspace'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Columns'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('6. Saved output data structure'));
+    await tester.tap(find.text('6. Saved output data structure'));
     await tester.pumpAndSettle();
     expect(find.text('Epoch length (s)'), findsOneWidget);
     await tester.tap(find.text('Continuous recording'));
@@ -130,6 +136,9 @@ void main() {
     await tester.tap(find.text('Batch Workspace'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Columns'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('6. Saved output data structure'));
+    await tester.tap(find.text('6. Saved output data structure'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Continuous recording'));
     await tester.pumpAndSettle();
@@ -386,39 +395,40 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('batch workspace supports tabbed navigation and global output folder', (
-    tester,
-  ) async {
-    await pumpApp(tester);
-    await tester.tap(find.text('Batch Workspace'));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'batch workspace supports tabbed navigation and global output folder',
+    (tester) async {
+      await pumpApp(tester);
+      await tester.tap(find.text('Batch Workspace'));
+      await tester.pumpAndSettle();
 
-    // Verify global batch output directory bar is present
-    expect(find.text('BATCH OUTPUT DIRECTORY (ALL STAGES)'), findsOneWidget);
-    expect(find.textContaining('Next to source files'), findsWidgets);
+      // Verify global batch output directory bar is present
+      expect(find.text('BATCH OUTPUT DIRECTORY (ALL STAGES)'), findsOneWidget);
+      expect(find.textContaining('Next to source files'), findsWidgets);
 
-    // Verify tabbed stage tabs
-    expect(find.text('Stage 1: Preprocessing'), findsWidgets);
-    expect(find.text('Stage 2: Feature Extraction'), findsWidgets);
-    expect(find.text('Stage 3: Plots'), findsWidgets);
-    expect(find.text('Stage 4: Group Statistics'), findsWidgets);
+      // Verify tabbed stage tabs
+      expect(find.text('Stage 1: Preprocessing'), findsWidgets);
+      expect(find.text('Stage 2: Feature Extraction'), findsWidgets);
+      expect(find.text('Stage 3: Plots'), findsWidgets);
+      expect(find.text('Stage 4: Group Statistics'), findsWidgets);
 
-    // Tab 0 is active by default (Preprocessing)
-    expect(find.text('1. Channel setup & montage'), findsOneWidget);
+      // Tab 0 is active by default (Preprocessing)
+      expect(find.text('1. Channel setup & montage'), findsOneWidget);
 
-    // Switch to Stage 2: Feature Extraction
-    await tester.tap(find.text('Stage 2: Feature Extraction').first);
-    await tester.pumpAndSettle();
-    expect(find.text('Run Feature Extraction Only'), findsOneWidget);
+      // Switch to Stage 2: Feature Extraction
+      await tester.tap(find.text('Stage 2: Feature Extraction').first);
+      await tester.pumpAndSettle();
+      expect(find.text('Run Feature Extraction Only'), findsOneWidget);
 
-    // Switch to Stage 3: Plots
-    await tester.tap(find.text('Stage 3: Plots').first);
-    await tester.pumpAndSettle();
-    expect(find.text('Run Plotting Only'), findsOneWidget);
+      // Switch to Stage 3: Plots
+      await tester.tap(find.text('Stage 3: Plots').first);
+      await tester.pumpAndSettle();
+      expect(find.text('Run Plotting Only'), findsOneWidget);
 
-    // Switch to Stage 4: Group Statistics
-    await tester.tap(find.text('Stage 4: Group Statistics').first);
-    await tester.pumpAndSettle();
-    expect(find.text('Open Group Analysis Workbench'), findsOneWidget);
-  });
+      // Switch to Stage 4: Group Statistics
+      await tester.tap(find.text('Stage 4: Group Statistics').first);
+      await tester.pumpAndSettle();
+      expect(find.text('Open Group Analysis Workbench'), findsOneWidget);
+    },
+  );
 }

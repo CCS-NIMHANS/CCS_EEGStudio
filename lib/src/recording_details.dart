@@ -1,3 +1,4 @@
+import 'ica_review.dart';
 import 'package:flutter/material.dart';
 import 'models.dart';
 
@@ -188,6 +189,13 @@ Future<void> showRecordingDetails(BuildContext context, EegRecording r) =>
           ),
         ),
         actions: [
+          if (icaReviewReport(r).isNotEmpty)
+            TextButton.icon(
+              onPressed: () => showIcaReview(context, r),
+              icon: const Icon(Icons.grid_view),
+              label: const Text('ICA components…'),
+            ),
+
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('Close'),

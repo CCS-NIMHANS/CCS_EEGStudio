@@ -4,6 +4,27 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.39]
+
+### Interactive preprocessing, retained ICA review and linked source analysis
+
+- **Interactive preprocessing:** separate collapsed bars for resampling, filters, channel detection, ICA/ICLabel, muscle cleaning, output ASR, GEDAI, interpolation and reference. Apply, disable or update steps in any click order while retaining the scientific processing order. Save the exact displayed combination separately from a full configured pipeline run.
+- **Persistent per-recording cache:** completed combinations and lossless intermediate stages survive closing and reopening a file. Reuse unchanged upstream stages, including ICA. Ignore equivalent numeric settings, inactive parameters and ineffective resampling when deciding whether to recompute. Invalidate stale results when source content, metadata or relevant processing changes. Open the exact cache folder from the panel; use an application-support fallback for read-only inputs.
+- **ICA review:** retain both decomposition stages, scalp weights, component traces over the full recording, ICLabel probabilities, removal decisions, actual threshold criteria and stopping limits. Navigate time windows and individual saved trials. Report blink detection separately from components actually removed, and offer an explicit lower-threshold comparison without changing the global threshold default.
+- **GEDAI alpha-preservation correction:** use the reference implementation's gentle broadband pass and nine-level wavelet decomposition, improve threshold search across flat objective regions, and restore the incoming reference before applying the requested output reference. Report matched-reference 8–13 Hz power retention. Refresh older GEDAI caches while reusing compatible upstream stages. **GEDAI outputs can change after this update; review regenerated results before continuing an existing analysis.**
+- **Source analysis:** apply and cache inverse projections, switch channel/ROI waveforms instantly, and inspect scalp topoplots or sagittal/coronal/axial template glass-brain views with Desikan–Killiany ROI outlines. Match colours across ROI outlines, labels and waveforms. Source previews use lossless CCSEEG storage independently of the selected export format.
+- **Waveform-first layout:** move linked head plots, ROI selection and model controls into the Source analysis side panel. Use one waveform timeline/cursor instead of an independent map slider. Support point, mean and RMS window summaries without crossing trial boundaries.
+- **Honest amplitude comparison:** label scalp µV and source model amplitudes separately. Offer standardized, dimensionless z-score patterns with the same fixed colour scale and palette across channel/source maps; retain original waveform units. Keep native-unit colour ranges stable while navigating a recording/trial.
+- **Reference selection:** searchable existing-channel picker with linked-electrode support and visible selected chips. Only retained EEG electrodes are offered; retain auxiliary reference electrodes in Channel setup when required.
+- **Viewer fixes:** reset raw/processed display state when changing recordings, preserve linked cursor timing across channel/source switches, provide readable ROI label gutters, and defer selection callbacks until after widget updates.
+
+### Upgrade notes
+
+- Cache folders are beside the input under `.ccs_eegstudio_cache/`, independent of the export folder; the panel shows their exact location. Cache files contain recording samples and may use substantial disk space.
+- Older ICA results that retained only a short trace need one fresh ICA run to populate full-recording review and exact criteria.
+- Glass-brain geometry is the bundled fsaverage/aparc **template**, not participant-specific MRI. Custom-atlas waveforms remain available when custom geometry has not been supplied. Scalp voltages and inverse-model amplitudes are different quantities; z-score mode compares patterns rather than physical units.
+- Includes macOS, Windows and Linux installers plus SHA-256 checksums through the desktop release workflow.
+
 ## [1.2.38]
 
 ### Uniform 4-stage batch workspace across EEG, ERP & Microstates, Stage 1 preprocessing & state dynamics alignment

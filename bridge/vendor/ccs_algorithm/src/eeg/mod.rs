@@ -172,3 +172,5 @@ pub mod signal;
 pub mod source_loc;
 pub mod spectral;
 pub mod vhdr_loader;
+
+mod preprocessing_cache;

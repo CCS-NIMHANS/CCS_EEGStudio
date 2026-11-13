@@ -1,6 +1,6 @@
 [package]
 name = "ccs_eeg_engine"
-version = "1.2.38"
+version = "1.2.39"
 edition = "2021"
 publish = false
 
@@ -33,3 +33,7 @@ approx = "0.5"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[workspace]
+resolver = "2"
+members = ["vendor/ccs_algorithm", "vendor/ccs_ica"]

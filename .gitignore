@@ -82,3 +82,6 @@ reports/
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Per-recording interactive preprocessing checkpoints
+.ccs_eegstudio_cache/

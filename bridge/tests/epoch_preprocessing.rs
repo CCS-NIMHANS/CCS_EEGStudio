@@ -53,3 +53,30 @@ fn reject_asr_cannot_invalidate_event_positions() {
     let error=run(&mut rec,"fixture","/tmp/ccs-should-not-write.ccseeg",&opts).err().unwrap();
     assert!(error.contains("preserve event timing"));
 }
+
+// The established desktop release workflow runs this target on all platforms.
+// Include artifact/ICA regressions here so they are part of that same gate.
+#[path = "ica_asr_preprocess.rs"]
+mod artifact_regressions;
+
+#[test]
+fn gedai_keeps_alpha_while_rejecting_a_large_focal_burst() {
+    let rate = 100.0;
+    let mut data = vec![vec![0.0; 3000]; 8];
+    for t in 0..3000 {
+        for c in 0..3 {
+            data[c][t] = (10.0-c as f64)*(2.0*std::f64::consts::PI*(10+c) as f64*t as f64/rate).sin();
+        }
+        if (1000..1100).contains(&t) {
+            data[7][t]=200.0*(2.0*std::f64::consts::PI*5.0*t as f64/rate).sin();
+        }
+    }
+    let reference=nalgebra::DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![5.0,3.0,1.0,0.01,0.01,0.01,0.01,0.01]));
+    let (clean,_,_,_)=ccs_algorithm::eeg::preprocessing::gedai_per_band(&data,rate,1.0,&reference,"0",false).unwrap();
+    let artifact_before=data[7][1000..1100].iter().map(|x|x*x).sum::<f64>();
+    let artifact_after=clean[7][1000..1100].iter().map(|x|x*x).sum::<f64>();
+    let alpha_before=data[0].iter().map(|x|x*x).sum::<f64>();
+    let alpha_after=clean[0].iter().map(|x|x*x).sum::<f64>();
+    assert!(artifact_after < artifact_before*0.1);
+    assert!(alpha_after/alpha_before > 0.95);
+}

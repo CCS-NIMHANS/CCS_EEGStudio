@@ -72,6 +72,27 @@ fn ica_blink_stage_runs_and_reports() {
     assert_eq!(ica["ica"]["method"], "runica");
     assert!(ica["ica"]["blink_events"].as_u64().unwrap() >= 10);
     assert_eq!(ica["ica"]["blink_stage"]["ran"], true);
+    let stage = &ica["ica"]["blink_stage"];
+    let count = stage["components"].as_u64().unwrap() as usize;
+    let review = &stage["review"];
+    assert_eq!(review["probabilities"].as_array().unwrap().len(), count);
+    assert_eq!(review["mixing"].as_array().unwrap().len(), LABELS.len());
+    assert_eq!(review["traces"].as_array().unwrap().len(), count);
+    assert_eq!(review["class_names"].as_array().unwrap().len(), 7);
+    for row in review["probabilities"].as_array().unwrap() {
+        let sum: f64 = row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).sum();
+        assert!((sum - 1.0).abs() < 1e-4);
+    }
+    assert_eq!(review["trace_duration_seconds"], 60.0);
+    assert!(review["traces"][0].as_array().unwrap().len() > 6000);
+    let criteria = &review["criteria"];
+    let threshold = criteria["applied_threshold"].as_f64().unwrap();
+    assert!(threshold <= 0.99 && threshold >= 0.60 - 0.0005);
+    for removed in stage["removed"].as_array().unwrap() {
+        let scores = &review["probabilities"][removed.as_u64().unwrap() as usize - 1];
+        assert!(scores[2].as_f64().unwrap() >= threshold || scores[3].as_f64().unwrap() >= threshold);
+    }
+
     assert_eq!(summary.channels, LABELS.len());
 }
 
@@ -237,4 +258,54 @@ fn invalid_variant_options_rejected() {
         &options(serde_json::json!({"muscle_method": "magic"}))
     )
     .is_err());
+}
+
+#[test]
+fn persistent_prefix_cache_reuses_ica_for_later_steps_and_invalidates_upstream_changes() {
+    let dir = std::env::temp_dir().join(format!("ccs-prefix-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cache = dir.join("stages");
+    let make_options = |low: f64, reference: &str, cached: bool| options(serde_json::json!({
+        "ica_method":"runica", "ica_other":false, "filter":true, "low_hz":low, "high_hz":40.0,"notch_hz":0,
+        "reference_mode":reference, "preview_cache_dir":if cached {Some(cache.to_str().unwrap())} else {None},
+    }));
+    let first = preprocessing::run(&mut synthetic(60,250.0),"source",dir.join("first.ccseeg").to_str().unwrap(),&make_options(1.0,"none",true)).unwrap();
+    assert!(first.cache_hits.is_empty());
+    let mut cached_rec = synthetic(60,250.0);
+    let second = preprocessing::run(&mut cached_rec,"source",dir.join("second.ccseeg").to_str().unwrap(),&make_options(1.0,"average",true)).unwrap();
+    assert!(second.cache_hits.contains(&"ica".to_string()));
+    assert!(second.cache_hits.contains(&"filter".to_string()));
+    assert!(first.ica == second.ica, "ICA review metadata must survive checkpoint serialization exactly");
+    let mut fresh_rec = synthetic(60,250.0);
+    preprocessing::run(&mut fresh_rec,"source",dir.join("fresh.ccseeg").to_str().unwrap(),&make_options(1.0,"average",false)).unwrap();
+    assert_eq!(cached_rec.channels, fresh_rec.channels, "checkpoint reuse must preserve exact output samples");
+    let changed = preprocessing::run(&mut synthetic(60,250.0),"source",dir.join("changed.ccseeg").to_str().unwrap(),&make_options(1.5,"average",true)).unwrap();
+    assert!(!changed.cache_hits.contains(&"ica".to_string()),"ICA must refit when its filtered input changes");
+    let mut no_op = make_options(1.5,"average",true);
+    no_op.downsample = true; no_op.downsample_freq=250.0;
+    let toggled = preprocessing::run(&mut synthetic(60,250.0),"source",dir.join("noop.ccseeg").to_str().unwrap(),&no_op).unwrap();
+    assert!(toggled.cache_hits.contains(&"ica".to_string()),"ineffective resampling must not invalidate ICA");
+    // A fresh run with the same new settings restores every enabled stage.
+    let reopened = preprocessing::run(&mut synthetic(60,250.0),"source",dir.join("reopened.ccseeg").to_str().unwrap(),&make_options(1.5,"average",true)).unwrap();
+    assert_eq!(reopened.cache_hits, vec!["filter","ica","reference"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn review_retains_all_odd_length_trials_without_sampling_across_boundaries() {
+    let mut rec = synthetic(60, 250.0);
+    let points = 251usize;
+    let trials = rec.channels[0].len() / points;
+    for ch in &mut rec.channels { ch.truncate(trials * points); }
+    rec.source_epoch_samples = Some(points);
+    let path = std::env::temp_dir().join(format!("ccs-ica-review-trials-{}.ccseeg",std::process::id()));
+    let summary = preprocessing::run(&mut rec,"odd-trials",path.to_str().unwrap(),&options(serde_json::json!({"ica_method":"runica","ica_other":false}))).unwrap();
+    let report = summary.ica.unwrap();
+    let review = &report["ica"]["blink_stage"]["review"];
+    assert_eq!(report["ica"]["blink_stage"]["ran"],true);
+    assert_eq!(review["trace_points_per_epoch"],126);
+    assert_eq!(review["epoch_duration_seconds"],251.0/250.0);
+    assert_eq!(review["traces"][0].as_array().unwrap().len(),126*trials);
+    assert_eq!(review["trace_duration_seconds"],(251*trials) as f64 / 250.0);
+    std::fs::remove_file(path).unwrap();
 }

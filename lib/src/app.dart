@@ -1,3 +1,8 @@
+import 'source_review_workspace.dart';
+import 'package:crypto/crypto.dart';
+import 'reference_channel_picker.dart';
+import 'preprocessing_preview.dart';
+import 'ica_review.dart';
 import 'batch_channels.dart';
 import 'feature_window_warnings.dart';
 import 'app_instance.dart';
@@ -325,9 +330,224 @@ class _FeatureHomeState extends State<FeatureHome>
 
   /// Stage 1 output.
   EegRecording? _preprocessed;
+  PreprocessingPreview? _previewSession;
+  EegRecording? _interactivePreview;
+  final Map<String, Map<String, dynamic>> _appliedPreviewSteps = {};
+
+  void _resetInteractivePreview() {
+    final previous = _previewSession;
+    _previewSession = null;
+    _interactivePreview = null;
+    _appliedPreviewSteps.clear();
+    if (previous != null) unawaited(previous.dispose());
+  }
+
+  Future<void> _restoreInteractivePreview(EegRecording recording) async {
+    final session = PreprocessingPreview(recording);
+    _previewSession = session;
+    setState(() => _running = true);
+    _log('Checking persistent preprocessing cache…');
+    try {
+      final result = await session.restore(
+        service: _service,
+        onProgress: (p, m) {
+          if (mounted) setState(() => _progress = p);
+          _log(m);
+        },
+      );
+      if (!mounted || !identical(_previewSession, session)) return;
+      if (result != null) {
+        setState(() {
+          _interactivePreview = result;
+          _appliedPreviewSteps
+            ..clear()
+            ..addAll(session.restoredSteps);
+          _cfg.applyPreprocessingJson(session.restoredConfiguration);
+          final excluded =
+              (session.restoredSettings['non_eeg_channels'] as List? ?? [])
+                  .cast<String>();
+          if (session.restoredSettings.containsKey('non_eeg_channels'))
+            for (final label in recording.labels) {
+              _channels = _channels.withKind(
+                label,
+                excluded.contains(label) ? ChannelKind.other : ChannelKind.eeg,
+              );
+            }
+        });
+        _syncControllersFromConfig();
+        _log(
+          'Restored saved preprocessing state without rerunning the engine.',
+        );
+      }
+      _log('Preprocessing cache: ${session.cachePath}');
+    } catch (e) {
+      _log('No reusable preprocessing cache: $e');
+    } finally {
+      if (mounted && identical(_previewSession, session))
+        setState(() => _running = false);
+    }
+  }
+
+  List<String> get _referenceCandidates =>
+      (_previewSession?.baseline.labels ??
+              _raw?.labels ??
+              _activeRecording?.labels ??
+              [])
+          .where((s) => !_channels.nonEegChannels.contains(s))
+          .toList();
+  Map<String, dynamic> get _interactiveIcaSettings => {
+    for (final e in _cfg.toPreprocessingOptions().toJson().entries)
+      if (e.key.startsWith('ica_'))
+        e.key: e.key == 'ica_method' && e.value == 'none' ? 'runica' : e.value,
+  };
+
+  Future<void> _togglePreviewStep(
+    String id,
+    Map<String, dynamic> settings,
+  ) async {
+    if (_running || _batchMaximized) return;
+    final baseline = _raw ?? _activeRecording;
+    if (baseline == null) return;
+    _previewSession ??= PreprocessingPreview(baseline);
+    final next = Map<String, Map<String, dynamic>>.from(_appliedPreviewSteps);
+    if (next.containsKey(id) &&
+        preprocessingSettingsEqual(next[id], settings)) {
+      next.remove(id);
+    } else {
+      next[id] = Map<String, dynamic>.from(settings);
+    }
+    setState(() {
+      _running = true;
+      _stopRequested = false;
+      _progress = 0;
+    });
+    try {
+      final result = await _previewSession!.compute(
+        service: _service,
+        steps: next,
+        configuration: _cfg.toPreprocessingJson(),
+        settings: _cfg
+            .toPreprocessingOptions(nonEegChannels: _channels.nonEegChannels)
+            .toJson(),
+        onProgress: (p, m) {
+          if (mounted) setState(() => _progress = p);
+          _log(m);
+        },
+      );
+      if (!mounted || _stopRequested) return;
+      setState(() {
+        _appliedPreviewSteps
+          ..clear()
+          ..addAll(next);
+        _interactivePreview = result;
+        _source = null;
+        _sourceInput = null;
+        _selection = const ViewerSelection.empty();
+      });
+    } catch (e) {
+      _log('Interactive preprocessing failed; previous waveform retained: $e');
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
+  Future<void> _saveInteractivePreview() async {
+    final recording = _interactivePreview;
+    if (recording == null || _running) return;
+    final path = await saveRecordingDialog(
+      context,
+      dialogTitle: 'Save displayed preprocessing combination',
+      fileName: erpOutputName(
+        _previewSession!.baseline.path,
+        extension: RecordingStorage.extension,
+        epoched: recording.isEpoched,
+        cleaned: true,
+      ),
+      allowedExtensions: [RecordingStorage.extension],
+      type: FileType.custom,
+    );
+    if (path == null || !mounted) return;
+    setState(() => _running = true);
+    try {
+      await RecordingStorage.save(
+        recording,
+        RecordingStorage.withExtension(path),
+      );
+      _log('Saved displayed preprocessing combination: $path');
+    } catch (e) {
+      _log('Could not save preview: $e');
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
+  Widget _previewStep(
+    String id,
+    String title,
+    String summary,
+    Map<String, dynamic> settings,
+    List<Widget> children,
+  ) {
+    final applied = _appliedPreviewSteps.containsKey(id);
+    final changed =
+        applied &&
+        !preprocessingSettingsEqual(_appliedPreviewSteps[id], settings);
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      child: ExpansionTile(
+        key: ValueKey('interactive-step-$id'),
+        initiallyExpanded: false,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 8),
+        childrenPadding: const EdgeInsets.all(10),
+        leading: Icon(
+          applied ? Icons.check_circle : Icons.radio_button_unchecked,
+          color: applied ? _accentGreen : _textMuted,
+          size: 20,
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+        ),
+        subtitle: Text(
+          applied
+              ? (changed
+                    ? 'Applied · settings changed'
+                    : id == 'ica' && _activeRecording != null
+                    ? icaOcularOutcome(_activeRecording!)
+                    : 'Applied to waveform')
+              : summary,
+          style: const TextStyle(fontSize: 11),
+        ),
+        trailing: TextButton(
+          onPressed:
+              _running || _batchMaximized || (_raw ?? _activeRecording) == null
+              ? null
+              : () => _togglePreviewStep(id, settings),
+          child: Text(
+            changed
+                ? 'Update'
+                : applied
+                ? 'Disable'
+                : 'Apply',
+          ),
+        ),
+        children: [
+          ...children,
+          if (changed)
+            TextButton(
+              onPressed: _running
+                  ? null
+                  : () => _togglePreviewStep(id, _appliedPreviewSteps[id]!),
+              child: const Text('Disable applied version'),
+            ),
+        ],
+      ),
+    );
+  }
 
   /// Stage 2 output (selected source inverse projection).
   EegRecording? _source;
+  EegRecording? _sourceInput;
 
   /// A file loaded straight into Stage 3, bypassing Stages 1 and 2.
   ///
@@ -350,8 +570,17 @@ class _FeatureHomeState extends State<FeatureHome>
   ViewerSelection _selection = const ViewerSelection.empty();
 
   /// Resolved extraction input: explicit load > source > preprocessed > raw.
-  EegRecording? get _activeRecording =>
-      _directInput ?? _source ?? _preprocessed ?? _raw;
+  EegRecording? get _activeRecording {
+    if (_selectedModule == _Module.preprocess ||
+        _selectedModule == _Module.loadRaw) {
+      return _interactivePreview ?? _directInput ?? _preprocessed ?? _raw;
+    }
+    return _directInput ??
+        _source ??
+        _interactivePreview ??
+        _preprocessed ??
+        _raw;
+  }
 
   _Stage? get _activeStage {
     if (_directInput != null) return _Stage.direct;
@@ -365,6 +594,7 @@ class _FeatureHomeState extends State<FeatureHome>
   List<EegRecording> get _stageRecordings {
     final result = <EegRecording>[];
     for (final recording in [
+      _interactivePreview,
       _directInput,
       _source,
       _preprocessed,
@@ -568,7 +798,8 @@ class _FeatureHomeState extends State<FeatureHome>
     if (path == null) return;
     try {
       final file = File(path);
-      final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final json =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
       setState(() {
         _cfg.applyPreprocessingJson(json);
         _syncControllersFromConfig();
@@ -737,6 +968,7 @@ class _FeatureHomeState extends State<FeatureHome>
 
   @override
   void dispose() {
+    _resetInteractivePreview();
     for (final c in [
       _start,
       _end,
@@ -864,6 +1096,7 @@ class _FeatureHomeState extends State<FeatureHome>
       _log('Loading ${_shortName(path)}…');
       final rec = await _loadRecordingWithFeedback(path);
       if (_stopRequested || !mounted) return;
+      _resetInteractivePreview();
       _restoreSavedEpochProtocol(rec);
       setState(() {
         for (final existing in _stageRecordings) {
@@ -876,6 +1109,7 @@ class _FeatureHomeState extends State<FeatureHome>
         _selectedModule = destination ?? _Module.loadRaw;
         _preprocessed = null;
         _source = null;
+        _sourceInput = null;
         _directInput = null;
         final csv =
             '${File(rec.path).parent.path}${Platform.pathSeparator}${_stem(rec.path)}.features.csv';
@@ -890,6 +1124,7 @@ class _FeatureHomeState extends State<FeatureHome>
       });
       _logChannelDetection();
       _log('✓ Loaded ${_shortName(path)}');
+      await _restoreInteractivePreview(rec);
     } catch (e) {
       _log('✗ ERROR ${_shortName(path)}: $e');
     } finally {
@@ -930,9 +1165,13 @@ class _FeatureHomeState extends State<FeatureHome>
   }
 
   void _selectOpenedRecording(EegRecording recording) {
+    if (identical(recording, _interactivePreview)) return;
+    _resetInteractivePreview();
     _restoreSavedEpochProtocol(recording);
     setState(() {
       _raw = recording;
+      _source = null;
+      _sourceInput = null;
       _selectedModule = _Module.loadRaw;
 
       _directInput = recording;
@@ -948,6 +1187,7 @@ class _FeatureHomeState extends State<FeatureHome>
       _channels = ChannelTypeMap.autoDetect(recording.labels);
     });
     _log('Active recording: ${_shortName(recording.path)}');
+    unawaited(_restoreInteractivePreview(recording));
   }
 
   /// Loads a preprocessed file as the Stage 2 input, bypassing Stage 1.
@@ -965,9 +1205,12 @@ class _FeatureHomeState extends State<FeatureHome>
     try {
       _log('Loading ${_shortName(path)} into Stage 2…');
       final rec = await _loadRecordingWithFeedback(path);
+      _resetInteractivePreview();
       setState(() {
+        _raw = rec;
         _preprocessed = rec;
         _source = null;
+        _sourceInput = null;
         _directInput = null;
         _featuresCsv = null;
         _channels = _channels.rebaseOnto(rec.labels);
@@ -1090,11 +1333,13 @@ class _FeatureHomeState extends State<FeatureHome>
 
   void _clearPipeline() {
     if (_running) return;
+    _resetInteractivePreview();
     setState(() {
       _raw = null;
       _openedRecordings.clear();
       _preprocessed = null;
       _source = null;
+      _sourceInput = null;
       _directInput = null;
       _featuresCsv = null;
       _plotsDir = null;
@@ -1109,7 +1354,7 @@ class _FeatureHomeState extends State<FeatureHome>
   // ══════════════════════════════════════════════════════════════════════
 
   Future<void> _runPreprocessing() async {
-    final input = _activeRecording;
+    final input = _previewSession?.baseline ?? _activeRecording;
     if (input == null) {
       _log('Load a raw recording first.');
       return;
@@ -1193,24 +1438,31 @@ class _FeatureHomeState extends State<FeatureHome>
         },
       );
       setState(() {
+        _resetInteractivePreview();
         _preprocessed = cleaned;
         _openedRecordings.removeWhere((r) => r.path == cleaned.path);
         _openedRecordings.add(cleaned);
         _source = null;
+        _sourceInput = null;
         _directInput = null;
         _channels = _channels.rebaseOnto(cleaned.labels);
         _selection = const ViewerSelection.empty();
       });
-      final hasErpOrEpochs = _presetKey == 'erp' ||
+      final hasErpOrEpochs =
+          _presetKey == 'erp' ||
           _pipeline.contains(_Module.epochs) ||
           _pipeline.contains(_Module.erpAnalysis);
       if (hasErpOrEpochs) {
-        final nextMod = cleaned.isEpoched ? _Module.erpAnalysis : _Module.epochs;
+        final nextMod = cleaned.isEpoched
+            ? _Module.erpAnalysis
+            : _Module.epochs;
         setState(() => _selectedModule = nextMod);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✓ Preprocessing complete. Advanced to ${_moduleLabel(nextMod)}.'),
+              content: Text(
+                '✓ Preprocessing complete. Advanced to ${_moduleLabel(nextMod)}.',
+              ),
               duration: const Duration(seconds: 4),
             ),
           );
@@ -1226,19 +1478,56 @@ class _FeatureHomeState extends State<FeatureHome>
     }
   }
 
-  Future<void> _runSourceLocalisation() async {
-    final input = _preprocessed ?? _raw;
+  Future<void> _runSourceLocalisation({bool preview = false}) async {
+    final input = _interactivePreview ?? _preprocessed ?? _raw;
     if (input == null) {
       _log('Run Stage 1 or load a preprocessed file first.');
       return;
     }
-    final path = await saveRecordingDialog(
-      context,
-      dialogTitle: 'Save source localized EEG file',
-      fileName: '${_stem(input.path)}_source.${RecordingStorage.extension}',
-      allowedExtensions: [RecordingStorage.extension],
-      type: FileType.custom,
-    );
+    String? path;
+    if (preview) {
+      _previewSession ??= PreprocessingPreview(input);
+      await _previewSession!.initialize();
+      final key = sha256
+          .convert(
+            utf8.encode(
+              jsonEncode({
+                'schema': 'source-preview-v1',
+                'input': input.path,
+                'labels': input.labels,
+                'rate': input.sampleRate,
+                'samples': input.sampleCount,
+                'options': _cfg
+                    .toPreprocessingOptions(
+                      nonEegChannels: _channels.nonEegChannels,
+                      sourceLocalizationOnly: true,
+                    )
+                    .toJson(),
+                'selection': {
+                  'channels': _selection.selectedChannels,
+                  'accepted': _selection.acceptedIntervals,
+                  'rejected': _selection.rejectedIntervals,
+                },
+                if (_cfg.sourceModelPath.isNotEmpty)
+                  'model_content':
+                      (await sha256
+                              .bind(File(_cfg.sourceModelPath).openRead())
+                              .first)
+                          .toString(),
+              }),
+            ),
+          )
+          .toString();
+      path = '${_previewSession!.cachePath}/source-$key.ccseeg';
+    } else {
+      path = await saveRecordingDialog(
+        context,
+        dialogTitle: 'Save source localized EEG file',
+        fileName: '${_stem(input.path)}_source.${RecordingStorage.extension}',
+        allowedExtensions: [RecordingStorage.extension],
+        type: FileType.custom,
+      );
+    }
     if (path == null) return;
     setState(() {
       _running = true;
@@ -1247,28 +1536,57 @@ class _FeatureHomeState extends State<FeatureHome>
       _logVisible = true;
     });
     try {
-      final sourced = await _service.preprocess(
-        recording: input,
-        outputPath: RecordingStorage.withExtension(path),
-        selection: _selection,
-        options: _cfg.toPreprocessingOptions(
-          nonEegChannels: _channels.nonEegChannels,
-          sourceLocalizationOnly: true,
-        ),
-        onProgress: (p, m) {
-          _log(m);
-          setState(() => _progress = p);
-        },
-      );
+      final sourced = preview && await File(path).exists()
+          ? await _loader.load(path)
+          : await _service.preprocess(
+              recording: input,
+              outputPath: preview ? path : RecordingStorage.withExtension(path),
+              selection: _selection,
+              options: _cfg.toPreprocessingOptions(
+                nonEegChannels: _channels.nonEegChannels,
+                sourceLocalizationOnly: true,
+              ),
+              onProgress: (p, m) {
+                _log(m);
+                setState(() => _progress = p);
+              },
+            );
       setState(() {
         _source = sourced;
+        _sourceInput = input;
         _directInput = null;
-        _channels = ChannelTypeMap.autoDetect(sourced.labels);
+
         _selection = const ViewerSelection.empty();
       });
       _log('✓ Source localisation complete: ${sourced.path}');
     } catch (e) {
       _log('✗ ERROR: $e');
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
+  Future<void> _saveSourceProjection() async {
+    if (_source == null || _running) return;
+    final recording = _source!;
+    final path = await saveRecordingDialog(
+      context,
+      dialogTitle: 'Save source EEG',
+      fileName:
+          '${_stem((_sourceInput ?? recording).path)}_source.${RecordingStorage.extension}',
+      allowedExtensions: [RecordingStorage.extension],
+      type: FileType.custom,
+    );
+    if (path == null || !mounted) return;
+    setState(() => _running = true);
+    try {
+      await RecordingStorage.save(
+        recording,
+        RecordingStorage.withExtension(path),
+      );
+      _log('Saved source recording: $path');
+    } catch (e) {
+      _log('Could not save source recording: $e');
     } finally {
       if (mounted) setState(() => _running = false);
     }
@@ -2485,15 +2803,16 @@ class _FeatureHomeState extends State<FeatureHome>
                           message: 'Step ${i + 1}: ${_moduleSubtitle(mod)}',
                           child: ChoiceChip(
                             avatar: Icon(
-                              done ? Icons.check_circle_rounded : _moduleIcon(mod),
+                              done
+                                  ? Icons.check_circle_rounded
+                                  : _moduleIcon(mod),
                               size: 16,
                               color: done ? Colors.greenAccent : null,
                             ),
                             label: Text(_moduleLabel(mod)),
                             selected: _selectedModule == mod,
-                            onSelected: (_) => setState(
-                              () => _selectedModule = mod,
-                            ),
+                            onSelected: (_) =>
+                                setState(() => _selectedModule = mod),
                           ),
                         );
                       }(),
@@ -2726,7 +3045,7 @@ class _FeatureHomeState extends State<FeatureHome>
   Widget _buildViewerLayout(_Module activeModule) {
     return Row(
       children: [
-        if (!_waveformMaximized)
+        if (!_waveformMaximized && activeModule != _Module.sourceSpace)
           SizedBox(
             width: 280,
             child: Material(
@@ -2744,38 +3063,55 @@ class _FeatureHomeState extends State<FeatureHome>
               ),
             ),
           ),
-        if (!_waveformMaximized)
+        if (!_waveformMaximized && activeModule != _Module.sourceSpace)
           const VerticalDivider(width: 1, color: _borderColor),
         Expanded(
           child: Stack(
             children: [
               Positioned.fill(
-                child: EegViewer(
-                  recording: _activeRecording,
-                  rawRecording: _raw,
-                  allRecordings: _stageRecordings,
-                  onSelectRecording: (rec) {
-                    if (_running) return;
-                    if (_openedRecordings.any(
-                      (item) => item.path == rec.path,
-                    )) {
-                      _selectOpenedRecording(rec);
-                    } else {
-                      setState(() => _directInput = rec);
-                    }
-                  },
-                  onRequestEpochs: _epochActiveRecording,
-                  onEpochsGenerated: (epoched) {
-                    if (_running) return;
-                    setState(() => _preprocessed = epoched);
-                  },
-                  selection: _selection,
-                  onSelectionChanged: (v) => setState(() => _selection = v),
-                  filterEnabled: _cfg.filter,
-                  lowHz: _cfg.lowHz,
-                  highHz: _cfg.highHz,
-                  notchHz: _cfg.notchHz,
-                ),
+                child: activeModule == _Module.sourceSpace
+                    ? SourceReviewWorkspace(
+                        channels:
+                            _sourceInput ??
+                            _interactivePreview ??
+                            _preprocessed ??
+                            _raw,
+                        sources: _source,
+                        controls: _buildStage2Content(),
+                        showSidePanel: !_waveformMaximized,
+                        customAtlas: _cfg.sourceModelPath.isNotEmpty,
+                      )
+                    : EegViewer(
+                        recording: _activeRecording,
+                        rawRecording: _raw,
+                        allRecordings: _stageRecordings,
+                        onSelectRecording: (rec) {
+                          if (_running || identical(rec, _interactivePreview))
+                            return;
+                          if (_openedRecordings.any(
+                            (item) => item.path == rec.path,
+                          )) {
+                            _selectOpenedRecording(rec);
+                          } else {
+                            _resetInteractivePreview();
+                            setState(() => _directInput = rec);
+                          }
+                        },
+                        onRequestEpochs: _epochActiveRecording,
+                        onEpochsGenerated: (epoched) {
+                          if (_running) return;
+                          setState(() => _preprocessed = epoched);
+                        },
+                        selection: _selection,
+                        onSelectionChanged: (v) =>
+                            setState(() => _selection = v),
+                        filterEnabled: activeModule == _Module.preprocess
+                            ? false
+                            : _cfg.filter,
+                        lowHz: _cfg.lowHz,
+                        highHz: _cfg.highHz,
+                        notchHz: _cfg.notchHz,
+                      ),
               ),
               Positioned(
                 right: 18,
@@ -2852,12 +3188,13 @@ class _FeatureHomeState extends State<FeatureHome>
                   rawRecording: _raw,
                   allRecordings: _stageRecordings,
                   onSelectRecording: (rec) {
-                    if (_running) return;
+                    if (_running || identical(rec, _interactivePreview)) return;
                     if (_openedRecordings.any(
                       (item) => item.path == rec.path,
                     )) {
                       _selectOpenedRecording(rec);
                     } else {
+                      _resetInteractivePreview();
                       setState(() => _directInput = rec);
                     }
                   },
@@ -3467,36 +3804,63 @@ class _FeatureHomeState extends State<FeatureHome>
   // ── Stage 2 ─────────────────────────────────────────────────────────────
 
   Widget _buildStage2Content() {
-    final effectiveInput = _preprocessed ?? _raw;
+    final effectiveInput = _interactivePreview ?? _preprocessed ?? _raw;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: IconButton(
-              tooltip: 'Source-space parameters',
-              icon: const Icon(Icons.settings, size: 18),
-              onPressed: _running
-                  ? null
-                  : () async {
-                      await showProcessingSettings(
-                        context,
-                        _cfg,
-                        'Source Space',
-                      );
-                      if (mounted) setState(() {});
-                    },
-            ),
+          _preparationSection(
+            'Inverse model & atlas',
+            '${_cfg.sourceMethod.toUpperCase()} · SNR ${_cfg.sourceSnr}',
+            [
+              _compactCleaner(
+                'Inverse method',
+                _cfg.sourceMethod,
+                const [
+                  ('mne', 'Minimum norm'),
+                  ('dspm', 'dSPM'),
+                  ('sloreta', 'sLORETA'),
+                  ('lcmv', 'LCMV'),
+                ],
+                (v) => _cfg.sourceMethod = v,
+                'Fixed-orientation source projection. Apply to compute or reuse the selected model.',
+              ),
+              TextFormField(
+                key: ValueKey('source-snr-${_cfg.sourceSnr}'),
+                initialValue: '${_cfg.sourceSnr}',
+                decoration: const InputDecoration(labelText: 'Source SNR'),
+                onChanged: (v) {
+                  final snr = double.tryParse(v);
+                  if (snr != null && snr > 0) _cfg.sourceSnr = snr;
+                },
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: IconButton(
+                  tooltip: 'Source-space parameters',
+                  icon: const Icon(Icons.settings, size: 18),
+                  onPressed: _running
+                      ? null
+                      : () async {
+                          await showProcessingSettings(
+                            context,
+                            _cfg,
+                            'Source Space',
+                          );
+                          if (mounted) setState(() {});
+                        },
+                ),
+              ),
+            ],
           ),
 
           effectiveInput != null
               ? _pipelineBadge(
                   icon: Icons.arrow_right,
                   label: _preprocessed != null
-                      ? 'Input: ${_shortName(effectiveInput.path)}'
-                      : 'Input (unprocessed): ${_shortName(effectiveInput.path)}',
+                      ? 'Input: ${recordingViewerName(effectiveInput)}'
+                      : 'Input: ${recordingViewerName(effectiveInput)}',
                   color: _preprocessed != null ? _accentGreen : _accentAmber,
                 )
               : _pipelineBadge(
@@ -3512,18 +3876,29 @@ class _FeatureHomeState extends State<FeatureHome>
           ),
           const SizedBox(height: 8),
           _infoBox(
-            'Inverse: ${_cfg.sourceMethod.toUpperCase()}. '
-            '${_cfg.sourceModelPath.isEmpty ? 'Bundled fsaverage / 68 Desikan–Killiany regions' : 'Custom forward / atlas: ${_shortName(_cfg.sourceModelPath)}'}. '
-            'Fixed source orientations; identity sensor noise covariance.',
+            '${_cfg.sourceMethod.toUpperCase()} · ${_cfg.sourceModelPath.isEmpty ? 'fsaverage / DK68' : _shortName(_cfg.sourceModelPath)}\n'
+            'Fixed orientations · identity noise covariance',
             _accentBlue,
           ),
           const SizedBox(height: 8),
           _stageRunButton(
-            label: 'Run Source Localisation',
+            label: _source == null
+                ? 'Apply source projection'
+                : 'Update source projection',
             icon: Icons.psychology,
             color: _accentBlue,
             enabled: !_running && effectiveInput != null,
-            onPressed: _runSourceLocalisation,
+            onPressed: () => _runSourceLocalisation(preview: true),
+          ),
+          if (_source != null)
+            TextButton.icon(
+              onPressed: _running ? null : _saveSourceProjection,
+              icon: const Icon(Icons.save_outlined),
+              label: const Text('Save source recording…'),
+            ),
+          const Text(
+            'Model results are cached. Display and head-plot controls are below.',
+            style: TextStyle(fontSize: 11, color: _textMuted),
           ),
         ],
       ),
@@ -3803,6 +4178,7 @@ class _FeatureHomeState extends State<FeatureHome>
                     _cfg,
                     'Preprocessing',
                     section: section,
+                    availableChannels: _referenceCandidates,
                   );
                   if (mounted) setState(() {});
                 },
@@ -3811,12 +4187,6 @@ class _FeatureHomeState extends State<FeatureHome>
   );
 
   Widget _buildPreprocessingOptions() {
-    final steps = <String>[
-      if (_cfg.icaMethod != 'none') 'ICA / ICLabel',
-      if (_cfg.muscleMethod != 'none') 'Muscle',
-      if (_cfg.asrMode != 'off' && !_usesExistingEpochs) 'Output ASR',
-      if (_cfg.gedai) 'GEDAI',
-    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -3868,49 +4238,146 @@ class _FeatureHomeState extends State<FeatureHome>
                 ),
               ),
           ],
-          open: true,
+          open: false,
         ),
 
-        // Step 2: Resample, Filtering & Bad channel detection
-        _preparationSection(
-          '2. Filtering & signal preparation',
-          '${_cfg.downsample ? 'Downsample ${_cfg.downsampleFreq}Hz · ' : ''}${_cfg.filter ? '${_cfg.lowHz}–${_cfg.highHz} Hz' : 'Filter off'} · ${_cfg.badChannels ? 'Detect bad ch' : 'No bad ch detection'}',
+        if (!_batchMaximized)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              'Interactive preview · expand a bar to configure it, then Apply. Toggle steps in any order; processing follows pipeline order. Unchanged earlier stages are reused. New downstream results compute once. Results and the last displayed combination are remembered for this input file. Save displayed combination exports this preview. The full preprocessing run uses the Include in saved pipeline settings.',
+              style: TextStyle(fontSize: 11, color: _textMuted),
+            ),
+          ),
+        if (!_batchMaximized && _previewSession != null)
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              TextButton.icon(
+                onPressed: _running
+                    ? null
+                    : () async {
+                        final session = _previewSession!;
+                        setState(() {
+                          _interactivePreview = session.baseline;
+                          _source = null;
+                          _sourceInput = null;
+                          _appliedPreviewSteps.clear();
+                        });
+                        try {
+                          await session.selectOriginal();
+                        } catch (e) {
+                          _log('Could not remember original selection: $e');
+                        }
+                      },
+                icon: const Icon(Icons.restore),
+                label: const Text('Original input'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _running || _appliedPreviewSteps.isEmpty
+                    ? null
+                    : _saveInteractivePreview,
+                icon: const Icon(Icons.save_outlined),
+                label: const Text('Save displayed combination…'),
+              ),
+            ],
+          ),
+        if (!_batchMaximized && _previewSession?.cachePath != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Tooltip(
+              message: _previewSession!.cachePath!,
+              child: TextButton.icon(
+                onPressed: () =>
+                    Process.run('open', [_previewSession!.cachePath!]),
+                icon: const Icon(Icons.folder_outlined, size: 16),
+                label: const Text(
+                  'Persistent file cache · Show folder',
+                  style: TextStyle(fontSize: 11),
+                ),
+              ),
+            ),
+          ),
+        _previewStep(
+          'resample',
+          'Resample',
+          '${_cfg.downsampleFreq} Hz',
+          {'downsample': true, 'downsample_freq': _cfg.downsampleFreq},
           [
             _check(
-              'Resample (downsample)',
+              'Include in saved pipeline',
               _cfg.downsample,
               (v) => _cfg.downsample = v,
             ),
-            if (_cfg.downsample)
-              _field(_preDownsample, 'Target rate', suffix: 'Hz'),
+            _field(_preDownsample, 'Target rate', suffix: 'Hz'),
+          ],
+        ),
+        _previewStep(
+          'filter',
+          'Bandpass + notch filter',
+          '${_cfg.lowHz}–${_cfg.highHz} Hz · notch ${_cfg.notchHz} Hz',
+          {
+            for (final k in [
+              'filter',
+              'low_hz',
+              'high_hz',
+              'notch_hz',
+              'fir_taps',
+              'filter_type',
+              'iir_order',
+              'notch_width_hz',
+              'notch_transition_hz',
+            ])
+              k: k == 'filter'
+                  ? true
+                  : _cfg.toPreprocessingOptions().toJson()[k],
+          },
+          [
             _check(
-              'Bandpass + notch filter',
+              'Include in saved pipeline',
               _cfg.filter,
               (v) => _cfg.filter = v,
             ),
-            if (_cfg.filter)
-              Row(
-                children: [
-                  Expanded(child: _field(_preLow, 'High-pass')),
-                  const SizedBox(width: 6),
-                  Expanded(child: _field(_preHigh, 'Low-pass')),
-                  const SizedBox(width: 6),
-                  Expanded(child: _field(_preNotch, 'Notch')),
-                ],
-              ),
+            Row(
+              children: [
+                Expanded(child: _field(_preLow, 'High-pass')),
+                const SizedBox(width: 6),
+                Expanded(child: _field(_preHigh, 'Low-pass')),
+                const SizedBox(width: 6),
+                Expanded(child: _field(_preNotch, 'Notch')),
+              ],
+            ),
+          ],
+        ),
+        _previewStep(
+          'badchannels',
+          'Detect bad channels',
+          'Flatline, correlation and line noise',
+          {
+            'badchannel': true,
+            'bad_variance_ratio': _cfg
+                .toPreprocessingOptions()
+                .badVarianceRatio,
+          },
+          [
             _check(
-              'Detect bad channels (flatline, correlation, line noise)',
+              'Include in saved pipeline',
               _cfg.badChannels,
               (v) => _cfg.badChannels = v,
             ),
+            const Text(
+              'Detection identifies exclusions. Enable interpolation to reconstruct excluded channels.',
+            ),
           ],
-          open: true,
         ),
-
-        // Step 3: Artifact Cleaning (GEDAI, ICA, ASR)
-        _preparationSection(
-          '3. Artifact cleaning',
-          steps.isEmpty ? 'Off' : steps.join(' → '),
+        _previewStep(
+          'ica',
+          'ICA / ICLabel',
+          _cfg.icaMethod == 'none'
+              ? 'Choose a method to review components'
+              : _cfg.icaMethod,
+          _interactiveIcaSettings,
           [
             _compactCleaner(
               'ICA / ICLabel',
@@ -3921,19 +4388,118 @@ class _FeatureHomeState extends State<FeatureHome>
                 ('picard', 'Picard'),
               ],
               (v) => _cfg.icaMethod = v,
-              'Removes classified components. Eye/ECG ICA runs first, followed by general artifact ICA. Saved trial boundaries are retained.',
+              'Eye/ECG ICA followed by general artifact ICA. Component maps, traces and ICLabel scores are retained for review.',
               section: 'ICA',
             ),
-            if (_cfg.icaMethod != 'none')
-              Tooltip(
-                message:
-                    'ASR rejects bad samples from the temporary ICA fit copy only. The fitted ICA projection is then applied to the original samples; this is separate from output ASR below.',
-                child: _check(
-                  'ASR on ICA fit copy only',
-                  _cfg.icaFitAsr,
-                  (v) => _cfg.icaFitAsr = v,
-                ),
+            _check(
+              'ASR on ICA fit copy only',
+              _cfg.icaFitAsr,
+              (v) => _cfg.icaFitAsr = v,
+            ),
+            DropdownButtonFormField<double>(
+              key: ValueKey('eye-floor-${_cfg.icaBlinkThresholdFloor}'),
+              initialValue: _cfg.icaBlinkThresholdFloor,
+              decoration: const InputDecoration(
+                labelText: 'Eye / ECG probability floor',
               ),
+              items: [
+                for (final v in ({
+                  .4,
+                  .5,
+                  .6,
+                  .7,
+                  .8,
+                  .9,
+                  _cfg.icaBlinkThresholdFloor,
+                }.toList()..sort()))
+                  DropdownMenuItem(
+                    value: v,
+                    child: Text('${(100 * v).toStringAsFixed(0)}%'),
+                  ),
+              ],
+              onChanged: _running
+                  ? null
+                  : (v) => setState(() => _cfg.icaBlinkThresholdFloor = v!),
+            ),
+            const Text(
+              'Lower thresholds remove less certain components. Review the head map, trace and Brain score before keeping the result.',
+              style: TextStyle(fontSize: 11),
+            ),
+            if (_activeRecording != null &&
+                _appliedPreviewSteps.containsKey('ica')) ...[
+              icaOcularDiagnostic(_activeRecording!),
+              if ((icaReviewReport(_activeRecording!)['blink_stage']
+                          as Map?)?['ran'] ==
+                      true &&
+                  (((icaReviewReport(_activeRecording!)['blink_stage']
+                                  as Map)['removed']
+                              as List?) ??
+                          [])
+                      .isEmpty &&
+                  _cfg.icaBlinkThresholdFloor > .5)
+                OutlinedButton(
+                  onPressed: _running
+                      ? null
+                      : () async {
+                          setState(() => _cfg.icaBlinkThresholdFloor = .5);
+                          await _togglePreviewStep(
+                            'ica',
+                            _interactiveIcaSettings,
+                          );
+                        },
+                  child: const Text('Compare with 50% Eye threshold'),
+                ),
+            ],
+            if (_activeRecording != null)
+              OutlinedButton.icon(
+                onPressed: () => showIcaReview(context, _activeRecording!),
+                icon: const Icon(Icons.grid_view),
+                label: const Text('Browse components & ICLabel…'),
+              ),
+          ],
+        ),
+        _previewStep(
+          'muscle',
+          'Muscle / motion cleaning',
+          _cfg.muscleMethod,
+          {
+            for (final k in [
+              'muscle_method',
+              'bsscca_n_remove',
+              'icc_threshold',
+              'wica_levels',
+            ])
+              k: k == 'muscle_method' && _cfg.muscleMethod == 'none'
+                  ? 'bss_cca'
+                  : _cfg.toPreprocessingOptions().toJson()[k],
+          },
+          [
+            _compactCleaner(
+              'Muscle method',
+              _cfg.muscleMethod,
+              const [
+                ('none', 'Off'),
+                ('bss_cca', 'BSS CCA'),
+                ('icanclean', 'iCanClean'),
+                ('wica', 'Wavelet ICA'),
+              ],
+              (v) => _cfg.muscleMethod = v,
+              'Additional muscle and motion artifact cleaning.',
+            ),
+          ],
+        ),
+        _previewStep(
+          'asr',
+          'ASR on output',
+          _cfg.asrMode,
+          {
+            for (final e in _cfg.toPreprocessingOptions().toJson().entries)
+              if (e.key.startsWith('asr_'))
+                e.key: e.key == 'asr_mode' && e.value == 'off'
+                    ? 'correct'
+                    : e.value,
+          },
+          [
             _compactCleaner(
               'ASR on output',
               _cfg.asrMode,
@@ -3942,122 +4508,114 @@ class _FeatureHomeState extends State<FeatureHome>
                 ('correct', 'Reconstruct bursts'),
                 ('reject', 'Remove burst samples'),
               ],
-              (v) {
-                if (_usesExistingEpochs && v != 'off') {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Output ASR requires continuous EEG. ICA fit-copy ASR supports saved trials.',
-                      ),
-                    ),
-                  );
-                } else {
-                  _cfg.asrMode = v;
-                }
-              },
-              'Separate output cleaning after ICA. Requires continuous EEG. Reconstruct keeps the time axis; Remove changes it. It is not the ASR used on ICA fitting data.',
+              (v) => _cfg.asrMode = v,
+              'Requires continuous EEG. Reject mode changes the time axis; reconstruct preserves it.',
             ),
-            if (_usesExistingEpochs)
-              const Text(
-                'Output ASR: continuous input required',
-                style: TextStyle(fontSize: 11, color: _textMuted),
-              ),
-            _check('GEDAI', _cfg.gedai, (v) => _cfg.gedai = v),
-            if (_cfg.gedai) _field(_gedaiThreshold, 'GEDAI strength'),
-            if (_cfg.gedai && _cfg.icaMethod != 'none')
-              const Tooltip(
-                message:
-                    'ICA and GEDAI both remove artifacts. Using both can be redundant and may remove neural activity; inspect the output.',
-                child: Text(
-                  'ICA + GEDAI selected · review combined cleaning',
-                  style: TextStyle(fontSize: 11, color: _accentAmber),
-                ),
-              ),
-            if (steps.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  'Order: ${steps.join(' → ')}',
-                  style: const TextStyle(fontSize: 11),
-                ),
-              ),
           ],
-          open: true,
         ),
-
-        // Step 4: Bad channel interpolation (after artifact cleaning, per accs_CCScleaningpipeline.m)
-        _preparationSection(
-          '4. Bad channel interpolation',
-          _cfg.interpolate
-              ? 'Spherical spline interpolation'
-              : 'Off (keep channel exclusions)',
+        _previewStep(
+          'gedai',
+          'GEDAI',
+          'Strength ${_cfg.gedaiThreshold}',
+          {
+            'gedai': true,
+            'gedai_threshold': _cfg.gedaiThreshold,
+            'gedai_epoch_seconds': _cfg.gedaiEpochSeconds,
+          },
           [
             _check(
-              'Interpolate bad channels',
-              _cfg.interpolate,
-              (v) => _cfg.interpolate = v,
+              'Include in saved pipeline',
+              _cfg.gedai,
+              (v) => _cfg.gedai = v,
             ),
-            const Text(
-              'Reconstructs detected bad channels using spherical spline interpolation after artifact cleaning, preserving original montage topology.',
-              style: TextStyle(color: _textMuted, fontSize: 11),
-            ),
-          ],
-          open: true,
-        ),
-
-        // Step 5: Re-referencing (last step before saving, per accs_CCScleaningpipeline.m)
-        _preparationSection(
-          '5. Re-referencing (last step before saving)',
-          _cfg.referenceMode == 'average'
-              ? 'Common average reference'
-              : _cfg.referenceMode == 'channels'
-              ? 'Electrode reference (${_cfg.referenceChannels.join(', ')})'
-              : 'Keep existing reference',
-          [
             DropdownButtonFormField<String>(
-              key: ValueKey('compact-ref-${_cfg.referenceMode}'),
-              initialValue: _cfg.referenceMode,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'Output reference',
-                isDense: true,
-              ),
+              key: ValueKey('gedai-mode-${_cfg.gedaiThreshold}'),
+              initialValue:
+                  ['auto-', 'auto', 'auto+'].contains(_cfg.gedaiThreshold)
+                  ? _cfg.gedaiThreshold
+                  : 'custom',
+              decoration: const InputDecoration(labelText: 'GEDAI strength'),
               items: const [
-                DropdownMenuItem(value: 'none', child: Text('Keep existing')),
+                DropdownMenuItem(value: 'auto-', child: Text('Gentle (auto-)')),
+                DropdownMenuItem(value: 'auto', child: Text('Standard (auto)')),
+                DropdownMenuItem(value: 'auto+', child: Text('Strong (auto+)')),
                 DropdownMenuItem(
-                  value: 'average',
-                  child: Text('Common average'),
-                ),
-                DropdownMenuItem(
-                  value: 'channels',
-                  child: Text('Selected electrodes'),
+                  value: 'custom',
+                  child: Text('Numeric threshold…'),
                 ),
               ],
               onChanged: _running
                   ? null
-                  : (v) => setState(() => _cfg.referenceMode = v!),
+                  : (v) => _gedaiThreshold.text = v == 'custom' ? '0' : v!,
             ),
-            if (_cfg.referenceMode == 'channels')
-              TextFormField(
-                initialValue: _cfg.referenceChannels.join(', '),
-                decoration: const InputDecoration(
-                  labelText: 'Reference electrodes',
-                  helperText:
-                      'Comma-separated labels, e.g. M1, M2 or TP9, TP10',
-                ),
-                onChanged: (v) => _cfg.referenceChannels = v
-                    .split(',')
-                    .map((s) => s.trim())
-                    .where((s) => s.isNotEmpty)
-                    .toList(),
-              ),
-            const SizedBox(height: 4),
+            if (!['auto-', 'auto', 'auto+'].contains(_cfg.gedaiThreshold))
+              _field(_gedaiThreshold, 'Threshold (0–12)'),
             const Text(
-              'Final re-referencing applied to cleaned and interpolated scalp EEG before saving.',
-              style: TextStyle(color: _textMuted, fontSize: 11),
+              'Gentle broadband pass; input reference restored before the requested re-reference step.',
+              style: TextStyle(fontSize: 11),
+            ),
+            if (_activeRecording?.provenance['summary'] is Map &&
+                ((_activeRecording!.provenance['summary']
+                            as Map)['gedai_quality']
+                        as Map?)?['median_alpha_power_ratio_common_average']
+                    is num)
+              Text(
+                'Median 8–13 Hz power retained: ${(((_activeRecording!.provenance['summary'] as Map)['gedai_quality']['median_alpha_power_ratio_common_average'] as num) * 100).toStringAsFixed(1)}% · matched common-average reference',
+                style: const TextStyle(fontSize: 11),
+              ),
+          ],
+        ),
+        _previewStep(
+          'interpolate',
+          'Bad channel interpolation',
+          'Spherical spline reconstruction',
+          {'interpolate': true},
+          [
+            _check(
+              'Include in saved pipeline',
+              _cfg.interpolate,
+              (v) => _cfg.interpolate = v,
+            ),
+            const Text(
+              'Reconstructs detected bad channels after artifact cleaning. Apply bad channel detection first.',
             ),
           ],
-          open: true,
+        ),
+        _previewStep(
+          'reference',
+          'Re-reference',
+          _cfg.referenceMode,
+          {
+            'reference_mode': _cfg.referenceMode == 'none'
+                ? 'average'
+                : _cfg.referenceMode,
+            'reference_channels': _cfg.referenceChannels,
+          },
+          [
+            _compactCleaner(
+              'Output reference',
+              _cfg.referenceMode,
+              const [
+                ('none', 'Keep existing'),
+                ('average', 'Common average'),
+                ('channels', 'Selected electrodes'),
+              ],
+              (v) => _cfg.referenceMode = v,
+              'Final reference after artifact cleaning and interpolation.',
+            ),
+            if (_cfg.referenceMode == 'channels')
+              ReferenceChannelPicker(
+                channels:
+                    (_previewSession?.baseline.labels ??
+                            _raw?.labels ??
+                            _activeRecording?.labels ??
+                            [])
+                        .where((s) => !_channels.nonEegChannels.contains(s))
+                        .toList(),
+                selected: _cfg.referenceChannels,
+                onChanged: (v) => setState(() => _cfg.referenceChannels = v),
+              ),
+          ],
         ),
 
         // Step 6: Saved output structure
@@ -4072,7 +4630,7 @@ class _FeatureHomeState extends State<FeatureHome>
                 ? 'Fixed windows · ${_cfg.preprocessingEpochSeconds}s'
                 : 'Continuous cleaned EEG',
             [_buildSavedOutputOptions()],
-            open: true,
+            open: false,
           ),
 
         _preparationSection(
@@ -4183,7 +4741,12 @@ class _FeatureHomeState extends State<FeatureHome>
         onPressed: _running
             ? null
             : () async {
-                await showProcessingSettings(context, _cfg, 'Preprocessing');
+                await showProcessingSettings(
+                  context,
+                  _cfg,
+                  'Preprocessing',
+                  availableChannels: _referenceCandidates,
+                );
                 if (mounted) setState(() {});
               },
       ),
@@ -4779,20 +5342,25 @@ class _FeatureHomeState extends State<FeatureHome>
                   else ...[
                     const SizedBox(width: 4),
                     () {
-                      final activeQueue = (_batchStage1Enabled && !_batchPreprocessedInput)
+                      final activeQueue =
+                          (_batchStage1Enabled && !_batchPreprocessedInput)
                           ? _batchPrepFiles
-                          : (_batchStage2Enabled ? _batchFeatFiles : _batchPlotFiles);
+                          : (_batchStage2Enabled
+                                ? _batchFeatFiles
+                                : _batchPlotFiles);
                       final stages = [
-                        if (_batchStage1Enabled && !_batchPreprocessedInput) '1',
+                        if (_batchStage1Enabled && !_batchPreprocessedInput)
+                          '1',
                         if (_batchStage2Enabled) '2',
                         if (_batchStage3Enabled) '3',
                       ];
-                      final bool canRun = activeQueue.isNotEmpty && stages.isNotEmpty;
+                      final bool canRun =
+                          activeQueue.isNotEmpty && stages.isNotEmpty;
                       final String runPipelineLabel = (stages.length == 3)
                           ? 'Run Full Pipeline'
                           : (stages.isEmpty
-                              ? 'No stages enabled'
-                              : 'Run Stages ${stages.join(" & ")}');
+                                ? 'No stages enabled'
+                                : 'Run Stages ${stages.join(" & ")}');
 
                       return FilledButton.icon(
                         onPressed: canRun ? _runFullBatch : null,
@@ -5024,23 +5592,21 @@ class _FeatureHomeState extends State<FeatureHome>
               child: _batchTabbedView
                   ? switch (_batchActiveStage) {
                       0 => _buildBatchStage1Card(
-                          onNext: () => setState(() => _batchActiveStage = 1),
-                        ),
+                        onNext: () => setState(() => _batchActiveStage = 1),
+                      ),
                       1 => _buildBatchStage2Card(
-                          onPrevious: _batchPreprocessedInput
-                              ? null
-                              : () => setState(() => _batchActiveStage = 0),
-                          onNext: () => setState(() => _batchActiveStage = 2),
-                        ),
+                        onPrevious: _batchPreprocessedInput
+                            ? null
+                            : () => setState(() => _batchActiveStage = 0),
+                        onNext: () => setState(() => _batchActiveStage = 2),
+                      ),
                       2 => _buildBatchStage3Card(
-                          onPrevious: () =>
-                              setState(() => _batchActiveStage = 1),
-                          onNext: () => setState(() => _batchActiveStage = 3),
-                        ),
+                        onPrevious: () => setState(() => _batchActiveStage = 1),
+                        onNext: () => setState(() => _batchActiveStage = 3),
+                      ),
                       _ => _buildBatchStage4Card(
-                          onPrevious: () =>
-                              setState(() => _batchActiveStage = 2),
-                        ),
+                        onPrevious: () => setState(() => _batchActiveStage = 2),
+                      ),
                     }
                   : Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -5085,8 +5651,8 @@ class _FeatureHomeState extends State<FeatureHome>
         badge: !_batchStage2Enabled
             ? 'Skipped'
             : (_batchFeatUsePrep
-                ? 'Stage 1 output'
-                : '${_batchFeatFiles.length} files'),
+                  ? 'Stage 1 output'
+                  : '${_batchFeatFiles.length} files'),
         enabled: true,
         stageActive: _batchStage2Enabled,
       ),
@@ -5099,8 +5665,8 @@ class _FeatureHomeState extends State<FeatureHome>
         badge: !_batchStage3Enabled
             ? 'Skipped'
             : (_batchPlotUseFeat
-                ? 'Stage 2 CSVs'
-                : '${_batchPlotFiles.length} files'),
+                  ? 'Stage 2 CSVs'
+                  : '${_batchPlotFiles.length} files'),
         enabled: true,
         stageActive: _batchStage3Enabled,
       ),
@@ -5164,8 +5730,8 @@ class _FeatureHomeState extends State<FeatureHome>
                         size: 14,
                         color: stages[i].enabled
                             ? (_batchActiveStage == stages[i].index
-                                ? stages[i].color
-                                : _textMuted)
+                                  ? stages[i].color
+                                  : _textMuted)
                             : _borderColor,
                       ),
                       const SizedBox(width: 6),
@@ -5176,8 +5742,8 @@ class _FeatureHomeState extends State<FeatureHome>
                           style: TextStyle(
                             color: stages[i].enabled
                                 ? (_batchActiveStage == stages[i].index
-                                    ? Colors.white
-                                    : _textMuted)
+                                      ? Colors.white
+                                      : _textMuted)
                                 : _borderColor,
                             fontWeight: _batchActiveStage == stages[i].index
                                 ? FontWeight.bold
@@ -5248,7 +5814,10 @@ class _FeatureHomeState extends State<FeatureHome>
               children: [
                 Icon(Icons.folder_open, size: 12, color: _accentPurple),
                 SizedBox(width: 4),
-                Text('Load', style: TextStyle(fontSize: 10, color: Colors.white70)),
+                Text(
+                  'Load',
+                  style: TextStyle(fontSize: 10, color: Colors.white70),
+                ),
               ],
             ),
           ),
@@ -5272,7 +5841,10 @@ class _FeatureHomeState extends State<FeatureHome>
               children: [
                 Icon(Icons.save_outlined, size: 12, color: _accentPurple),
                 SizedBox(width: 4),
-                Text('Save', style: TextStyle(fontSize: 10, color: Colors.white70)),
+                Text(
+                  'Save',
+                  style: TextStyle(fontSize: 10, color: Colors.white70),
+                ),
               ],
             ),
           ),
@@ -5631,7 +6203,11 @@ class _FeatureHomeState extends State<FeatureHome>
               ),
               child: Row(
                 children: [
-                  Icon(icon, size: 16, color: stageEnabled ? color : _textMuted),
+                  Icon(
+                    icon,
+                    size: 16,
+                    color: stageEnabled ? color : _textMuted,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -5768,7 +6344,8 @@ class _FeatureHomeState extends State<FeatureHome>
                               ? 'Output: ${outputDir ?? _batchGlobalOutputDir} (Shared batch folder)'
                               : 'Output: ${outputDir ?? 'Next to source files'}',
                           style: TextStyle(
-                            color: outputDir == null &&
+                            color:
+                                outputDir == null &&
                                     _batchGlobalOutputDir == null
                                 ? _textMuted
                                 : Colors.white70,
@@ -5955,10 +6532,7 @@ class _FeatureHomeState extends State<FeatureHome>
                       ),
                     ),
                     const SizedBox(height: 6),
-                    Opacity(
-                      opacity: stageEnabled ? 1.0 : 0.65,
-                      child: options,
-                    ),
+                    Opacity(opacity: stageEnabled ? 1.0 : 0.65, child: options),
                   ],
                 ],
               ),
@@ -6264,9 +6838,12 @@ class _FeatureHomeState extends State<FeatureHome>
       });
     }
     _log('── BATCH PREPROCESSING (${_batchPrepFiles.length} files) ──');
-    final batchDestDir = _effectiveBatchPrepOutputDir ?? File(_batchPrepFiles.first).parent.path;
+    final batchDestDir =
+        _effectiveBatchPrepOutputDir ?? File(_batchPrepFiles.first).parent.path;
     try {
-      final pipelineFile = File('$batchDestDir${Platform.pathSeparator}Preprocessing_Pipeline.json');
+      final pipelineFile = File(
+        '$batchDestDir${Platform.pathSeparator}Preprocessing_Pipeline.json',
+      );
       pipelineFile.writeAsStringSync(
         const JsonEncoder.withIndent('  ').convert(_cfg.toPreprocessingJson()),
       );
@@ -6301,7 +6878,9 @@ class _FeatureHomeState extends State<FeatureHome>
             existing = candClean;
           }
           if (existing != null) {
-            _log('  ↳ Skipping (already preprocessed): ${_shortName(existing)}');
+            _log(
+              '  ↳ Skipping (already preprocessed): ${_shortName(existing)}',
+            );
             written.add(existing);
             _updateBatchFile(
               path,
@@ -6720,7 +7299,11 @@ class _FeatureHomeState extends State<FeatureHome>
         _updateBatchFile(path, 'Running', progress: 0);
       }
       if (toPlot.isNotEmpty) {
-        await _runPlotting(csvPaths: toPlot, announce: false, outputDir: outDir);
+        await _runPlotting(
+          csvPaths: toPlot,
+          announce: false,
+          outputDir: outDir,
+        );
       } else {
         _log(
           '✓ All requested plots already exist in Figures_TopoStats — skipping re-plotting.',
@@ -6757,10 +7340,10 @@ class _FeatureHomeState extends State<FeatureHome>
     final queue = runPrep
         ? _batchPrepFiles
         : (runFeat
-            ? (_batchFeatUsePrep
-                ? _resolveBatchExtractionInputs()
-                : _batchFeatFiles)
-            : _resolveBatchPlotInputs());
+              ? (_batchFeatUsePrep
+                    ? _resolveBatchExtractionInputs()
+                    : _batchFeatFiles)
+              : _resolveBatchPlotInputs());
 
     if (queue.isEmpty) {
       _log('Queue is empty — add recordings in the active input stage.');
