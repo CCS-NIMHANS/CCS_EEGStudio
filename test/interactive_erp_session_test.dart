@@ -175,9 +175,6 @@ void main() {
       expect(find.textContaining('3/4 trials included'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 50)),
-      );
       dir.deleteSync(recursive: true);
     },
   );
@@ -258,9 +255,6 @@ void main() {
       expect(find.text('Correct · n=2'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 50)),
-      );
       dir.deleteSync(recursive: true);
     },
   );

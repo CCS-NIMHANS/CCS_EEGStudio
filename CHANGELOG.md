@@ -4,9 +4,11 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
-## [1.2.43]
+## [1.2.44]
 
 ### Streamlined interactive ERP workflow
+
+- **Windows review persistence:** atomically finish saving the small trial-decision file before closing the review widget, preventing a lingering file lock or unfinished last decision.
 
 - **One Epochs & ERP workspace:** collapsible protocol, trial-review and averaging bars replace the overlapping tabs. Browse individual trials, exclude/reinstate them, and see condition averages update immediately with retained trial timing and annotations.
 - **Inline ERP measurements:** keep measurements and models inside the main application workspace. Accepted trials are passed through automatically using a cached portable recording; no Save dialog, second file selection or repeated condition assignment is required. Return to trial review or live averages without a separate window.

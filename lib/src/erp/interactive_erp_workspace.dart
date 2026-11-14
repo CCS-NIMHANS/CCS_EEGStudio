@@ -40,7 +40,7 @@ class InteractiveErpWorkspace extends StatefulWidget {
 class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
   InteractiveErpSession? _session;
   String _preset = 'Custom', _mode = 'epochs', _status = '';
-  bool _busy = false, _dirty = false;
+  bool _busy = false, _dirty = false, _closing = false;
   int _trial = 0, _channel = 0;
   String? _condition;
   File? _reviewFile;
@@ -116,8 +116,9 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
 
   @override
   void dispose() {
+    _closing = true;
     _persistTimer?.cancel();
-    unawaited(_persist());
+    _persist();
     super.dispose();
   }
 
@@ -256,7 +257,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
     }
   }
 
-  Future<void> _persist() async {
+  void _persist() {
     final file = _reviewFile, session = _session;
     if (file == null || session == null) return;
     final data = jsonEncode({
@@ -264,9 +265,13 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
       'rejected': session.rejected.toList()..sort(),
     });
     try {
-      await file.writeAsString(data);
+      // Only the small decision JSON is written here, never signal samples.
+      // Finish before disposal returns so Windows has no lingering file handle.
+      final staging = File('${file.path}.writing');
+      staging.writeAsStringSync(data, flush: true);
+      staging.renameSync(file.path);
     } catch (e) {
-      if (mounted)
+      if (mounted && !_closing)
         setState(() => _status = 'Could not save review decisions: $e');
     }
   }
@@ -312,7 +317,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         await RecordingStorage.save(session.accepted(), path);
         _savedReviewed = await RecordingLoader().load(path);
         _savedRevision = session.revision;
-        await _persist();
+        _persist();
         if (!mounted) return;
         setState(
           () =>
