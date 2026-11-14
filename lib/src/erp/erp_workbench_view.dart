@@ -1,3 +1,4 @@
+import 'erp_core_presets.dart';
 import 'axis_controls.dart';
 import 'dart:io';
 import 'dart:convert';
@@ -53,6 +54,8 @@ class ErpWorkbenchView extends StatefulWidget {
     this.onOpenRecording,
     this.onOpenBatch,
     this.initialInspection,
+    this.linkedReview = false,
+    this.linkedOutputDirectory,
     this.stage1Builder,
     this.onRunPreprocessing,
     this.onCloseBatch,
@@ -62,6 +65,8 @@ class ErpWorkbenchView extends StatefulWidget {
   final List<String> extraFiles;
   final String? initialResultPath;
   final bool batchMode;
+  final bool linkedReview;
+  final String? linkedOutputDirectory;
   final Map<String, dynamic>? initialInspection;
   final VoidCallback? onOpenRecording;
   final VoidCallback? onPrepare, onOpenBatch;
@@ -148,112 +153,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   bool _erpPrepRereference = true;
   bool _erpPrepGedai = true;
 
-  static final Map<String, Map<String, dynamic>> _kErpCorePresets = {
-    'P3': {
-      'task': 'P3',
-      'component_name': 'P3',
-      'a_name': 'Non-target',
-      'b_name': 'Target',
-      'a_codes': [
-        '12', '13', '14', '15',
-        '21', '23', '24', '25',
-        '31', '32', '34', '35',
-        '41', '42', '43', '45',
-        '51', '52', '53', '54',
-      ],
-      'b_codes': ['11', '22', '33', '44', '55'],
-      'roi': ['Pz'],
-      'epoch': [-0.2, 0.8],
-      'baseline': [-0.2, 0.0],
-      'window': [0.3, 0.6],
-      'polarity': 1.0,
-      'lateralized': false,
-    },
-    'MMN': {
-      'task': 'MMN',
-      'component_name': 'MMN',
-      'a_name': 'Standard',
-      'b_name': 'Deviant',
-      'a_codes': ['80'],
-      'b_codes': ['70'],
-      'roi': ['FCz'],
-      'epoch': [-0.2, 0.8],
-      'baseline': [-0.2, 0.0],
-      'window': [0.125, 0.225],
-      'polarity': -1.0,
-      'lateralized': false,
-    },
-    'N170': {
-      'task': 'N170',
-      'component_name': 'N170',
-      'a_name': 'Car',
-      'b_name': 'Face',
-      'a_codes': [for (var i = 41; i <= 80; i++) '$i'],
-      'b_codes': [for (var i = 1; i <= 40; i++) '$i'],
-      'roi': ['PO7', 'PO8'],
-      'epoch': [-0.2, 0.8],
-      'baseline': [-0.2, 0.0],
-      'window': [0.11, 0.15],
-      'polarity': -1.0,
-      'lateralized': false,
-    },
-    'N2pc': {
-      'task': 'N2pc',
-      'component_name': 'N2pc',
-      'a_name': 'Left target',
-      'b_name': 'Right target',
-      'a_codes': ['111', '112', '211', '212'],
-      'b_codes': ['121', '122', '221', '222'],
-      'roi': ['PO7', 'PO8'],
-      'epoch': [-0.2, 0.8],
-      'baseline': [-0.2, 0.0],
-      'window': [0.2, 0.275],
-      'polarity': -1.0,
-      'lateralized': true,
-    },
-    'N400': {
-      'task': 'N400',
-      'component_name': 'N400',
-      'a_name': 'Related target',
-      'b_name': 'Unrelated target',
-      'a_codes': ['211', '212'],
-      'b_codes': ['221', '222'],
-      'roi': ['CPz', 'Cz'],
-      'epoch': [-0.2, 0.8],
-      'baseline': [-0.2, 0.0],
-      'window': [0.3, 0.5],
-      'polarity': -1.0,
-      'lateralized': false,
-    },
-    'ERN': {
-      'task': 'ERN',
-      'component_name': 'ERN',
-      'a_name': 'Correct response',
-      'b_name': 'Error response',
-      'a_codes': ['111', '121', '212', '222'],
-      'b_codes': ['112', '122', '211', '221'],
-      'roi': ['FCz'],
-      'epoch': [-0.6, 0.4],
-      'baseline': [-0.4, -0.2],
-      'window': [0.0, 0.1],
-      'polarity': -1.0,
-      'lateralized': false,
-    },
-    'LRP': {
-      'task': 'LRP',
-      'component_name': 'LRP',
-      'a_name': 'Left-hand correct',
-      'b_name': 'Right-hand correct',
-      'a_codes': ['111', '121'],
-      'b_codes': ['212', '222'],
-      'roi': ['C3', 'C4'],
-      'epoch': [-0.8, 0.2],
-      'baseline': [-0.8, -0.6],
-      'window': [-0.1, 0.0],
-      'polarity': -1.0,
-      'lateralized': true,
-    },
-  };
+
 
   List<String> get _savedA =>
       _conditions.isNotEmpty ? _conditions[0].savedGroups : [];
@@ -673,6 +573,20 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     }
     if (_paths.isNotEmpty && widget.initialInspection == null)
       WidgetsBinding.instance.addPostFrameCallback((_) => _inspect());
+    if (widget.linkedReview && widget.initialInspection != null) {
+      _output.text = widget.linkedOutputDirectory ?? '';
+      _inspection = widget.initialInspection;
+      final p = erpMap(_scanFiles.first['profile']);
+      _task = p['task'] as String? ?? 'Custom';
+      _fillProfile(p);
+      _regroupEpochs = false;
+      _reject.text = '0';
+      _status = 'Using the accepted trials and condition groups from your review.';
+      if (widget.initialResultPath == null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted && _canRun) _run(); });
+      }
+    }
+
   }
 
   @override
@@ -982,8 +896,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         final tasks = profiles.map((p) => p['task']).toSet();
         if (tasks.length == 1) {
           _fillProfile(profiles.first);
-        } else if (_task != 'Auto' && _kErpCorePresets.containsKey(_task)) {
-          _fillProfile(Map<String, dynamic>.from(_kErpCorePresets[_task]!));
+        } else if (_task != 'Auto' && erpCorePresets.containsKey(_task)) {
+          _fillProfile(Map<String, dynamic>.from(erpCorePresets[_task]!));
         } else {
           _fillProfile(null);
         }
@@ -1407,6 +1321,19 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     await _inspect();
   }
 
+  Future<void> _exportLinkedResults() async {
+    final destination = await FilePicker.getDirectoryPath(dialogTitle: 'Export ERP measurements and report');
+    if (destination == null) return;
+    var count = 0;
+    await for (final file in Directory(_output.text).list()) {
+      if (file is! File || !['.csv', '.pdf', '.ccserp', '.png', '.svg'].any(file.path.endsWith)) continue;
+      final target = '$destination${Platform.pathSeparator}${file.uri.pathSegments.last}';
+      if (File(target).absolute.path != file.absolute.path) await file.copy(target);
+      count++;
+    }
+    if (mounted) setState(() => _status = 'Exported $count ERP result files to $destination');
+  }
+
   Future<void> _run() async {
     final empty = _emptyConditions;
     if (empty.isNotEmpty) {
@@ -1626,9 +1553,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           _task = t;
                           if (t == 'Custom') {
                             _regroupEpochs = false;
-                          } else if (_kErpCorePresets.containsKey(t)) {
+                          } else if (erpCorePresets.containsKey(t)) {
                             _fillProfile(
-                              Map<String, dynamic>.from(_kErpCorePresets[t]!),
+                              Map<String, dynamic>.from(erpCorePresets[t]!),
                             );
                           }
                         });
@@ -1638,7 +1565,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           ],
         ),
         if (_profile != null &&
-            _kErpCorePresets.containsKey(_profile!['task'])) ...[
+            erpCorePresets.containsKey(_profile!['task'])) ...[
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(8),
@@ -1829,7 +1756,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            if (widget.config != null)
+            if (widget.config != null && !widget.linkedReview)
               ExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 title: const Text('Protocol', style: TextStyle(fontSize: 13)),
@@ -1843,7 +1770,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   ),
                 ],
               ),
-            if (!widget.batchMode && showStage1)
+            if (!widget.batchMode && showStage1 && !widget.linkedReview)
               _card('1  Recording', [
                 Text(
                   widget.activeRecording?.path.split(RegExp(r'[/\\]')).last ??
@@ -2129,7 +2056,19 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     child: const Text('Review files and participant IDs…'),
                   ),
               ]),
-            if (showStage2)
+            if (showStage2 && widget.linkedReview)
+              _card('ERP measurements', [
+                const Text('Uses the accepted trials from Epochs & ERP. Return to trial review to change inclusion.'),
+                const SizedBox(height: 8),
+                for (final c in _validConditions) Text('${c.name}: ${_conditionTrialCount(c)} trials'),
+                const Divider(),
+                _field(_roi, 'Measurement channels / ROI'),
+                _pair('Measurement window', _window0, _window1),
+                TextButton.icon(onPressed: _busy || _result == null ? null : _exportLinkedResults,
+                  icon: const Icon(Icons.save_alt), label: const Text('Export results…')),
+                Text('Trial window: ${_epoch0.text} to ${_epoch1.text} ms'),
+              ]),
+            if (showStage2 && !widget.linkedReview)
               _card(_isPrepared ? '2  Compare conditions' : '2  Task and event markers', [
                 if (!_isPrepared) ...[
                   _buildErpCorePresetBar(),
@@ -2538,7 +2477,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                 size: 17,
                               ),
                               label: Text(
-                                _busy ? 'Cancel' : 'Average & analyse ERP',
+                                _busy ? 'Cancel' : widget.linkedReview ? 'Update measurements' : 'Average & analyse ERP',
                               ),
                             ),
                           ),
@@ -4690,7 +4629,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 widget.batchMode
                     ? 'Choose a task folder, review the input type and task definitions, then run the batch.'
                     : _isPrepared
-                    ? '${widget.activeRecording?.epochCount ?? 0} trials ready.\nChoose conditions and a measurement window at left, then Average & analyse ERP.'
+                    ? widget.linkedReview ? 'Using the accepted trials and conditions from your review. Measurements are being prepared.' : '${widget.activeRecording?.epochCount ?? 0} trials ready.\nChoose conditions and a measurement window at left, then Average & analyse ERP.'
                     : '1. Define locking events and named groups in the Epochs step.\n2. Save event epochs (with cleaning if needed).\n3. Select saved groups A/B here, review the task and window, then average.',
                 textAlign: TextAlign.center,
               ),

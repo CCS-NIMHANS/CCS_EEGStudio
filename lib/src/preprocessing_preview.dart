@@ -1,3 +1,4 @@
+import 'recording_storage.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
@@ -19,6 +20,68 @@ class PreprocessingPreview {
   Map<String, dynamic> restoredSettings = {};
   Map<String, dynamic> restoredConfiguration = {};
   String? get cachePath => _directory?.path;
+
+  /// Export the displayed samples, never call the cleaning engine again.
+  Future<EegRecording> finalize({
+    required EegRecording recording,
+    required String outputPath,
+    required Map<String, Map<String, dynamic>> steps,
+  }) async {
+    await _initialize();
+    if (File(outputPath).absolute.path == File(baseline.path).absolute.path ||
+        File(outputPath).absolute.path == File(recording.path).absolute.path) {
+      throw ArgumentError(
+        'Choose a new output path to preserve original and cached samples.',
+      );
+    }
+    final full = await RecordingLoader().loadFull(recording);
+    await RecordingStorage.save(
+      full,
+      outputPath,
+      provenance: {
+        'source_path': baseline.path,
+        'finalized_preprocessing': true,
+        'interactive_applied_steps': steps,
+      },
+    );
+    final saved = await RecordingLoader().load(outputPath);
+    final stat = await File(outputPath).stat();
+    final copies = Map<String, dynamic>.from(
+      _manifest['finalized_copies'] as Map? ?? {},
+    );
+    copies[recording.path] = {
+      'path': outputPath,
+      'size': stat.size,
+      'modified': stat.modified.toIso8601String(),
+    };
+    _manifest['finalized_copies'] = copies;
+    await _writeManifest();
+    return saved;
+  }
+
+  Future<EegRecording?> finalizedCopyFor(EegRecording recording) async {
+    await _initialize();
+    try {
+      final entry =
+          (_manifest['finalized_copies'] as Map? ?? {})[recording.path] as Map?;
+      if (entry == null) return null;
+      final stat = await File(entry['path'] as String).stat();
+      if (stat.size != entry['size'] ||
+          stat.modified.toIso8601String() != entry['modified'])
+        return null;
+      return await RecordingLoader().load(entry['path'] as String);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeManifest() async {
+    final temp = File(
+      '${_directory!.path}/session-${DateTime.now().microsecondsSinceEpoch}.writing',
+    );
+    await temp.writeAsString(jsonEncode(_manifest));
+    await temp.rename('${_directory!.path}/session.json');
+  }
 
   Future<void> _initialize() async {
     if (_directory != null) return;
@@ -258,6 +321,8 @@ class PreprocessingPreview {
     // Commit the last state only after success. Stage checkpoints are atomic too.
     _manifest = {
       'schema': schema,
+      if (_manifest['finalized_copies'] != null)
+        'finalized_copies': _manifest['finalized_copies'],
       'baseline': baseline.path,
       'cache_directory': _directory!.path,
       'last': {
@@ -267,11 +332,7 @@ class PreprocessingPreview {
         'path': result.path,
       },
     };
-    final temp = File(
-      '${_directory!.path}/session-${DateTime.now().microsecondsSinceEpoch}.writing',
-    );
-    await temp.writeAsString(jsonEncode(_manifest));
-    await temp.rename('${_directory!.path}/session.json');
+    await _writeManifest();
     return result;
   }
 
@@ -506,4 +567,56 @@ Object? _identityCanonical(Object? value) {
     };
   if (value is List) return value.map(_identityCanonical).toList();
   return value;
+}
+
+/// The full configured run and individual step buttons use the same cache.
+/// Only enabled stages are included; finalisation itself only exports samples.
+Map<String, Map<String, dynamic>> configuredPreviewSteps(
+  Map<String, dynamic> options,
+) {
+  Map<String, dynamic> keys(List<String> names) => {
+    for (final name in names)
+      if (options.containsKey(name)) name: options[name],
+  };
+  return {
+    if (options['downsample'] == true)
+      'resample': keys(['downsample', 'downsample_freq']),
+    if (options['filter'] == true)
+      'filter': keys([
+        'filter',
+        'low_hz',
+        'high_hz',
+        'notch_hz',
+        'fir_taps',
+        'filter_type',
+        'iir_order',
+        'notch_width_hz',
+        'notch_transition_hz',
+      ]),
+    if (options['badchannel'] == true)
+      'badchannels': keys(['badchannel', 'bad_variance_ratio']),
+    if (options['ica_method'] != null && options['ica_method'] != 'none')
+      'ica': {
+        for (final e in options.entries)
+          if (e.key.startsWith('ica_')) e.key: e.value,
+      },
+    if (options['asr_mode'] != null && options['asr_mode'] != 'off')
+      'asr': {
+        for (final e in options.entries)
+          if (e.key.startsWith('asr_')) e.key: e.value,
+      },
+    if (options['muscle_method'] != null && options['muscle_method'] != 'none')
+      'muscle': keys([
+        'muscle_method',
+        'bsscca_n_remove',
+        'icc_threshold',
+        'wica_levels',
+      ]),
+    if (options['gedai'] == true)
+      'gedai': keys(['gedai', 'gedai_threshold', 'gedai_epoch_seconds']),
+    if (options['interpolate'] == true) 'interpolate': {'interpolate': true},
+    if (options['reference_mode'] != null &&
+        options['reference_mode'] != 'none')
+      'reference': keys(['reference_mode', 'reference_channels']),
+  };
 }

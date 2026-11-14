@@ -6,7 +6,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 void main() {
   testWidgets(
-    'ERP has separate Epochs, optional cleaning, direct open and version',
+    'ERP has one epoch and averaging workspace with optional cleaning',
     (tester) async {
       PackageInfo.setMockInitialValues(
         appName: 'CCS EEG Studio',
@@ -28,32 +28,24 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('ERP Analysis').last);
       await tester.pumpAndSettle();
-      expect(find.text('Epochs'), findsOneWidget);
-      expect(
-        tester.getTopLeft(find.text('Preprocess')).dx,
-        lessThan(tester.getTopLeft(find.text('Epochs')).dx),
-      );
+      expect(find.text('Epochs'), findsNothing);
+      expect(find.text('Epochs & ERP'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('erp-order-false')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Epoch → Clean').last);
       await tester.pumpAndSettle();
       expect(
-        tester.getTopLeft(find.text('Epochs')).dx,
+        tester.getTopLeft(find.text('Epochs & ERP')).dx,
         lessThan(tester.getTopLeft(find.text('Preprocess')).dx),
       );
       await tester.tap(find.byKey(const ValueKey('erp-order-true')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Clean → Epoch').last);
       await tester.pumpAndSettle();
-
       await tester.tap(find.text('Preprocess'));
       await tester.pumpAndSettle();
-      expect(find.text('Next: Epochs (skip cleaning)'), findsOneWidget);
-      await tester.tap(find.text('Next: Epochs (skip cleaning)'));
-      await tester.pumpAndSettle();
-      expect(find.text('Create trials for ERP averaging'), findsOneWidget);
-      expect(find.text('Open recording / preprocessed EEG…'), findsOneWidget);
-      await tester.tap(find.text('ERP Analysis').last);
+      expect(find.text('Next: Epochs & ERP'), findsOneWidget);
+      await tester.tap(find.text('Next: Epochs & ERP'));
       await tester.pumpAndSettle();
       expect(find.text('Open EEG / epochs'), findsOneWidget);
       expect(tester.takeException(), isNull);

@@ -1,3 +1,4 @@
+import 'erp/interactive_erp_workspace.dart';
 import 'source_review_workspace.dart';
 import 'package:crypto/crypto.dart';
 import 'reference_channel_picker.dart';
@@ -31,7 +32,6 @@ import 'recording_preparation_dialog.dart';
 import 'filtered_file_picker.dart';
 import 'group_statistics.dart';
 import 'processing_settings_dialog.dart';
-import 'erp_analysis.dart';
 import 'erp/erp_workbench_view.dart';
 import 'batch_profiles.dart';
 import 'erp/stim_epoch_panel.dart';
@@ -155,7 +155,7 @@ String _moduleLabel(_Module m) => switch (m) {
   _Module.sourceSpace => 'Source Space',
   _Module.featureExtraction => 'Feature Extraction',
   _Module.plotsReport => 'Plots & Report',
-  _Module.erpAnalysis => 'ERP Analysis',
+  _Module.erpAnalysis => 'Epochs & ERP',
   _Module.topoStats => 'TopoStats',
   _Module.microstates => 'Microstates',
 };
@@ -332,12 +332,18 @@ class _FeatureHomeState extends State<FeatureHome>
   EegRecording? _preprocessed;
   PreprocessingPreview? _previewSession;
   EegRecording? _interactivePreview;
+  EegRecording? _finalizedPreview;
+  bool get _previewNeedsFinalizing =>
+      _interactivePreview != null &&
+      (_appliedPreviewSteps.isNotEmpty || _finalizedPreview != null) &&
+      !identical(_finalizedPreview, _interactivePreview);
   final Map<String, Map<String, dynamic>> _appliedPreviewSteps = {};
 
   void _resetInteractivePreview() {
     final previous = _previewSession;
     _previewSession = null;
     _interactivePreview = null;
+    _finalizedPreview = null;
     _appliedPreviewSteps.clear();
     if (previous != null) unawaited(previous.dispose());
   }
@@ -355,10 +361,17 @@ class _FeatureHomeState extends State<FeatureHome>
           _log(m);
         },
       );
+      final saved = result == null
+          ? null
+          : await session.finalizedCopyFor(result);
       if (!mounted || !identical(_previewSession, session)) return;
       if (result != null) {
         setState(() {
           _interactivePreview = result;
+          if (saved != null) {
+            _preprocessed = saved;
+            _finalizedPreview = result;
+          }
           _appliedPreviewSteps
             ..clear()
             ..addAll(session.restoredSteps);
@@ -434,12 +447,17 @@ class _FeatureHomeState extends State<FeatureHome>
           _log(m);
         },
       );
+      final saved = await _previewSession!.finalizedCopyFor(result);
       if (!mounted || _stopRequested) return;
       setState(() {
         _appliedPreviewSteps
           ..clear()
           ..addAll(next);
         _interactivePreview = result;
+        if (saved != null) {
+          _preprocessed = saved;
+          _finalizedPreview = result;
+        }
         _source = null;
         _sourceInput = null;
         _selection = const ViewerSelection.empty();
@@ -454,31 +472,84 @@ class _FeatureHomeState extends State<FeatureHome>
   Future<void> _saveInteractivePreview() async {
     final recording = _interactivePreview;
     if (recording == null || _running) return;
+    final source = _previewSession?.baseline ?? recording;
     final path = await saveRecordingDialog(
       context,
-      dialogTitle: 'Save displayed preprocessing combination',
+      dialogTitle: 'Finalise preprocessing · save analysis copy',
+      initialDirectory: File(source.path).parent.path,
       fileName: erpOutputName(
-        _previewSession!.baseline.path,
+        source.path,
         extension: RecordingStorage.extension,
         epoched: recording.isEpoched,
         cleaned: true,
       ),
-      allowedExtensions: [RecordingStorage.extension],
-      type: FileType.custom,
     );
     if (path == null || !mounted) return;
-    setState(() => _running = true);
-    try {
-      await RecordingStorage.save(
-        recording,
-        RecordingStorage.withExtension(path),
+    if (File(path).absolute.path == File(source.path).absolute.path ||
+        File(path).absolute.path == File(recording.path).absolute.path) {
+      _log(
+        'Choose a new output filename to preserve the original and cached recording.',
       );
-      _log('Saved displayed preprocessing combination: $path');
+      return;
+    }
+    setState(() {
+      _running = true;
+      _progress = .1;
+      _logVisible = true;
+    });
+    try {
+      _log('Finalising the displayed cached signal. No cleaning is repeated…');
+      final saved = await _previewSession!.finalize(
+        recording: recording,
+        outputPath: path,
+        steps: _appliedPreviewSteps,
+      );
+      if (!mounted) return;
+      setState(() {
+        _preprocessed = saved;
+        _directInput = null;
+        _source = null;
+        _sourceInput = null;
+        _finalizedPreview = recording;
+        _selection = const ViewerSelection.empty();
+        _openedRecordings.removeWhere((r) => r.path == saved.path);
+        _openedRecordings.add(saved);
+        _progress = 1;
+      });
+      _log(
+        '✓ Analysis copy ready: $path. Epochs, ERP, source analysis and features use this file.',
+      );
     } catch (e) {
-      _log('Could not save preview: $e');
+      _log('Could not finalise preprocessing: $e');
     } finally {
       if (mounted) setState(() => _running = false);
     }
+  }
+
+  Future<bool> _ensureFinalizedInput() async {
+    if (!_previewNeedsFinalizing) return true;
+    final apply = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Finalise preprocessing first'),
+        content: const Text(
+          'Save the displayed preprocessing as an analysis copy. The cached signal is reused; cleaning is not repeated. This copy will be used by all following steps.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep reviewing'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Finalise & continue…'),
+          ),
+        ],
+      ),
+    );
+    if (apply != true || !mounted) return false;
+    await _saveInteractivePreview();
+    return !_previewNeedsFinalizing;
   }
 
   Widget _previewStep(
@@ -573,13 +644,12 @@ class _FeatureHomeState extends State<FeatureHome>
   EegRecording? get _activeRecording {
     if (_selectedModule == _Module.preprocess ||
         _selectedModule == _Module.loadRaw) {
-      return _interactivePreview ?? _directInput ?? _preprocessed ?? _raw;
+      return identical(_finalizedPreview, _interactivePreview) &&
+              _preprocessed != null
+          ? _preprocessed
+          : _interactivePreview ?? _directInput ?? _preprocessed ?? _raw;
     }
-    return _directInput ??
-        _source ??
-        _interactivePreview ??
-        _preprocessed ??
-        _raw;
+    return _directInput ?? _source ?? _preprocessed ?? _raw;
   }
 
   _Stage? get _activeStage {
@@ -1354,133 +1424,52 @@ class _FeatureHomeState extends State<FeatureHome>
   // ══════════════════════════════════════════════════════════════════════
 
   Future<void> _runPreprocessing() async {
-    final input = _previewSession?.baseline ?? _activeRecording;
-    if (input == null) {
-      _log('Load a raw recording first.');
-      return;
-    }
-    if (_gedaiEpochError case final error?) {
-      _log(error);
-      return;
-    }
-    if (_presetKey != 'erp' && _cfg.stimEpochs && !input.isEpoched) {
-      final spec = _cfg.stimEpochSpec!;
-      var count = 0;
-      String? selectionError;
-      try {
-        count = spec.selectEvents(input.markers, selection: _selection).length;
-      } catch (e) {
-        selectionError = e.toString();
-      }
-      if (count < 2 || selectionError != null) {
-        await showDialog<void>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Choose matching events'),
-            content: Text(
-              selectionError ??
-                  '$count events match the current selection. Select marker chips or add a named group in Event-based trials before preprocessing. The previous recording may use different event codes.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Back to event settings'),
-              ),
-            ],
-          ),
-        );
-        return;
-      }
-    }
-    final path = await saveRecordingDialog(
-      context,
-      dialogTitle: 'Save cleaned EEG file',
-      initialDirectory: File(input.path).parent.path,
-      fileName: erpOutputName(
-        input.path,
-        extension: RecordingStorage.extension,
-        epoched:
-            input.isEpoched ||
-            (_presetKey != 'erp' && (_cfg.stimEpochs || _cfg.epochBeforeGedai)),
-        cleaned: true,
-      ),
-      allowedExtensions: [RecordingStorage.extension],
-      type: FileType.custom,
-    );
-    if (path == null) return;
-    setState(() {
-      _running = true;
-      _stopRequested = false;
-      _progress = 0;
-      _logVisible = true;
-    });
-    try {
-      final cleaned = await _service.preprocess(
-        recording: input,
-        outputPath: RecordingStorage.withExtension(path),
-        selection: _selection,
-        outputOverlapSeconds:
-            (_presetKey == 'erp' || _cfg.stimEpochs || !_cfg.epochBeforeGedai)
-            ? 0
-            : _cfg.preprocessingOverlapSeconds,
-        outputWindowSeconds: _cfg.preprocessingEpochSeconds,
-        options: PreprocessingOptions.fromJson({
-          ..._cfg
-              .toPreprocessingOptions(nonEegChannels: _channels.nonEegChannels)
-              .toJson(),
-          if (_presetKey == 'erp') ...{
-            'stim_epochs_spec': null,
-            'epoch_before_gedai': false,
-          },
-        }),
-        onProgress: (p, m) {
-          _log(m);
-          setState(() => _progress = p);
-        },
-      );
+    if (_running) return;
+    if (_interactivePreview == null) {
+      final baseline = _raw ?? _activeRecording;
+      if (baseline == null) return;
+      _previewSession ??= PreprocessingPreview(baseline);
+      final options = _cfg
+          .toPreprocessingOptions(nonEegChannels: _channels.nonEegChannels)
+          .toJson();
+      final steps = configuredPreviewSteps(options);
       setState(() {
-        _resetInteractivePreview();
-        _preprocessed = cleaned;
-        _openedRecordings.removeWhere((r) => r.path == cleaned.path);
-        _openedRecordings.add(cleaned);
-        _source = null;
-        _sourceInput = null;
-        _directInput = null;
-        _channels = _channels.rebaseOnto(cleaned.labels);
-        _selection = const ViewerSelection.empty();
+        _running = true;
+        _stopRequested = false;
+        _progress = 0;
+        _logVisible = true;
       });
-      final hasErpOrEpochs =
-          _presetKey == 'erp' ||
-          _pipeline.contains(_Module.epochs) ||
-          _pipeline.contains(_Module.erpAnalysis);
-      if (hasErpOrEpochs) {
-        final nextMod = cleaned.isEpoched
-            ? _Module.erpAnalysis
-            : _Module.epochs;
-        setState(() => _selectedModule = nextMod);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '✓ Preprocessing complete. Advanced to ${_moduleLabel(nextMod)}.',
-              ),
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
+      try {
+        final result = await _previewSession!.compute(
+          service: _service,
+          steps: steps,
+          settings: options,
+          configuration: _cfg.toPreprocessingJson(),
+          onProgress: (p, m) {
+            _log(m);
+            if (mounted) setState(() => _progress = p);
+          },
+        );
+        if (!mounted || _stopRequested) return;
+        setState(() {
+          _interactivePreview = result;
+          _appliedPreviewSteps
+            ..clear()
+            ..addAll(steps);
+        });
+      } catch (e) {
+        _log('Preprocessing: $e');
+        return;
+      } finally {
+        if (mounted) setState(() => _running = false);
       }
-      _log(
-        '${recordingWarnings(cleaned).isEmpty ? '✓ Preprocessed' : '⚠ Saved with processing warnings'}: ${cleaned.path}',
-      );
-    } catch (e) {
-      _log('✗ ERROR: $e');
-    } finally {
-      if (mounted) setState(() => _running = false);
     }
+    await _saveInteractivePreview();
   }
 
   Future<void> _runSourceLocalisation({bool preview = false}) async {
-    final input = _interactivePreview ?? _preprocessed ?? _raw;
+    if (!await _ensureFinalizedInput() || !mounted) return;
+    final input = _preprocessed ?? _raw;
     if (input == null) {
       _log('Run Stage 1 or load a preprocessed file first.');
       return;
@@ -1622,6 +1611,7 @@ class _FeatureHomeState extends State<FeatureHome>
   /// and 2, instead of being reachable only from a global button at the bottom
   /// of the sidebar.
   Future<void> _runFeatureExtraction() async {
+    if (!await _ensureFinalizedInput() || !mounted) return;
     final input = _activeRecording;
     if (input == null) {
       _log('Load a file before running extraction.');
@@ -2167,6 +2157,16 @@ class _FeatureHomeState extends State<FeatureHome>
 
   List<_Module> get _orderedPipeline {
     final modules = List<_Module>.of(_pipeline);
+    if (modules.contains(_Module.erpAnalysis)) {
+      modules.remove(_Module.epochs);
+      if (_cfg.erpEpochFirst && modules.contains(_Module.preprocess)) {
+        modules.remove(_Module.erpAnalysis);
+        modules.insert(
+          modules.indexOf(_Module.preprocess),
+          _Module.erpAnalysis,
+        );
+      }
+    }
     if (_cfg.erpEpochFirst &&
         modules.contains(_Module.epochs) &&
         modules.contains(_Module.preprocess)) {
@@ -2834,10 +2834,49 @@ class _FeatureHomeState extends State<FeatureHome>
       return _buildWorkflowOverview();
     }
 
+    if (_previewNeedsFinalizing &&
+        mod != _Module.preprocess &&
+        mod != _Module.loadRaw) {
+      return Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 600),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.task_alt, size: 40),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Finalise preprocessing to continue',
+                    style: TextStyle(fontSize: 22),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'The displayed signal is a cached preview. Save an analysis copy once; this exact signal will feed epochs, ERP, source analysis and features without repeating cleaning.',
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: _running ? null : _saveInteractivePreview,
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('Finalise & use this signal…'),
+                  ),
+                  TextButton(
+                    onPressed: () =>
+                        setState(() => _selectedModule = _Module.preprocess),
+                    child: const Text('Back to preprocessing review'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     switch (mod) {
       case _Module.loadRaw:
       case _Module.preprocess:
-      case _Module.epochs:
       case _Module.sourceSpace:
         // These modules share the EEG viewer layout
         return _buildViewerLayout(mod);
@@ -2845,20 +2884,24 @@ class _FeatureHomeState extends State<FeatureHome>
         return _buildFeatureExtractionLayout();
       case _Module.plotsReport:
         return _buildPlotsLayout();
+      case _Module.epochs:
       case _Module.erpAnalysis:
-        return ErpAnalysisView(
+        return InteractiveErpWorkspace(
+          key: ValueKey(
+            'interactive-erp-${(_directInput ?? _preprocessed ?? _raw)?.path}',
+          ),
+          recording: _directInput ?? _preprocessed ?? _raw,
           config: _cfg,
-          onPrepare: () => setState(() => _selectedModule = _Module.epochs),
           onOpenRecording: () => _loadRaw(destination: _Module.erpAnalysis),
-          onOpenBatch: () => setState(() {
-            _batchProfile = 'ERP';
-            _batchMaximized = true;
+          onUseReviewed: (recording) => setState(() {
+            _resetInteractivePreview();
+            _raw = recording;
+            _preprocessed = null;
+            _directInput = null;
+            _source = null;
+            _sourceInput = null;
+            _selectedModule = _Module.preprocess;
           }),
-          activeRecording: _activeRecording,
-          extraFiles: [
-            for (final p in _batchPrepOutputs)
-              if (p.contains('-epo')) p,
-          ],
         );
       case _Module.topoStats:
         return TopoStatsView(
@@ -3344,6 +3387,7 @@ class _FeatureHomeState extends State<FeatureHome>
   }
 
   Future<void> _epochActiveRecording() async {
+    if (!await _ensureFinalizedInput() || !mounted) return;
     final input = _activeRecording;
     if (input == null || _running) return;
     if (input.isEpoched) {
@@ -3507,7 +3551,24 @@ class _FeatureHomeState extends State<FeatureHome>
             color: const Color(0xFF6C5CE7),
             onPressed: _running
                 ? null
-                : () => setState(() => _selectedModule = _Module.erpAnalysis),
+                : () async {
+                    if (!await _ensureFinalizedInput() || !mounted) return;
+                    await Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => Scaffold(
+                          appBar: AppBar(
+                            title: const Text('ERP workbench & saved results'),
+                          ),
+                          body: ErpWorkbenchView(
+                            activeRecording:
+                                _directInput ?? _preprocessed ?? _raw,
+                            config: _cfg,
+                            batchMode: false,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
           ),
           if (_openedRecordings.isNotEmpty) ...[
             const SizedBox(height: 12),
@@ -3585,11 +3646,22 @@ class _FeatureHomeState extends State<FeatureHome>
               icon: const Icon(Icons.arrow_forward),
               label: Text(
                 _activeRecording?.isEpoched == true
-                    ? 'Next: ERP Analysis (skip cleaning)'
-                    : 'Next: Epochs (skip cleaning)',
+                    ? 'Next: Epochs & ERP'
+                    : _previewNeedsFinalizing
+                    ? 'Next: Finalise for Epochs & ERP'
+                    : 'Next: Epochs & ERP',
               ),
             ),
           ],
+          if (!_batchMaximized && _interactivePreview != null)
+            _infoBox(
+              _previewNeedsFinalizing
+                  ? 'Preview only · finalise this signal before analysis. Unapplied setting edits are not included.'
+                  : _preprocessed != null
+                  ? 'Analysis input: ${_preprocessed!.path} · following steps use this saved copy.'
+                  : 'Original input selected · apply processing steps or continue with the original signal.',
+              _previewNeedsFinalizing ? _accentAmber : _accentGreen,
+            ),
           if (_step1OptsExpanded) _buildPreprocessingOptions(),
           const SizedBox(height: 8),
           if (_presetKey != 'erp' &&
@@ -3617,7 +3689,9 @@ class _FeatureHomeState extends State<FeatureHome>
                     _cfg.stimEpochs &&
                     !(_activeRecording?.isEpoched ?? false)
                 ? 'Clean + epoch (additional cleaning)'
-                : 'Run Preprocessing',
+                : _interactivePreview != null
+                ? 'Finalise preprocessing…'
+                : 'Compute & finalise preprocessing…',
             icon: Icons.cleaning_services,
             color: _accentPurple,
             enabled: !_running && _raw != null,
@@ -4246,7 +4320,7 @@ class _FeatureHomeState extends State<FeatureHome>
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 8),
             child: Text(
-              'Interactive preview · expand a bar to configure it, then Apply. Toggle steps in any order; processing follows pipeline order. Unchanged earlier stages are reused. New downstream results compute once. Results and the last displayed combination are remembered for this input file. Save displayed combination exports this preview. The full preprocessing run uses the Include in saved pipeline settings.',
+              'Apply steps to review their effect. Finalise saves the exact displayed signal as your analysis copy; it reuses the cache and never repeats cleaning. Following steps use that saved copy. Changing applied steps requires finalising the new signal.',
               style: TextStyle(fontSize: 11, color: _textMuted),
             ),
           ),
@@ -4280,7 +4354,7 @@ class _FeatureHomeState extends State<FeatureHome>
                     ? null
                     : _saveInteractivePreview,
                 icon: const Icon(Icons.save_outlined),
-                label: const Text('Save displayed combination…'),
+                label: const Text('Finalise & use this signal…'),
               ),
             ],
           ),
@@ -4307,7 +4381,7 @@ class _FeatureHomeState extends State<FeatureHome>
           {'downsample': true, 'downsample_freq': _cfg.downsampleFreq},
           [
             _check(
-              'Include in saved pipeline',
+              'Default for new configured runs',
               _cfg.downsample,
               (v) => _cfg.downsample = v,
             ),
@@ -4336,7 +4410,7 @@ class _FeatureHomeState extends State<FeatureHome>
           },
           [
             _check(
-              'Include in saved pipeline',
+              'Default for new configured runs',
               _cfg.filter,
               (v) => _cfg.filter = v,
             ),
@@ -4363,7 +4437,7 @@ class _FeatureHomeState extends State<FeatureHome>
           },
           [
             _check(
-              'Include in saved pipeline',
+              'Default for new configured runs',
               _cfg.badChannels,
               (v) => _cfg.badChannels = v,
             ),
@@ -4525,7 +4599,7 @@ class _FeatureHomeState extends State<FeatureHome>
           },
           [
             _check(
-              'Include in saved pipeline',
+              'Default for new configured runs',
               _cfg.gedai,
               (v) => _cfg.gedai = v,
             ),
@@ -4573,7 +4647,7 @@ class _FeatureHomeState extends State<FeatureHome>
           {'interpolate': true},
           [
             _check(
-              'Include in saved pipeline',
+              'Default for new configured runs',
               _cfg.interpolate,
               (v) => _cfg.interpolate = v,
             ),

@@ -4,6 +4,29 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.43]
+
+### Streamlined interactive ERP workflow
+
+- **One Epochs & ERP workspace:** collapsible protocol, trial-review and averaging bars replace the overlapping tabs. Browse individual trials, exclude/reinstate them, and see condition averages update immediately with retained trial timing and annotations.
+- **Inline ERP measurements:** keep measurements and models inside the main application workspace. Accepted trials are passed through automatically using a cached portable recording; no Save dialog, second file selection or repeated condition assignment is required. Return to trial review or live averages without a separate window.
+- **Correct named-condition handoff:** use actual accepted epoch labels instead of matching them against original event codes. Preserve ERP-CORE contrast order even when the first recorded trial belongs to the other condition. Fix false zero-matching-epoch warnings for reviewed P3 data.
+- **Preprocessing finalisation:** export the exact displayed cached samples as the analysis copy without repeating filtering, ICA, ASR or GEDAI. Following modules use that saved copy explicitly. Remember the finalised handoff per cached combination and restore it on reopening.
+- **Persistent, reversible review:** save trial exclusion decisions locally; accepted-epoch exports preserve labels, source onsets, annotations and review provenance. Keep epoch-first cleaning and the standalone advanced workbench available.
+- **Clearer ERP display:** start at the task's measurement channel where available, use a fixed range based on the initial condition averages, and remove redundant trial-navigation sliders from the single-trial viewer.
+- Automatically reuse completed measurements for an unchanged review; export measurement tables and reports with a dedicated action.
+
+## [1.2.42]
+
+### Unified epoch / ERP review and explicit preprocessing handoff
+
+- Combine the overlapping Epochs and ERP navigation into one **Epochs & ERP** workspace. Collapsed bars hold shared ERP-CORE/custom protocol settings, epoch review, and averaging/export.
+- Browse individual trials and condition groups, exclude or reinstate trials without deleting original samples, and immediately update descriptive condition averages. Keep a live ERP panel visible while browsing epochs.
+- Save review decisions beside the input under `.ccs_eegstudio_cache/erp_review/` (with a user-configuration fallback). Export accepted trials with labels, original timing, annotations and rejection provenance for advanced measurements and models.
+- **Finalise preprocessing** exports the exact displayed cached signal instead of rerunning the cleaners. Configured runs also use the interactive cache. Downstream modules prompt for finalisation and use the saved analysis copy explicitly.
+- Remember the finalised copy for each cached combination and restore its handoff on reopening or returning to that combination. Changing the applied signal requires a new finalisation.
+- Retain the epoch-first cleaning option and the advanced ERP workbench / saved-results access.
+
 ## [1.2.41]
 
 ### Recording save and source-feature plotting fixes

@@ -38,7 +38,7 @@ void main() {
 
     await tester.tap(find.text('Preprocess'));
     await tester.pumpAndSettle();
-    expect(find.text('Run Preprocessing'), findsOneWidget);
+    expect(find.text('Compute & finalise preprocessing…'), findsOneWidget);
 
     await tester.tap(find.text('Feature Extraction'));
     await tester.pumpAndSettle();
@@ -62,12 +62,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Open Recording…'), findsOneWidget);
     expect(find.text('Preprocessing Options'), findsNothing);
-    expect(find.text('Run Preprocessing'), findsNothing);
+    expect(find.text('Compute & finalise preprocessing…'), findsNothing);
 
     await tester.tap(find.text('Preprocess'));
     await tester.pumpAndSettle();
     expect(find.text('Preprocessing Options'), findsOneWidget);
-    expect(find.text('Run Preprocessing'), findsOneWidget);
+    expect(find.text('Compute & finalise preprocessing…'), findsOneWidget);
   });
 
   testWidgets(
@@ -346,7 +346,7 @@ void main() {
     await tester.tap(find.text('Preprocess'));
     await tester.pumpAndSettle();
     expect(
-      buttonWithLabel('Run Preprocessing').onPressed,
+      buttonWithLabel('Compute & finalise preprocessing…').onPressed,
       isNull,
       reason: 'no recording loaded yet',
     );

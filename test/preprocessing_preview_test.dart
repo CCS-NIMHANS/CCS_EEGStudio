@@ -55,6 +55,55 @@ EegRecording _recording({
 
 void main() {
   test(
+    'finalisation exports cached samples and restores the handoff without an engine rerun',
+    () async {
+      final root = await Directory.systemTemp.createTemp('finalize-preview-');
+      addTearDown(() => root.delete(recursive: true));
+      final raw = _recording(path: '${root.path}/raw.ccseeg');
+      await RecordingStorage.save(raw, raw.path);
+      final engine = _Engine();
+      final session = PreprocessingPreview(
+        raw,
+        cacheRoot: Directory('${root.path}/cache'),
+      );
+      final steps = <String, Map<String, dynamic>>{
+        'filter': {'filter': true, 'low_hz': .5},
+      };
+      final result = await session.compute(
+        service: engine,
+        steps: steps,
+        settings: AnalysisConfig().toPreprocessingOptions().toJson(),
+        onProgress: (_, _) {},
+      );
+      final saved = await session.finalize(
+        recording: result,
+        outputPath: '${root.path}/final.ccseeg',
+        steps: steps,
+      );
+      expect(engine.calls, hasLength(1));
+      expect(saved.preview, result.preview);
+      expect(saved.provenance['finalized_preprocessing'], true);
+      expect(saved.provenance['interactive_applied_steps'], steps);
+      final reopened = PreprocessingPreview(
+        raw,
+        cacheRoot: Directory('${root.path}/cache'),
+      );
+      final restored = await reopened.restore(
+        service: engine,
+        onProgress: (_, _) {},
+      );
+      expect(restored, isNotNull);
+      expect((await reopened.finalizedCopyFor(restored!))!.path, saved.path);
+      expect(engine.calls, hasLength(1));
+      await expectLater(
+        session.finalize(recording: result, outputPath: raw.path, steps: steps),
+        throwsArgumentError,
+      );
+      await File(saved.path).writeAsString('changed');
+      expect(await reopened.finalizedCopyFor(restored), isNull);
+    },
+  );
+  test(
     'arbitrary disable rebuilds from baseline and revisits use cache',
     () async {
       final raw = _recording(), engine = _Engine();

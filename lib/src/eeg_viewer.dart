@@ -31,12 +31,15 @@ class EegViewer extends StatefulWidget {
     this.cursorSeconds,
     this.highlightWindowSeconds = 0,
     this.onTimeSelected,
+    this.externalEpochNavigation = false,
     this.filterEnabled = false,
     this.lowHz = 0.5,
     this.highHz = 40.0,
     this.notchHz = 50.0,
   });
 
+  /// Parent workspace supplies the trial picker for a single-trial view.
+  final bool externalEpochNavigation;
   final bool autoscaleByDefault;
   final Map<String, Color> traceColors;
   final double? cursorSeconds;
@@ -297,7 +300,9 @@ class _EegViewerState extends State<EegViewer> {
                 ),
               ),
             const SizedBox(height: 2),
-            if (eeg.isEpoched && !_stitchEpochs) ...[
+            if (eeg.isEpoched &&
+                !_stitchEpochs &&
+                !widget.externalEpochNavigation) ...[
               _buildEpochStepper(eeg),
               const SizedBox(height: 4),
             ] else if (maxStart > 0 && _overviewVisible && !_waveformFocus) ...[
@@ -385,7 +390,9 @@ class _EegViewerState extends State<EegViewer> {
                 label: (v) => '$v s',
                 onChanged: (v) => setState(() => _windowSeconds = v!),
               ),
-            if (eeg.isEpoched && !(_controlsExpanded && !_waveformFocus))
+            if (eeg.isEpoched &&
+                !widget.externalEpochNavigation &&
+                !(_controlsExpanded && !_waveformFocus))
               toggle(
                 'Stitch epochs',
                 Icons.view_week,
@@ -499,7 +506,9 @@ class _EegViewerState extends State<EegViewer> {
                   const SizedBox(width: 4),
                   if (eeg.isEpoched)
                     _badge(
-                      '${eeg.epochCount} epochs • ${eeg.epochDurationSeconds.toStringAsFixed(2)}s/ep',
+                      widget.externalEpochNavigation
+                          ? 'Trial window · ${eeg.epochDurationSeconds.toStringAsFixed(2)} s'
+                          : '${eeg.epochCount} epochs • ${eeg.epochDurationSeconds.toStringAsFixed(2)}s/ep',
                       const Color(0xFF22C55E),
                     )
                   else
@@ -512,7 +521,7 @@ class _EegViewerState extends State<EegViewer> {
                       'Display filters running · raw preview',
                       const Color(0xFFF59E0B),
                     ),
-                  if (eeg.isEpoched) ...[
+                  if (eeg.isEpoched && !widget.externalEpochNavigation) ...[
                     const SizedBox(width: 4),
                     if (_stitchEpochs)
                       _badge('Stitched epochs', const Color(0xFFA855F7))
@@ -732,7 +741,7 @@ class _EegViewerState extends State<EegViewer> {
           onSelected: (v) => setState(() => _autoscale = v),
           visualDensity: VisualDensity.compact,
         ),
-        if (eeg.isEpoched)
+        if (eeg.isEpoched && !widget.externalEpochNavigation)
           FilterChip(
             avatar: const Icon(Icons.view_week, size: 14),
             label: const Text('Stitch epochs', style: TextStyle(fontSize: 12)),
