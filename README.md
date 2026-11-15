@@ -24,50 +24,10 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.32</b> ·
+  <b>Current version: 1.2.45</b> ·
   <a href="CHANGELOG.md">Detailed changelog</a> ·
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/issues">Report a problem</a>
 </p>
-
-### Cleaned output and analysis epochs — 1.2.32
-
-Preprocessing now defaults to **continuous cleaned EEG**. GEDAI's 1-second internal processing blocks do not determine saved epochs. The visible **Saved output** section offers continuous recording, event-based trials, or optional fixed windows with independent length and overlap. Feature Extraction creates its own analysis windows from continuous input. Saved trials are reused at their actual length unless explicitly subdivided; parent trial boundaries are preserved.
-
-**Connected epoch controls:** In a linked EEG batch, choosing fixed windows or event trials in Preprocessing makes Feature Extraction show **Saved epochs**. Reuse them as-is, or enable **Subdivide saved epochs** to set a shorter length and overlap within each parent trial. Continuous output shows the regular analysis-window controls. For direct file queues, use **Inspect saved epochs from a file…** to adapt the controls to a representative recording; execution always checks each recording's actual structure.
-
-For event trials, choose **Define events & condition groups…**. Select a representative queued file to view its markers, name conditions, and set trial/baseline windows. Response inclusion and advanced matching remain available in collapsible sections. The same ERP editor and `.ccsprotocol` definitions are reused. **Inspect input structure…** identifies continuous versus already-epoched preprocessing inputs. Mixed queues may contain both structures; saved trials are never implicitly joined.
-
-**Rerun recordings affected by the old 1-second default:**
-
-1. Install 1.2.32 using **Updates → Check for updates → Download and install**.
-2. In Batch Workspace → EEG, select the original raw recordings, not the previous `-epo_clean` outputs. Review the EEG channel mapping and preprocessing settings.
-3. Under preprocessing **Saved output**, choose **Continuous recording**. Save into a new output folder so old results remain identifiable.
-4. In Feature Extraction, set the intended epoch length and overlap, for example **5 seconds / 2 seconds**, and use the new Stage 1 outputs.
-5. Check the cleaned file shows continuous duration rather than a 1-second epoch badge. Feature CSV rows represent the new analysis windows.
-
-Installing the update does not join or repair existing 1-second trials. To obtain longer windows, regenerate from the original continuous data. Explicit fixed output is available when saved epochs are actually wanted; its window length is independent of GEDAI. Three complete raw EDFs were validated through cleaning, EDF export and overlapping feature extraction; see [release details](CHANGELOG.md#1232).
-
-> **Important in 1.2.16:** corrected preprocessing resampling/event alignment, including 256→250 Hz. Version 1.2.15 used an incorrect rate ratio that can shift response-locked samples and reverse an ERP contrast. Regenerate affected outputs from their original inputs; an application update cannot repair already-misaligned epochs. See [the diagnosis, validation and recovery guidance](docs/erp_workbench.md#resampling-correction-and-existing-results). Individual-trial measurement CSV export is now optional and off by default; use `erp_measurements.csv` for conventional ERP condition averages.
-
-### ERP analysis and interactive batch review — 1.2.15
-
-The ERP workspace now supports single-recording and batch ERP CORE analysis for **MMN, N170, N2pc, N400, P3, LRP and ERN**. Import a folder, inspect proposed marker assignments, review task-specific windows/ROIs, and run to obtain waveforms, peaks/mean amplitudes/AUC, participant-level statistics, topographical inference and a compact PDF. Custom event classes and per-task settings are editable. Interactive ERP uses the active saved trial file and asks for condition groups; all multi-recording work is under Batch Workspace profiles for EEG, ERP and Microstates.
-
-Optional native Rust analyses include multichannel rERP, sparse continuous FIR overlap correction, shrinkage-LDA decoding and temporal generalization. Metadata-driven group models accept condition or difference-wave measurements. The FIR model implements a defined linear subset of Unfold; complete toolbox parity is not claimed. A 14-recording ERP CORE pilot matched independently reconstructed MNE/NumPy trial counts and ROI waveforms.
-
-**Recommended ERP workflow:**
-
-1. Open a recording and choose locking events, named condition groups, trial limits and baseline. **Epoch Events** and Preprocess share the same protocol.
-2. For already-cleaned data, choose **Epoch only (keep existing cleaning)**; otherwise review the cleaners and run **Clean + epoch**. Saved files distinguish `-epo` from `-epo_clean`.
-3. Select saved A/B conditions, component, ROI and measurement window, then **Average & analyse ERP**. Trials are reused, not cut a second time.
-4. For multiple recordings, use **Batch Workspace → ERP**. Open **Interactive batch review** to select participants or individual recordings, overlay differences, adjust the measurement window, inspect scalp maps and view equal-participant grand averages with ±1 SEM.
-5. Label participant cohorts, select CSV parameters, and export or open group statistics. Exported measurements use unsmoothed waveforms. Save/load protocols to reuse event definitions and analysis settings.
-
-**Interpretation:** negative-up is a display convention; component polarity selects a peak and never flips voltages. The difference is always B−A. Conventional ERN comparison is A=Correct, B=Incorrect. Additional cleaning can change an ERP that was already cleaned upstream. Existing files are not silently repaired or inverted. Live window changes update descriptive measurements/maps; inferential tests require a new group-statistics run. Older ERP results need re-averaging for arbitrary-window scalp maps.
-
-**Additional native methods:** MNE, dSPM, sLORETA and LCMV inverse operators, imported fixed-orientation forward/atlas models, Gaussian-copula MI, within-epoch lagged-time transfer entropy, and configurable graph summaries. HCPex requires a compatible user-supplied atlas/forward model; atlas data are not bundled. See [source methods, graph definitions, estimator scope and references](docs/source_information_graph.md) and [event-preserving feature exports](docs/feature_event_markers.md).
-
-See [ERP workflow, methods, references, numerical validation and limitations](docs/erp_workbench.md). Version 1.2.15 includes these workflows. Open **Updates** to download the release for your platform.
 
 <p align="center">
   <a href="#-quick-download"><b>📥 Download App</b></a> &nbsp;•&nbsp;
@@ -155,6 +115,14 @@ The updater fetches the current installer on each run. Downloads use a private t
 | ⬆️ | Built-in update checker downloads and installs verified packages directly from GitHub Releases |
 
 ---
+
+## New in 1.2.45: ERP analysis overhaul, ERSP/ITC & topoplot selection
+
+- **Unified Epochs & ERP Workspace:** Recording tab carry-over (`raw`, `clean`, `interactive preview`) stays synchronized across modules, with streamlined **Trial Review & ERPimage** and **ERP Analysis & Measurements** modes.
+- **Interactive Topoplot Pickers & Measurement Windows:** Select or toggle electrodes directly from 2D scalp topoplots, drag horizontally on the ERP waveform to set measurement windows, and toggle **Butterfly Plot** / GFP overlays.
+- **Baseline Correction, ERPimage & Channel Math:** Interactive `[start, end] ms` baseline correction, sortable single-trial **ERPimage** heatmaps with click/drag trial rejection, guided **rERP** overlap correction, and **Channel Manipulations** (`N2pc`, `LRP`, `Contra − Ipsi`, custom `Ch A − Ch B`).
+- **Statistics, Decoding & Time-Frequency:** Within-subject cluster permutation tests, scalp eTFCE, 1-click Shrinkage LDA decoding with temporal generalization, and parallelized Morlet wavelet **ERSP (dB)** / **ITC (0–1)** panels with CSV export.
+- **Filter Disabling & Formatted Release Notes:** Empty High-pass/Low-pass/Notch filter boxes now cleanly disable the filter (`0.0`), and in-app update dialogs render structured Markdown release notes. See [CHANGELOG.md](CHANGELOG.md#1245) for full details across 1.2.40–1.2.45.
 
 ## New in 1.2.29: compact workflow navigation
 
