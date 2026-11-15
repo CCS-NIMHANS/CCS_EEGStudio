@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'topo_channel_selector.dart';
 import 'workbench_figures.dart';
 import 'review_math.dart';
 
@@ -146,6 +147,7 @@ class ErpChannelGrid extends StatefulWidget {
 
 class _ErpChannelGridState extends State<ErpChannelGrid> {
   int _columns = 3;
+  bool _showTopoPicker = false;
   Set<String>? _internalSelected;
 
   static Set<String> defaultChannelSubset(
@@ -241,6 +243,14 @@ class _ErpChannelGridState extends State<ErpChannelGrid> {
                   ),
                 ),
                 const Spacer(),
+                FilterChip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: const Icon(Icons.radar, size: 14),
+                  label: const Text('Select from Topoplot', style: TextStyle(fontSize: 11)),
+                  selected: _showTopoPicker,
+                  onSelected: (v) => setState(() => _showTopoPicker = v),
+                ),
+                const SizedBox(width: 8),
                 SizedBox(
                   height: 28,
                   child: DropdownButton<int>(
@@ -318,6 +328,26 @@ class _ErpChannelGridState extends State<ErpChannelGrid> {
                 ),
               ],
             ),
+            if (_showTopoPicker) ...[
+              const SizedBox(height: 10),
+              Center(
+                child: TopoChannelSelector(
+                  availableChannels: labels,
+                  selectedChannels: selected,
+                  multiSelect: true,
+                  size: 250,
+                  onToggleChannel: (ch) {
+                    final next = {...selected};
+                    if (next.contains(ch)) {
+                      next.remove(ch);
+                    } else {
+                      next.add(ch);
+                    }
+                    _updateSelected(next);
+                  },
+                ),
+              ),
+            ],
             const SizedBox(height: 6),
             // Always-visible channel chips
             Wrap(

@@ -72,6 +72,39 @@ class ErpWorkbenchService {
       if (await temp.exists()) await temp.delete(recursive: true);
     }
   }
+
+  Future<Map<String, dynamic>> runErspItc(Map<String, dynamic> payload) async {
+    return _runDirectJob({'job_type': 'ersp_itc', ...payload});
+  }
+
+  Future<Map<String, dynamic>> runWithinErpStats(
+    Map<String, dynamic> payload,
+  ) async {
+    return _runDirectJob({'job_type': 'erp_within_stats', ...payload});
+  }
+
+  Future<Map<String, dynamic>> _runDirectJob(
+    Map<String, dynamic> payload,
+  ) async {
+    final temp = await Directory.systemTemp.createTemp('ccs_erp_direct_');
+    try {
+      final job = File('${temp.path}/job.json');
+      await job.writeAsString(jsonEncode(payload));
+      final result = await Process.run(ExtractionService.findEngine(), [
+        job.path,
+      ]);
+      if (result.exitCode != 0) {
+        throw StateError(
+          '${result.stderr}'.trim().isEmpty
+              ? 'Engine error (exit ${result.exitCode})'
+              : '${result.stderr}',
+        );
+      }
+      return Map<String, dynamic>.from(jsonDecode('${result.stdout}') as Map);
+    } finally {
+      if (await temp.exists()) await temp.delete(recursive: true);
+    }
+  }
 }
 
 /// Extract participant / subject identifier generically from path, directory hierarchy,

@@ -1,4 +1,5 @@
 import 'erp_core_presets.dart';
+import 'ersp_itc_panel.dart';
 import 'axis_controls.dart';
 import 'dart:io';
 import 'dart:convert';
@@ -18,6 +19,7 @@ import 'protocol_tools.dart';
 import 'review_workspace.dart';
 import 'review_math.dart';
 import 'channel_grid.dart';
+import 'topo_channel_selector.dart';
 import 'publication_plots.dart';
 
 class ErpConditionConfig {
@@ -136,6 +138,17 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   final int _activeStage = 0; // 0 = All stages, 1..4 = focused modular stage
   String? _primaryPlotChannel; // null = Task ROI average, or specific channel name
   bool _showAxisLimits = false;
+  bool _showButterfly = false;
+  bool _showChannelMath = false;
+  String _butterflyCondition = 'difference';
+  String _lateralPreset = 'N2pc';
+  String? _mathChanA;
+  String? _mathChanB;
+  List<double>? _dragWindowSec;
+  double? _dragStartSec;
+  Map<String, dynamic>? _withinStats;
+  bool _withinStatsBusy = false;
+  final String _withinStatsContrast = 'conditions';
 
   // Uniform 4-Stage Batch Workspace state
   bool _batchPreprocessedInput = false;
@@ -536,7 +549,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 8, vsync: this);
+    _tabs = TabController(length: 9, vsync: this);
     _restoreProtocol();
     if (widget.initialResultPath != null) {
       final result = Map<String, dynamic>.from(
@@ -1595,6 +1608,220 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           ),
         ],
       ],
+    );
+  }
+
+  Future<void> _runWithinSubjectStats(
+    Map<String, dynamic> d,
+    List<Map<String, dynamic>> current,
+  ) async {
+    final activeRec = widget.activeRecording;
+    final recPath = activeRec?.path ?? (current.isNotEmpty ? current.first['path']?.toString() : null);
+    if (recPath == null || recPath.isEmpty || _withinStatsBusy) return;
+
+    final profile = erpMap(d['profile']);
+    final roi = (profile['roi'] as List? ?? []).map((e) => e.toString()).toList();
+    final win = erpNumbers(profile['window']);
+    final base = erpNumbers(profile['baseline']);
+    final winStartMs = win.length == 2 ? win[0] * 1000.0 : (double.tryParse(_window0.text) ?? 300.0);
+    final winEndMs = win.length == 2 ? win[1] * 1000.0 : (double.tryParse(_window1.text) ?? 600.0);
+    final baseStartMs = base.length == 2 ? base[0] * 1000.0 : (double.tryParse(_base0.text) ?? -200.0);
+    final baseEndMs = base.length == 2 ? base[1] * 1000.0 : (double.tryParse(_base1.text) ?? 0.0);
+
+    // Resolve trial indices by condition from activeRecording if epoched
+    final condATrials = <int>[];
+    final condBTrials = <int>[];
+    if (activeRec != null && activeRec.isEpoched && activeRec.epochLabels != null) {
+      final aName = profile['a_name']?.toString() ?? (_conditions.isNotEmpty ? _conditions[0].name : 'A');
+      final bName = profile['b_name']?.toString() ?? (_conditions.length > 1 ? _conditions[1].name : 'B');
+      for (var i = 0; i < activeRec.epochLabels!.length; i++) {
+        final lbl = activeRec.epochLabels![i];
+        if (_savedA.contains(lbl) || lbl == aName) {
+          condATrials.add(i);
+        } else if (_savedB.contains(lbl) || lbl == bName) {
+          condBTrials.add(i);
+        }
+      }
+    }
+
+    setState(() => _withinStatsBusy = true);
+    try {
+      final res = await _service.runWithinErpStats({
+        'recording_path': recPath,
+        'channel_name': _primaryPlotChannel ?? 'ROI',
+        'roi_channels': roi,
+        'condition_a_trials': condATrials,
+        'condition_b_trials': _withinStatsContrast == 'baseline' ? <int>[] : condBTrials,
+        if (activeRec?.epochTmin != null) 'epoch_tmin_ms': activeRec!.epochTmin! * 1000.0,
+        'window_start_ms': winStartMs,
+        'window_end_ms': winEndMs,
+        'baseline_start_ms': baseStartMs,
+        'baseline_end_ms': baseEndMs,
+        'n_perm': 400,
+      });
+      if (!mounted) return;
+      setState(() => _withinStats = res);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _status = 'Within-subject stats failed: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _withinStatsBusy = false);
+    }
+  }
+
+  Map<String, List<double>> _extractButterflyChannelWaves(
+    Map<String, dynamic> d,
+    List<Map<String, dynamic>> current,
+  ) {
+    final labels = (d['labels'] as List? ?? []).cast<String>();
+    final activeFile = current.firstWhere(
+      (f) => _file == null || f['path'] == _file,
+      orElse: () => d,
+    );
+    final rawWaves = erpMap(activeFile['channel_waves'] ?? d['channel_waves']);
+    final out = <String, List<double>>{};
+    for (final ch in labels) {
+      final chMap = erpMap(rawWaves[ch]);
+      List<double> w;
+      if (_butterflyCondition == 'a') {
+        w = erpNumbers(chMap['a']);
+      } else if (_butterflyCondition == 'b') {
+        w = erpNumbers(chMap['b']);
+      } else {
+        final a = erpNumbers(chMap['a']);
+        final b = erpNumbers(chMap['b']);
+        w = [
+          for (var i = 0; i < math.min(a.length, b.length); i++) b[i] - a[i],
+        ];
+      }
+      if (w.isNotEmpty) out[ch] = w;
+    }
+    return out;
+  }
+
+  Widget _buildChannelMathSection(
+    Map<String, dynamic> d,
+    List<Map<String, dynamic>> current,
+  ) {
+    final labels = (d['labels'] as List? ?? []).cast<String>();
+    final times = erpNumbers(d['times']);
+    final activeFile = current.firstWhere(
+      (f) => _file == null || f['path'] == _file,
+      orElse: () => d,
+    );
+    final rawWaves = erpMap(activeFile['channel_waves'] ?? d['channel_waves']);
+    final profile = erpMap(d['profile']);
+
+    String pick(List<String> candidates) {
+      for (final c in candidates) {
+        final m = labels.firstWhere((l) => l.toUpperCase() == c.toUpperCase(), orElse: () => '');
+        if (m.isNotEmpty) return m;
+      }
+      return labels.isNotEmpty ? labels.first : '';
+    }
+
+    String chLeft, chRight;
+    String title;
+    if (_lateralPreset == 'N2pc') {
+      chLeft = pick(['PO7', 'P7', 'O1']);
+      chRight = pick(['PO8', 'P8', 'O2']);
+      title = 'N2pc Lateralized Contrast ($chLeft vs $chRight)';
+    } else if (_lateralPreset == 'LRP') {
+      chLeft = pick(['C3', 'FC3', 'CP3']);
+      chRight = pick(['C4', 'FC4', 'CP4']);
+      title = 'LRP Lateralized Contrast ($chLeft vs $chRight)';
+    } else {
+      chLeft = _mathChanA ?? (labels.isNotEmpty ? labels.first : '');
+      chRight = _mathChanB ?? (labels.length > 1 ? labels[1] : chLeft);
+      title = 'Custom Channel Algebra ($chLeft − $chRight)';
+    }
+
+    final wLeftA = erpNumbers(erpMap(rawWaves[chLeft])['a']);
+    final wLeftB = erpNumbers(erpMap(rawWaves[chLeft])['b']);
+    final wRightA = erpNumbers(erpMap(rawWaves[chRight])['a']);
+    final wRightB = erpNumbers(erpMap(rawWaves[chRight])['b']);
+    final n = [times.length, wLeftA.length, wRightA.length, wLeftB.length, wRightB.length].reduce(math.min);
+
+    final ipsi = <double>[
+      for (var i = 0; i < n; i++) (wLeftA[i] + wRightB[i]) / 2.0,
+    ];
+    final contra = <double>[
+      for (var i = 0; i < n; i++) (wRightA[i] + wLeftB[i]) / 2.0,
+    ];
+    final diff = <double>[
+      for (var i = 0; i < n; i++) contra[i] - ipsi[i],
+    ];
+
+    return Card(
+      margin: const EdgeInsets.only(top: 10),
+      color: const Color(0xFF0F172A),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 10,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Icon(Icons.compare_arrows, size: 16, color: Colors.amberAccent),
+                Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'N2pc', label: Text('N2pc (PO7/PO8)')),
+                    ButtonSegment(value: 'LRP', label: Text('LRP (C3/C4)')),
+                    ButtonSegment(value: 'Custom', label: Text('Custom Ch A−B')),
+                  ],
+                  selected: {_lateralPreset},
+                  onSelectionChanged: (v) => setState(() => _lateralPreset = v.first),
+                ),
+                if (_lateralPreset == 'Custom' && labels.isNotEmpty) ...[
+                  DropdownButton<String>(
+                    value: labels.contains(chLeft) ? chLeft : labels.first,
+                    items: [for (final l in labels) DropdownMenuItem(value: l, child: Text(l))],
+                    onChanged: (v) => setState(() => _mathChanA = v),
+                  ),
+                  const Text('−'),
+                  DropdownButton<String>(
+                    value: labels.contains(chRight) ? chRight : labels.first,
+                    items: [for (final l in labels) DropdownMenuItem(value: l, child: Text(l))],
+                    onChanged: (v) => setState(() => _mathChanB = v),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (n >= 2)
+              SizedBox(
+                height: 220,
+                width: double.infinity,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: CustomPaint(
+                    painter: ErpWorkbenchWavePainter(
+                      {
+                        'times': times.take(n).toList(),
+                        'a': ipsi,
+                        'b': contra,
+                        'difference': diff,
+                        'profile': {
+                          ...profile,
+                          'a_name': _lateralPreset == 'Custom' ? chLeft : 'Ipsilateral ($chLeft/$chRight)',
+                          'b_name': _lateralPreset == 'Custom' ? chRight : 'Contralateral',
+                        },
+                      },
+                      negativeUp: _negativeUp,
+                    ),
+                  ),
+                ),
+              )
+            else
+              const Text('Channel waveforms unavailable for lateralized computation.', style: TextStyle(fontSize: 12)),
+          ],
+        ),
+      ),
     );
   }
 
@@ -5024,6 +5251,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             Tab(text: 'Quality'),
             Tab(text: 'Individual ERPs'),
             Tab(text: 'Publication plots'),
+            Tab(text: 'ERSP & ITC'),
           ],
         ),
         Expanded(
@@ -5195,6 +5423,51 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               () => _showAxisLimits = !_showAxisLimits,
                             ),
                           ),
+                          FilterChip(
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            label: const Text(
+                              'Butterfly',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                            selected: _showButterfly,
+                            onSelected: (v) =>
+                                setState(() => _showButterfly = v),
+                          ),
+                          FilterChip(
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            label: const Text(
+                              'Channel Math (N2pc/LRP)',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                            selected: _showChannelMath,
+                            onSelected: (v) =>
+                                setState(() => _showChannelMath = v),
+                          ),
+                          ActionChip(
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            avatar: _withinStatsBusy
+                                ? const SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.query_stats, size: 14),
+                            label: const Text(
+                              'Run Permutation & eTFCE',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                            onPressed: _withinStatsBusy
+                                ? null
+                                : () => _runWithinSubjectStats(d, current),
+                          ),
                         ],
                       ),
                     ),
@@ -5238,13 +5511,63 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                     color: Color(0xFF0F172A),
                                   ),
                                 ),
+                                const SizedBox(width: 8),
+                                OutlinedButton.icon(
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: const Color(0xFF0F172A),
+                                    side: const BorderSide(color: Color(0xFFCBD5E1)),
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  icon: const Icon(Icons.radar, size: 13),
+                                  label: const Text('Select from Topoplot', style: TextStyle(fontSize: 11)),
+                                  onPressed: () {
+                                    final topoVals = erpNumbers(d['topo_difference']);
+                                    final topoLabels = (d['labels'] as List? ?? []).cast<String>();
+                                    final valMap = <String, double>{
+                                      for (var i = 0; i < topoLabels.length && i < topoVals.length; i++)
+                                        topoLabels[i]: topoVals[i],
+                                    };
+                                    showDialog<void>(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title: const Text('Select Electrode from Topoplot'),
+                                        content: TopoChannelSelector(
+                                          availableChannels: allLabels,
+                                          selectedChannels: highlightedOnTopo,
+                                          multiSelect: false,
+                                          channelValues: valMap,
+                                          size: 280,
+                                          onSelectChannel: (ch) {
+                                            setState(() => _primaryPlotChannel = ch);
+                                            Navigator.pop(ctx);
+                                          },
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () {
+                                              setState(() => _primaryPlotChannel = null);
+                                              Navigator.pop(ctx);
+                                            },
+                                            child: const Text('Reset to ROI'),
+                                          ),
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(ctx),
+                                            child: const Text('Close'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Text(
                                     'Comparison: ${erpMap(d['profile'])['b_name']} − ${erpMap(d['profile'])['a_name']} · Measurement window: ${() {
                                       final w = erpNumbers(erpMap(d['profile'])['window']);
                                       return w.length == 2 ? '${(w[0] * 1000).round()} to ${(w[1] * 1000).round()} ms' : '';
-                                    }()}',
+                                    }()} · Drag on plot to adjust window',
                                     style: const TextStyle(
                                       fontSize: 11,
                                       color: Color(0xFF475569),
@@ -5262,32 +5585,203 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               borderRadius: const BorderRadius.vertical(
                                 bottom: Radius.circular(7),
                               ),
-                              child: MouseRegion(
-                                onHover: (e) =>
-                                    _hover.value = e.localPosition.dx,
-                                onExit: (_) => _hover.value = null,
-                                child: ValueListenableBuilder<double?>(
-                                  valueListenable: _hover,
-                                  builder: (context, hover, child) =>
-                                      CustomPaint(
-                                        painter: ErpWorkbenchWavePainter(
-                                          primaryWaveSource,
-                                          negativeUp: _negativeUp,
-                                          hoverX: hover,
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final times = erpNumbers(primaryWaveSource['times']);
+                                  final xl = erpNumbers(primaryWaveSource['x_limits']);
+                                  final xMin = xl.length == 2 && xl[1] > xl[0]
+                                      ? xl[0]
+                                      : (times.isNotEmpty ? times.first : -0.2);
+                                  final xMax = xl.length == 2 && xl[1] > xl[0]
+                                      ? xl[1]
+                                      : (times.isNotEmpty ? times.last : 0.8);
+                                  double dxToSec(double dx) {
+                                    final plotW = math.max(1.0, constraints.maxWidth - 82.0);
+                                    final frac = ((dx - 62.0) / plotW).clamp(0.0, 1.0);
+                                    return xMin + frac * (xMax - xMin);
+                                  }
+                                  final sigList = (_withinStats?['sig_mask_waveform'] as List?)
+                                      ?.map((e) => e == true)
+                                      .toList();
+                                  return MouseRegion(
+                                    cursor: SystemMouseCursors.resizeLeftRight,
+                                    onHover: (e) => _hover.value = e.localPosition.dx,
+                                    onExit: (_) => _hover.value = null,
+                                    child: GestureDetector(
+                                      onHorizontalDragStart: (det) {
+                                        final t0 = dxToSec(det.localPosition.dx);
+                                        setState(() {
+                                          _dragStartSec = t0;
+                                          _dragWindowSec = [t0, t0];
+                                        });
+                                      },
+                                      onHorizontalDragUpdate: (det) {
+                                        if (_dragStartSec == null) return;
+                                        final t1 = dxToSec(det.localPosition.dx);
+                                        setState(() {
+                                          _dragWindowSec = [_dragStartSec!, t1];
+                                        });
+                                      },
+                                      onHorizontalDragEnd: (_) {
+                                        final w = _dragWindowSec;
+                                        if (w != null && (w[1] - w[0]).abs() > 0.015) {
+                                          final sMs = (math.min(w[0], w[1]) * 1000).round();
+                                          final eMs = (math.max(w[0], w[1]) * 1000).round();
+                                          _window0.text = '$sMs';
+                                          _window1.text = '$eMs';
+                                          setState(() {
+                                            _dragStartSec = null;
+                                            _dragWindowSec = null;
+                                          });
+                                          _run();
+                                        } else {
+                                          setState(() {
+                                            _dragStartSec = null;
+                                            _dragWindowSec = null;
+                                          });
+                                        }
+                                      },
+                                      child: ValueListenableBuilder<double?>(
+                                        valueListenable: _hover,
+                                        builder: (context, hover, child) => CustomPaint(
+                                          painter: ErpWorkbenchWavePainter(
+                                            primaryWaveSource,
+                                            negativeUp: _negativeUp,
+                                            hoverX: hover,
+                                            dragWindowSec: _dragWindowSec,
+                                            sigMask: sigList,
+                                          ),
                                         ),
                                       ),
-                                ),
+                                    ),
+                                  );
+                                },
                               ),
                             ),
                           ),
                         ],
                       ),
                     ),
+                    if (_withinStats != null) ...[
+                      Card(
+                        margin: const EdgeInsets.only(top: 8),
+                        color: const Color(0xFF0F172A),
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: Wrap(
+                            spacing: 12,
+                            runSpacing: 6,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              const Icon(Icons.check_circle, size: 16, color: Colors.greenAccent),
+                              Text(
+                                'Within-Subject Stats (${_withinStats!['contrast_label']} · ${_withinStats!['channel_label']}):',
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                              ),
+                              for (final cl in (_withinStats!['clusters'] as List? ?? []))
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  label: Text(
+                                    '${((cl['start_sec'] as num) * 1000).round()}–${((cl['end_sec'] as num) * 1000).round()} ms (p=${(cl['p_value'] as num).toStringAsFixed(3)})',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: (cl['p_value'] as num) <= 0.05 ? Colors.greenAccent : Colors.white70,
+                                    ),
+                                  ),
+                                ),
+                              Builder(
+                                builder: (_) {
+                                  final chLabels = (_withinStats!['channel_labels'] as List? ?? []).cast<String>();
+                                  final chP = (_withinStats!['channel_p_etfce'] as List? ?? []).cast<num>();
+                                  final sigCh = [
+                                    for (var i = 0; i < math.min(chLabels.length, chP.length); i++)
+                                      if (chP[i] <= 0.05) '${chLabels[i]} (p=${chP[i].toStringAsFixed(3)})',
+                                  ];
+                                  return Text(
+                                    sigCh.isEmpty
+                                        ? 'eTFCE window: no channel p ≤ 0.05'
+                                        : 'eTFCE sig channels: ${sigCh.join(', ')}',
+                                    style: const TextStyle(fontSize: 11, color: Colors.cyanAccent),
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (_showButterfly) ...[
+                      Card(
+                        margin: const EdgeInsets.only(top: 10),
+                        color: Colors.white,
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Wrap(
+                                spacing: 10,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  const Text(
+                                    'Butterfly Plot & Global Field Power (GFP)',
+                                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF0F172A)),
+                                  ),
+                                  SegmentedButton<String>(
+                                    segments: [
+                                      ButtonSegment(value: 'a', label: Text('${erpMap(d['profile'])['a_name'] ?? 'Cond A'}')),
+                                      ButtonSegment(value: 'b', label: Text('${erpMap(d['profile'])['b_name'] ?? 'Cond B'}')),
+                                      const ButtonSegment(value: 'difference', label: Text('Diff (B − A)')),
+                                    ],
+                                    selected: {_butterflyCondition},
+                                    onSelectionChanged: (v) => setState(() => _butterflyCondition = v.first),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              SizedBox(
+                                height: 240,
+                                child: MouseRegion(
+                                  onHover: (e) => _hover.value = e.localPosition.dx,
+                                  onExit: (_) => _hover.value = null,
+                                  child: ValueListenableBuilder<double?>(
+                                    valueListenable: _hover,
+                                    builder: (context, hover, _) => CustomPaint(
+                                      painter: ErpButterflyPainter(
+                                        times: erpNumbers(primaryWaveSource['times']),
+                                        channelWaves: _extractButterflyChannelWaves(d, current),
+                                        highlightedChannel: effectivePlotChannel ?? (roiLabels.isNotEmpty ? roiLabels.first : null),
+                                        negativeUp: _negativeUp,
+                                        windowSec: erpNumbers(erpMap(d['profile'])['window']),
+                                        hoverX: hover,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (_showChannelMath) _buildChannelMathSection(d, current),
                     // Side-by-Side Condition A, Condition B, and Difference (B - A) Topographies
                     _buildMultiConditionTopoSection(
                       d,
                       current,
-                      highlightedOnTopo,
+                      {
+                        ...highlightedOnTopo,
+                        if (_withinStats != null)
+                          for (var i = 0;
+                              i <
+                                  math.min(
+                                    (_withinStats!['channel_labels'] as List? ?? []).length,
+                                    (_withinStats!['channel_p_etfce'] as List? ?? []).length,
+                                  );
+                              i++)
+                            if ((_withinStats!['channel_p_etfce'][i] as num) <= 0.05)
+                              _withinStats!['channel_labels'][i].toString(),
+                      },
                     ),
                     // Multi-Channel Waveform Grid with Region Presets & Electrode Selector Chips
                     ErpChannelGrid(
@@ -5428,13 +5922,66 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Participant ${modelFile['subject'] ?? ''}. ${erpMap(modelFile['decoding'])['method'] ?? 'Enable decoding before running.'}',
-                    ),
-                    if (modelFile['decoding'] is Map) ...[
-                      Text(
-                        '${erpMap(modelFile['decoding'])['folds_used']} usable folds; physical event classes. Scores do not establish significance.',
+                    Card(
+                      color: const Color(0xFF1E293B),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Wrap(
+                          spacing: 12,
+                          runSpacing: 8,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            const Icon(Icons.psychology, color: Colors.cyanAccent, size: 18),
+                            const Text(
+                              'ML-Based ERP Decoding (Shrinkage LDA)',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                            FilterChip(
+                              label: const Text('Temporal generalization matrix', style: TextStyle(fontSize: 11)),
+                              selected: _generalization,
+                              onSelected: _busy ? null : (v) => setState(() => _generalization = v),
+                            ),
+                            FilledButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : () {
+                                      setState(() => _decoding = true);
+                                      _run();
+                                    },
+                              icon: const Icon(Icons.play_arrow, size: 16),
+                              label: Text(modelFile['decoding'] is Map ? 'Re-run ML Decoding' : 'Run ML Decoding'),
+                            ),
+                          ],
+                        ),
                       ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (modelFile['decoding'] is Map) ...[
+                      Builder(
+                        builder: (context) {
+                          final dec = erpMap(modelFile['decoding']);
+                          final aucs = erpNumbers(dec['auc']);
+                          final times = erpNumbers(dec['times']);
+                          var peakAuc = 0.5;
+                          var peakMs = 0;
+                          for (var i = 0; i < math.min(aucs.length, times.length); i++) {
+                            if (aucs[i] > peakAuc) {
+                              peakAuc = aucs[i];
+                              peakMs = (times[i] * 1000).round();
+                            }
+                          }
+                          return Wrap(
+                            spacing: 10,
+                            runSpacing: 6,
+                            children: [
+                              Chip(label: Text('Peak AUC: ${peakAuc.toStringAsFixed(3)} @ $peakMs ms')),
+                              Chip(label: Text('CV Folds: ${dec['folds_used']}')),
+                              const Chip(label: Text('Chance: 0.500')),
+                            ],
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 8),
                       SizedBox(
                         height: 330,
                         width: double.infinity,
@@ -5447,6 +5994,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       ),
                       if (erpMap(modelFile['decoding'])['generalization_auc']
                           is List) ...[
+                        const SizedBox(height: 10),
                         const Text(
                           'Temporal generalization: rows=train time, columns=test time; blue < .5, white=.5, red > .5.',
                         ),
@@ -5469,7 +6017,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           ),
                         ),
                       ],
-                    ],
+                    ] else
+                      const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text(
+                          'Click "Run ML Decoding" above to train a cross-validated Shrinkage LDA classifier across all channels at every time point.',
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -5513,6 +6068,37 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   });
                 },
                 outputDir: _output.text,
+              ),
+              Builder(
+                builder: (context) {
+                  final activeRec = widget.activeRecording;
+                  final profile = erpMap(d['profile']);
+                  final aName = profile['a_name']?.toString() ?? (_conditions.isNotEmpty ? _conditions[0].name : 'Condition A');
+                  final bName = profile['b_name']?.toString() ?? (_conditions.length > 1 ? _conditions[1].name : 'Condition B');
+                  final condATrials = <int>[];
+                  final condBTrials = <int>[];
+                  if (activeRec != null && activeRec.isEpoched && activeRec.epochLabels != null) {
+                    for (var i = 0; i < activeRec.epochLabels!.length; i++) {
+                      final lbl = activeRec.epochLabels![i];
+                      if (_savedA.contains(lbl) || lbl == aName) {
+                        condATrials.add(i);
+                      } else if (_savedB.contains(lbl) || lbl == bName) {
+                        condBTrials.add(i);
+                      }
+                    }
+                  }
+                  return ErspItcPanel(
+                    recordingPath: activeRec?.path ?? (current.isNotEmpty ? current.first['path']?.toString() : null),
+                    labels: allLabels,
+                    roiLabels: roiLabels,
+                    conditionATrials: condATrials,
+                    conditionBTrials: condBTrials,
+                    conditionAName: aName,
+                    conditionBName: bName,
+                    epochTminMs: activeRec?.epochTmin != null ? activeRec!.epochTmin! * 1000.0 : null,
+                    outputDirectory: _output.text,
+                  );
+                },
               ),
             ],
           ),
@@ -5587,23 +6173,85 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Card(
+          color: const Color(0xFF1E293B),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.auto_graph, color: Colors.amberAccent, size: 18),
+                    SizedBox(width: 8),
+                    Text(
+                      'Guided rERP & Overlap-Corrected ERP Builder',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Regression ERP (rERP) estimates condition & covariate betas across all channels. Overlap correction (Unfold-style FIR/LSQR) deconvolves adjacent overlapping stimulus/response events. Compare the rERP beta directly against the Conventional Average ERP below.',
+                  style: TextStyle(fontSize: 11, color: Colors.white70),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    FilterChip(
+                      label: const Text('Regression ERP (multichannel OLS)', style: TextStyle(fontSize: 11)),
+                      selected: _regression,
+                      onSelected: _busy ? null : (v) => setState(() => _regression = v),
+                    ),
+                    FilterChip(
+                      label: const Text('Overlap correction (Unfold FIR/LSQR)', style: TextStyle(fontSize: 11)),
+                      selected: _deconvolution,
+                      onSelected: _busy ? null : (v) => setState(() => _deconvolution = v),
+                    ),
+                    FilledButton.icon(
+                      onPressed: _busy
+                          ? null
+                          : () {
+                              setState(() {
+                                if (!_regression && !_deconvolution) {
+                                  _regression = true;
+                                }
+                              });
+                              _run();
+                            },
+                      icon: const Icon(Icons.play_arrow, size: 16),
+                      label: const Text('Run rERP & Compare'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
         Text(
           'Participant ${file['subject'] ?? ''}; all channel/time coefficients are in JSON.',
+          style: const TextStyle(fontSize: 11, color: Colors.white70),
         ),
         for (final key in ['regression', 'deconvolution'])
           if (file[key] is Map) ...[
             const SizedBox(height: 18),
             Text(
-              key == 'regression' ? 'Regression ERP' : 'Overlap correction',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              key == 'regression' ? 'Regression ERP (rERP)' : 'Overlap-Corrected ERP (Unfold FIR/LSQR)',
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
             ),
-            Text('${erpMap(file[key])['method']}'),
+            Text('${erpMap(file[key])['method']}', style: const TextStyle(fontSize: 12)),
             Text(
               'Predictors: ${(erpMap(file[key])['predictors'] as List).join(' | ')}',
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
             ),
             if (key == 'deconvolution')
               Text(
                 'Events per category: ${erpMap(file[key])['event_counts']}. Solver converged for ${(erpMap(file[key])['solver'] as List).where((s) => erpMap(s)['converged'] == true).length}/${(erpMap(file[key])['solver'] as List).length} channels.',
+                style: const TextStyle(fontSize: 12, color: Colors.white70),
               ),
             const SizedBox(height: 8),
             Builder(
@@ -5623,17 +6271,34 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 final selectedPredictor =
                     predictors.contains(_modelPredictors[key])
                     ? _modelPredictors[key]!
-                    : predictors[1];
+                    : predictors[predictors.length > 1 ? 1 : 0];
                 final c = channels.indexOf(selectedChannel);
                 final beta = erpNumbers(
                   (coefficients[predictors.indexOf(selectedPredictor)]
                       as List)[c],
                 );
+                // Extract matching Conventional Average ERP on the same channel for direct visual comparison
+                final chWaves = erpMap(erpMap(file['channel_waves'])[selectedChannel]);
+                final convA = erpNumbers(chWaves['a']);
+                final convB = erpNumbers(chWaves['b']);
+                final convDiff = [
+                  for (var i = 0; i < math.min(convA.length, convB.length); i++)
+                    convB[i] - convA[i],
+                ];
+                final convTimes = erpNumbers(file['times']);
+                final modelTimes = erpNumbers(m['times']);
+                final useConv = convDiff.length == modelTimes.length
+                    ? convDiff
+                    : (convTimes.length == modelTimes.length && convA.length == modelTimes.length
+                          ? convA
+                          : <double>[]);
+
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Wrap(
                       spacing: 12,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         DropdownButton<String>(
                           value: selectedChannel,
@@ -5653,25 +6318,30 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           onChanged: (v) =>
                               setState(() => _modelPredictors[key] = v!),
                         ),
+                        const Text(
+                          'Blue: rERP Beta · Red: Conventional ERP (B − A)',
+                          style: TextStyle(fontSize: 11, color: Colors.cyanAccent),
+                        ),
                       ],
                     ),
-                    const Text(
-                      'Model coefficient in µV per predictor unit; all channels and predictors are exported.',
-                    ),
+                    const SizedBox(height: 6),
                     SizedBox(
                       height: 300,
                       width: double.infinity,
                       child: CustomPaint(
-                        painter: ErpWorkbenchWavePainter({
-                          'times': m['times'],
-                          'a': beta,
-                          'b': <double>[],
-                          'model_plot': true,
-                          'profile': {
-                            'a_name': selectedPredictor,
-                            'b_name': '',
+                        painter: ErpWorkbenchWavePainter(
+                          {
+                            'times': m['times'],
+                            'a': beta,
+                            'b': useConv,
+                            'model_plot': true,
+                            'profile': {
+                              'a_name': 'rERP: $selectedPredictor',
+                              'b_name': 'Conventional ERP (B − A)',
+                            },
                           },
-                        }),
+                          negativeUp: _negativeUp,
+                        ),
                       ),
                     ),
                   ],
@@ -5681,8 +6351,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             if (key == 'deconvolution') Text('${erpMap(file[key])['scope']}'),
           ],
         if (file['regression'] == null && file['deconvolution'] == null)
-          const Text(
-            'Enable regression ERP or overlap correction before running.',
+          const Padding(
+            padding: EdgeInsets.all(12),
+            child: Text(
+              'Select Regression ERP or Overlap Correction above and click "Run rERP & Compare" to inspect waveforms.',
+              style: TextStyle(color: Colors.white70),
+            ),
           ),
       ],
     ),

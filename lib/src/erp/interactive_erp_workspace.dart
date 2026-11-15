@@ -13,10 +13,19 @@ import '../recording_loader.dart';
 import '../recording_save_dialog.dart';
 import '../recording_storage.dart';
 import 'erp_core_presets.dart';
+import 'erp_image_panel.dart';
+import 'topo_channel_selector.dart';
 import 'erp_workbench_view.dart';
 import 'interactive_erp_session.dart';
 import 'stim_epoch_panel.dart';
 import 'protocol_tools.dart';
+
+const List<Color> _erpCondColors = [
+  Color(0xFF3B82F6), // Blue: Condition A
+  Color(0xFFEF4444), // Red: Condition B
+  Color(0xFF10B981), // Emerald: Condition C
+  Color(0xFFF59E0B), // Amber: Condition D
+];
 
 /// One interactive path: protocol -> browse/review trials -> live averages.
 /// Advanced statistics remain in the workbench and consume accepted trials.
@@ -27,11 +36,15 @@ class InteractiveErpWorkspace extends StatefulWidget {
     required this.config,
     required this.onOpenRecording,
     required this.onUseReviewed,
+    this.availableRecordings = const [],
+    this.onSelectRecording,
   });
   final EegRecording? recording;
   final AnalysisConfig config;
   final VoidCallback onOpenRecording;
   final ValueChanged<EegRecording> onUseReviewed;
+  final List<EegRecording> availableRecordings;
+  final ValueChanged<EegRecording>? onSelectRecording;
   @override
   State<InteractiveErpWorkspace> createState() =>
       _InteractiveErpWorkspaceState();
@@ -39,10 +52,12 @@ class InteractiveErpWorkspace extends StatefulWidget {
 
 class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
   InteractiveErpSession? _session;
-  String _preset = 'Custom', _mode = 'epochs', _status = '';
+  String _preset = 'Custom', _mode = 'epochs', _trialSubView = 'trial', _status = '';
   bool _busy = false, _dirty = false, _closing = false;
   int _trial = 0, _channel = 0;
   String? _condition;
+  late final TextEditingController _baseStartCtrl = TextEditingController(text: '-200');
+  late final TextEditingController _baseEndCtrl = TextEditingController(text: '0');
   File? _reviewFile;
   Timer? _persistTimer;
   EegRecording? _savedReviewed;
@@ -119,7 +134,21 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
     _closing = true;
     _persistTimer?.cancel();
     _persist();
+    _baseStartCtrl.dispose();
+    _baseEndCtrl.dispose();
     super.dispose();
+  }
+
+  void _applyInteractiveBaseline() {
+    final s = _session;
+    if (s == null) return;
+    final start = double.tryParse(_baseStartCtrl.text.trim()) ?? -200.0;
+    final end = double.tryParse(_baseEndCtrl.text.trim()) ?? 0.0;
+    setState(() {
+      _session = s.withBaselineCorrection(start, end);
+      _measurementRevision = -1;
+      _status = 'Applied baseline correction [${start.round()}..${end.round()} ms] to ${s.epochs.epochCount} epochs.';
+    });
   }
 
   void _applyPreset(String name) {
@@ -331,6 +360,59 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
     }
   }
 
+  Widget _buildRecordingSwitcherBar(EegRecording input) {
+    final recs = widget.availableRecordings;
+    if (recs.length <= 1 && widget.onSelectRecording == null) {
+      return const SizedBox.shrink();
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0B1120),
+        border: Border(bottom: BorderSide(color: Colors.white12)),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          const Text(
+            'Active Recording:',
+            style: TextStyle(fontSize: 11, color: Colors.white70, fontWeight: FontWeight.w600),
+          ),
+          for (final rec in recs)
+            ChoiceChip(
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              avatar: Icon(
+                rec.path.contains('_clean')
+                    ? Icons.auto_fix_high
+                    : Icons.graphic_eq,
+                size: 14,
+                color: rec.path == input.path
+                    ? Colors.white
+                    : (rec.path.contains('_clean')
+                          ? Colors.greenAccent
+                          : Colors.white70),
+              ),
+              label: Text(
+                '${rec.path.split(RegExp(r'[/\\]')).last} (${rec.labels.length} ch · ${rec.sampleRate.round()} Hz)',
+                style: const TextStyle(fontSize: 11),
+              ),
+              selected: rec.path == input.path,
+              selectedColor: rec.path.contains('_clean')
+                  ? const Color(0xFF166534)
+                  : const Color(0xFF1D4ED8),
+              onSelected: widget.onSelectRecording == null || _busy
+                  ? null
+                  : (_) => widget.onSelectRecording!(rec),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final input = widget.recording, session = _session;
@@ -364,24 +446,41 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
       }
       return Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(8),
+          _buildRecordingSwitcherBar(input),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: const BoxDecoration(
+              color: Color(0xFF0F172A),
+              border: Border(bottom: BorderSide(color: Colors.white12)),
+            ),
             child: Row(
               children: [
-                TextButton.icon(
-                  onPressed: () => setState(() => _mode = 'epochs'),
-                  icon: const Icon(Icons.view_list),
-                  label: const Text('Trial review'),
-                ),
-                TextButton.icon(
-                  onPressed: () => setState(() => _mode = 'averages'),
-                  icon: const Icon(Icons.show_chart),
-                  label: const Text('Live averages'),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                      value: 'epochs',
+                      icon: Icon(Icons.view_list, size: 16),
+                      label: Text('Trial Review & ERPimage'),
+                    ),
+                    ButtonSegment(
+                      value: 'measurements',
+                      icon: Icon(Icons.analytics_outlined, size: 16),
+                      label: Text('ERP Analysis & Measurements'),
+                    ),
+                  ],
+                  selected: const {'measurements'},
+                  onSelectionChanged: (v) {
+                    if (v.first == 'epochs') {
+                      setState(() => _mode = 'epochs');
+                    }
+                  },
                 ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Text(
-                    'ERP measurements · ${session!.acceptedCount} accepted trials · conditions carried from review',
+                    '${session!.acceptedCount} accepted trials · conditions & baseline carried from review',
+                    style: const TextStyle(fontSize: 12, color: Colors.white70),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
@@ -495,12 +594,6 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
               const Text(
                 'Browse trials, exclude artifacts, or reinstate any excluded trial. Original samples stay intact.',
               ),
-              TextButton(
-                onPressed: session == null
-                    ? null
-                    : () => setState(() => _mode = 'epochs'),
-                child: const Text('Show epochs'),
-              ),
               if (session != null)
                 DropdownButtonFormField<String>(
                   value: _condition ?? '*',
@@ -563,39 +656,29 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         ),
         Card(
           child: ExpansionTile(
-            title: const Text('3. Averaging & ERP review'),
-            subtitle: const Text('Updates immediately when trials change'),
-            onExpansionChanged: (open) {
-              if (open) setState(() => _mode = 'averages');
-            },
+            title: const Text('3. Save & ERP Analysis'),
+            subtitle: const Text('Export accepted epochs or open full ERP suite'),
             childrenPadding: const EdgeInsets.all(10),
             children: [
-              TextButton(
-                onPressed: session == null
-                    ? null
-                    : () => setState(() => _mode = 'averages'),
-                child: const Text('Show live averages'),
-              ),
               if (session != null) ...[
                 for (final c in session.conditions)
                   Text('$c: n = ${session.counts[c]}'),
               ],
               const SizedBox(height: 8),
-              const Text(
-                'Descriptive condition averages. Lateralized differences and statistical measurements are available under Measurements & models.',
-              ),
               FilledButton.icon(
+                onPressed: session == null || _busy || _dirty
+                    ? null
+                    : _openMeasurements,
+                icon: const Icon(Icons.analytics_outlined),
+                label: const Text('Open ERP Analysis & Measurements'),
+              ),
+              const SizedBox(height: 6),
+              OutlinedButton.icon(
                 onPressed: session == null || _busy || _dirty
                     ? null
                     : () => _save(),
                 icon: const Icon(Icons.save_outlined),
                 label: const Text('Save accepted epochs…'),
-              ),
-              TextButton(
-                onPressed: session == null || _busy || _dirty
-                    ? null
-                    : _openMeasurements,
-                child: const Text('Show ERP measurements'),
               ),
               if (widget.config.erpEpochFirst)
                 TextButton(
@@ -620,194 +703,298 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         Text(_status, style: const TextStyle(fontSize: 12)),
       ],
     );
-    return Row(
+    return Column(
       children: [
-        SizedBox(
-          width: 340,
-          child: AbsorbPointer(absorbing: _busy, child: sidebar),
-        ),
-        const VerticalDivider(width: 1),
+        _buildRecordingSwitcherBar(input),
         Expanded(
-          child: session == null
-              ? Center(
-                  child: Text(
-                    _busy
-                        ? 'Preparing trials…'
-                        : 'Choose an ERP-CORE preset or define event groups, then create a trial preview.',
-                  ),
-                )
-              : Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Wrap(
-                        spacing: 12,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          SegmentedButton<String>(
-                            segments: const [
-                              ButtonSegment(
-                                value: 'epochs',
-                                label: Text('Epochs'),
-                              ),
-                              ButtonSegment(
-                                value: 'averages',
-                                label: Text('ERP averages'),
-                              ),
-                            ],
-                            selected: {_mode},
-                            onSelectionChanged: (v) =>
-                                setState(() => _mode = v.first),
-                          ),
-                          IconButton(
-                            onPressed: filtered.indexOf(_trial) > 0
-                                ? () => setState(
-                                    () => _trial =
-                                        filtered[filtered.indexOf(_trial) - 1],
-                                  )
-                                : null,
-                            icon: const Icon(Icons.chevron_left),
-                          ),
-                          Text(
-                            'Trial ${_trial + 1} / ${session.epochs.epochCount} · ${session.condition(_trial)}',
-                          ),
-                          IconButton(
-                            onPressed:
-                                filtered.indexOf(_trial) < filtered.length - 1
-                                ? () => setState(
-                                    () => _trial =
-                                        filtered[filtered.indexOf(_trial) + 1],
-                                  )
-                                : null,
-                            icon: const Icon(Icons.chevron_right),
-                          ),
-                          FilledButton.tonal(
-                            onPressed: _dirty || _busy
-                                ? null
-                                : () => _reject(
-                                    _trial,
-                                    !session.rejected.contains(_trial),
-                                  ),
-                            child: Text(
-                              session.rejected.contains(_trial)
-                                  ? 'Reinstate trial'
-                                  : 'Exclude trial',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: DropdownButtonFormField<int>(
-                        value: _channel,
-                        decoration: const InputDecoration(
-                          labelText: 'ERP channel',
+          child: Row(
+            children: [
+              SizedBox(
+                width: 340,
+                child: AbsorbPointer(absorbing: _busy, child: sidebar),
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(
+                child: session == null
+                    ? Center(
+                        child: Text(
+                          _busy
+                              ? 'Preparing trials…'
+                              : 'Choose an ERP-CORE preset or define event groups, then create a trial preview.',
                         ),
-                        items: [
-                          for (var c = 0; c < input.labels.length; c++)
-                            DropdownMenuItem(
-                              value: c,
-                              child: Text(input.labels[c]),
-                            ),
-                        ],
-                        onChanged: (v) => setState(() => _channel = v!),
-                      ),
-                    ),
-                    Expanded(
-                      flex: _mode == 'epochs' ? 3 : 1,
-                      child: _mode == 'epochs'
-                          ? EegViewer(
-                              key: ValueKey(
-                                'erp-trial-$_trial-${identityHashCode(session)}',
-                              ),
-                              recording: session.trial(_trial),
-                              externalEpochNavigation: true,
-                              selection: const ViewerSelection.empty(),
-                              onSelectionChanged: (_) {},
-                              autoscaleByDefault: true,
-                            )
-                          : Padding(
-                              padding: const EdgeInsets.all(18),
-                              child: Column(
-                                children: [
-                                  Wrap(
-                                    spacing: 16,
-                                    children: [
-                                      for (
-                                        var i = 0;
-                                        i < session.conditions.length;
-                                        i++
-                                      )
-                                        Text(
-                                          '${session.conditions[i]} · n=${session.counts[session.conditions[i]]}',
-                                          style: TextStyle(
-                                            color:
-                                                Colors.primaries[i %
-                                                    Colors.primaries.length],
+                      )
+                    : Column(
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Wrap(
+                              spacing: 10,
+                              runSpacing: 6,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                SegmentedButton<String>(
+                                  segments: const [
+                                    ButtonSegment(
+                                      value: 'epochs',
+                                      icon: Icon(Icons.view_list, size: 16),
+                                      label: Text('Trial Review & ERPimage'),
+                                    ),
+                                    ButtonSegment(
+                                      value: 'measurements',
+                                      icon: Icon(Icons.analytics_outlined, size: 16),
+                                      label: Text('ERP Analysis & Measurements'),
+                                    ),
+                                  ],
+                                  selected: {_mode},
+                                  onSelectionChanged: (v) {
+                                    if (v.first == 'measurements') {
+                                      _openMeasurements();
+                                    } else {
+                                      setState(() => _mode = v.first);
+                                    }
+                                  },
+                                ),
+                                SegmentedButton<String>(
+                                  segments: const [
+                                    ButtonSegment(
+                                      value: 'trial',
+                                      label: Text('Single Trial'),
+                                    ),
+                                    ButtonSegment(
+                                      value: 'erpimage',
+                                      label: Text('ERPimage'),
+                                    ),
+                                  ],
+                                  selected: {_trialSubView},
+                                  onSelectionChanged: (v) =>
+                                      setState(() => _trialSubView = v.first),
+                                ),
+                                if (_trialSubView == 'trial') ...[
+                                  IconButton(
+                                    onPressed: filtered.indexOf(_trial) > 0
+                                        ? () => setState(
+                                            () => _trial =
+                                                filtered[filtered.indexOf(_trial) - 1],
+                                          )
+                                        : null,
+                                    icon: const Icon(Icons.chevron_left),
+                                  ),
+                                  Text(
+                                    'Trial ${_trial + 1} / ${session.epochs.epochCount} · ${session.condition(_trial)}',
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  IconButton(
+                                    onPressed:
+                                        filtered.indexOf(_trial) < filtered.length - 1
+                                        ? () => setState(
+                                            () => _trial =
+                                                filtered[filtered.indexOf(_trial) + 1],
+                                          )
+                                        : null,
+                                    icon: const Icon(Icons.chevron_right),
+                                  ),
+                                  FilledButton.tonal(
+                                    onPressed: _dirty || _busy
+                                        ? null
+                                        : () => _reject(
+                                            _trial,
+                                            !session.rejected.contains(_trial),
                                           ),
+                                    child: Text(
+                                      session.rejected.contains(_trial)
+                                          ? 'Reinstate trial'
+                                          : 'Exclude trial',
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                            child: Wrap(
+                              spacing: 12,
+                              runSpacing: 6,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                SizedBox(
+                                  width: 170,
+                                  child: DropdownButtonFormField<int>(
+                                    value: _channel,
+                                    isDense: true,
+                                    decoration: const InputDecoration(
+                                      labelText: 'ERP channel',
+                                      isDense: true,
+                                    ),
+                                    items: [
+                                      for (var c = 0; c < input.labels.length; c++)
+                                        DropdownMenuItem(
+                                          value: c,
+                                          child: Text(input.labels[c]),
                                         ),
                                     ],
+                                    onChanged: (v) => setState(() => _channel = v!),
                                   ),
-                                  const SizedBox(height: 12),
-                                  Expanded(
-                                    child: CustomPaint(
-                                      painter: _AveragePainter(
-                                        session,
-                                        _channel,
-                                        session.revision,
-                                      ),
-                                      child: const SizedBox.expand(),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                    ),
-                    if (_mode == 'epochs')
-                      Expanded(
-                        flex: 2,
-                        child: Padding(
-                          padding: const EdgeInsets.all(14),
-                          child: Column(
-                            children: [
-                              const Text(
-                                'Live ERP averages · fixed amplitude scale',
-                              ),
-                              Wrap(
-                                spacing: 16,
-                                children: [
-                                  for (
-                                    var i = 0;
-                                    i < session.conditions.length;
-                                    i++
-                                  )
-                                    Text(
-                                      '${session.conditions[i]} · n=${session.counts[session.conditions[i]]}',
-                                      style: TextStyle(
-                                        color:
-                                            Colors.primaries[i %
-                                                Colors.primaries.length],
-                                      ),
-                                    ),
-                                ],
-                              ),
-                              Expanded(
-                                child: CustomPaint(
-                                  painter: _AveragePainter(
-                                    session,
-                                    _channel,
-                                    session.revision,
-                                  ),
-                                  child: const SizedBox.expand(),
                                 ),
-                              ),
-                            ],
+                                IconButton(
+                                  tooltip: 'Select channel from Topoplot',
+                                  icon: const Icon(Icons.radar, size: 18),
+                                  onPressed: () {
+                                    showDialog<void>(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title: const Text('Select ERP Channel'),
+                                        content: TopoChannelSelector(
+                                          availableChannels: input.labels,
+                                          selectedChannels: {input.labels[_channel]},
+                                          multiSelect: false,
+                                          size: 260,
+                                          onSelectChannel: (ch) {
+                                            final idx = input.labels.indexWhere(
+                                              (l) => l.toUpperCase() == ch.toUpperCase(),
+                                            );
+                                            if (idx >= 0) {
+                                              setState(() => _channel = idx);
+                                            }
+                                            Navigator.pop(ctx);
+                                          },
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(ctx),
+                                            child: const Text('Close'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                                const Text('Baseline (ms):', style: TextStyle(fontSize: 11, color: Colors.white70)),
+                                SizedBox(
+                                  width: 62,
+                                  child: TextField(
+                                    controller: _baseStartCtrl,
+                                    decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6)),
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                                const Text('to', style: TextStyle(fontSize: 11, color: Colors.white70)),
+                                SizedBox(
+                                  width: 62,
+                                  child: TextField(
+                                    controller: _baseEndCtrl,
+                                    decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6)),
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                                OutlinedButton(
+                                  onPressed: _busy ? null : _applyInteractiveBaseline,
+                                  child: const Text('Apply baseline', style: TextStyle(fontSize: 11)),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
+                          Expanded(
+                            flex: 3,
+                            child: _trialSubView == 'erpimage'
+                                ? ErpImagePanel(
+                                    session: session,
+                                    channelIndex: _channel,
+                                    trialIndices: filtered,
+                                    onToggleReject: _reject,
+                                    onInspectTrial: (idx) => setState(() {
+                                      _trial = idx;
+                                      _trialSubView = 'trial';
+                                    }),
+                                  )
+                                : EegViewer(
+                                    key: ValueKey(
+                                      'erp-trial-$_trial-${identityHashCode(session)}',
+                                    ),
+                                    recording: session.trial(_trial),
+                                    externalEpochNavigation: true,
+                                    selection: const ViewerSelection.empty(),
+                                    onSelectionChanged: (_) {},
+                                    autoscaleByDefault: true,
+                                  ),
+                          ),
+                          Container(
+                            height: 200,
+                            margin: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF0F172A),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.white12),
+                            ),
+                            child: Column(
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(
+                                      'Live ERP Preview (${input.labels[_channel]})',
+                                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                    ),
+                                    const SizedBox(width: 14),
+                                    for (var i = 0; i < session.conditions.length; i++)
+                                      Padding(
+                                        padding: const EdgeInsets.only(right: 12),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Container(
+                                              width: 12,
+                                              height: 3,
+                                              color: _erpCondColors[i % _erpCondColors.length],
+                                            ),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              '${session.conditions[i]} (n=${session.counts[session.conditions[i]]})',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: _erpCondColors[i % _erpCondColors.length],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    if (session.conditions.length >= 2)
+                                      const Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          SizedBox(
+                                            width: 12,
+                                            height: 3,
+                                            child: ColoredBox(color: Colors.white70),
+                                          ),
+                                          SizedBox(width: 4),
+                                          Text(
+                                            'Difference (B − A)',
+                                            style: TextStyle(fontSize: 11, color: Colors.white70),
+                                          ),
+                                        ],
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Expanded(
+                                  child: CustomPaint(
+                                    painter: _AveragePainter(
+                                      session,
+                                      _channel,
+                                      session.revision,
+                                    ),
+                                    child: const SizedBox.expand(),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
-                  ],
-                ),
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -881,9 +1068,30 @@ class _AveragePainter extends CustomPainter {
       canvas.drawPath(
         path,
         Paint()
-          ..color = Colors.primaries[i % Colors.primaries.length]
+          ..color = _erpCondColors[i % _erpCondColors.length]
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2,
+      );
+    }
+    if (means.length >= 2 && means[0] != null && means[1] != null) {
+      final a = means[0]!;
+      final b = means[1]!;
+      final diffPath = Path();
+      for (var j = 0; j < math.min(a.length, b.length); j++) {
+        final x = box.left + box.width * j / math.max(1, a.length - 1);
+        final y = box.center.dy - (b[j] - a[j]) / maxV * box.height * .45;
+        if (j == 0) {
+          diffPath.moveTo(x, y);
+        } else {
+          diffPath.lineTo(x, y);
+        }
+      }
+      canvas.drawPath(
+        diffPath,
+        Paint()
+          ..color = Colors.white70
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6,
       );
     }
     text('${maxV.toStringAsFixed(1)} µV', Offset(0, box.top));

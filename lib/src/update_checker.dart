@@ -508,7 +508,7 @@ fi
         ],
       ),
       content: SizedBox(
-        width: 580,
+        width: 640,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -524,16 +524,18 @@ fi
               ),
               const SizedBox(height: 8),
               Container(
-                height: 180,
+                height: 260,
                 width: double.infinity,
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
                   color: const Color(0xFF0F172A),
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.white12),
                 ),
                 child: SingleChildScrollView(
-                  child: SelectableText(info.releaseNotes),
+                  child: SelectionArea(
+                    child: _FormattedReleaseNotes(markdown: info.releaseNotes),
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -580,5 +582,161 @@ fi
           ),
       ],
     );
+  }
+}
+
+class _FormattedReleaseNotes extends StatelessWidget {
+  const _FormattedReleaseNotes({required this.markdown});
+
+  final String markdown;
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = markdown.replaceAll('\r\n', '\n').split('\n');
+    final children = <Widget>[];
+    for (final raw in lines) {
+      final line = raw.trimRight();
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) {
+        children.add(const SizedBox(height: 6));
+        continue;
+      }
+      if (trimmed == '---' || trimmed == '***' || trimmed == '___') {
+        children.add(const Divider(height: 16, color: Colors.white12));
+        continue;
+      }
+      if (trimmed.startsWith('### ')) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 3),
+            child: Text(
+              trimmed.substring(4),
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF93C5FD),
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
+      if (trimmed.startsWith('## ')) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 10, bottom: 4),
+            child: Text(
+              trimmed.substring(3),
+              style: const TextStyle(
+                fontSize: 14.5,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
+      if (trimmed.startsWith('# ')) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 10, bottom: 4),
+            child: Text(
+              trimmed.substring(2),
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
+      final bulletMatch = RegExp(r'^(\s*)([-*]|\d+\.)\s+(.*)$').firstMatch(line);
+      if (bulletMatch != null) {
+        final indent = (bulletMatch.group(1)?.length ?? 0) * 6.0;
+        final marker = bulletMatch.group(2)!;
+        final body = bulletMatch.group(3)!;
+        children.add(
+          Padding(
+            padding: EdgeInsets.only(left: 4 + indent, top: 2, bottom: 2),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: marker.endsWith('.') ? 22 : 14,
+                  child: Text(
+                    marker.endsWith('.') ? marker : '•',
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      color: Color(0xFF60A5FA),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                Expanded(child: _richInline(body)),
+              ],
+            ),
+          ),
+        );
+        continue;
+      }
+      children.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: _richInline(trimmed),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
+    );
+  }
+
+  Widget _richInline(String text) {
+    final spans = <InlineSpan>[];
+    final pattern = RegExp(r'(\*\*[^*]+\*\*|`[^`]+`)');
+    var start = 0;
+    const baseStyle = TextStyle(
+      fontSize: 12.5,
+      height: 1.45,
+      color: Color(0xFFE2E8F0),
+    );
+    for (final m in pattern.allMatches(text)) {
+      if (m.start > start) {
+        spans.add(TextSpan(text: text.substring(start, m.start)));
+      }
+      final token = m.group(0)!;
+      if (token.startsWith('**') && token.endsWith('**')) {
+        spans.add(
+          TextSpan(
+            text: token.substring(2, token.length - 2),
+            style: const TextStyle(
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+          ),
+        );
+      } else if (token.startsWith('`') && token.endsWith('`')) {
+        spans.add(
+          TextSpan(
+            text: ' ${token.substring(1, token.length - 1)} ',
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 11.5,
+              backgroundColor: Color(0xFF1E293B),
+              color: Color(0xFF7DD3FC),
+            ),
+          ),
+        );
+      }
+      start = m.end;
+    }
+    if (start < text.length) {
+      spans.add(TextSpan(text: text.substring(start)));
+    }
+    return Text.rich(TextSpan(style: baseStyle, children: spans));
   }
 }

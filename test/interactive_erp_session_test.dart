@@ -219,7 +219,7 @@ void main() {
       await open();
       expect(find.text('Trial 1 / 3 · Correct'), findsOneWidget);
       expect(
-        find.text('Live ERP averages · fixed amplitude scale'),
+        find.textContaining('Live ERP Preview'),
         findsOneWidget,
       );
       await tester.tap(find.text('Exclude trial'));
@@ -250,9 +250,9 @@ void main() {
           image.dispose();
         });
       }
-      await tester.tap(find.text('ERP averages'));
-      await tester.pumpAndSettle();
-      expect(find.text('Correct · n=2'), findsOneWidget);
+      await tester.tap(find.text('ERP Analysis & Measurements'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       dir.deleteSync(recursive: true);

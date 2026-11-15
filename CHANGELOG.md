@@ -4,6 +4,23 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.45]
+
+### ERP Analysis Overhaul, Time-Frequency (ERSP/ITC) & Topoplot Selection
+
+- **Recording Tab Carry-Over & Streamlined ERP Modes:** Switching between `raw`, `clean`, and `interactive preview` stays synchronized across modules (`keepModule: true`) and provides a direct recording switcher inside `Epochs & ERP`. Consolidated redundant ERP views into two clear modes (`Trial Review & ERPimage` and `ERP Analysis & Measurements`) with Blue/Red condition coding and a Difference (`B − A`) trace.
+- **Interactive Measurement Window & Butterfly Plot:** Click and drag horizontally on the ERP waveform plot to define the measurement window in ms, and toggle the **Butterfly Plot** overlaying all scalp channels alongside Global Field Power (GFP) and the highlighted ROI/channel.
+- **Select Channels from Topoplot:** Added interactive 2D scalp topoplot pickers in the ERP Waveform header, Multi-Channel Waveform Grid (`ErpChannelGrid`), and Trial Review (`InteractiveErpWorkspace`) to select or toggle electrodes directly from the head map.
+- **Baseline Correction & Interactive ERPimage:** Apply interactive `[start, end] ms` baseline correction across epochs and inspect single trials in a sortable **ERPimage** heatmap (`chronological`, `meanAmplitude`, `peakAmplitude`) with click/drag trial rejection and reinstatement.
+- **Guided rERP Builder & Channel Math:** Guided rERP / Unfold overlap-correction builder in `Models` with visual overlay against Conventional Average ERP, plus intuitive **Channel Manipulations** (`N2pc`, `LRP`, `Contra − Ipsi`, and custom `Ch A − Ch B`).
+- **Within-Subject Permutation & eTFCE Statistics:** Run cluster permutation tests across waveform time points and eTFCE across scalp electrodes directly in the Rust engine, surfacing significance masks on the ERP waveform and topography.
+- **Guided ML Decoding & Time-Frequency (ERSP / ITC):** Added a 1-click Shrinkage LDA decoding card with Peak AUC, Peak Latency, and temporal generalization matrix, plus parallelized Morlet wavelet **ERSP (dB)** and **ITC (0–1)** panels with permutation masking, interactive trial rejection/reinstatement, and CSV export.
+
+### Bug Fixes & Polish
+
+- **Preprocessing Filter Disabling (Windows/All Platforms):** Leaving the High-pass, Low-pass, or Notch filter box empty now sets the cutoff to `0.0` (disabled) instead of reverting to the previous value, and fixes a live viewer divide-by-zero when Low-pass is disabled.
+- **Formatted In-App Release Notes:** Rendered GitHub release notes inside the update dialog with structured Markdown headings, bullet lists, bold text, and inline code formatting.
+
 ## [1.2.44]
 
 ### Streamlined interactive ERP workflow

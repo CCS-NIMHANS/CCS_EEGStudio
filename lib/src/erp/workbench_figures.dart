@@ -37,10 +37,14 @@ class ErpWorkbenchWavePainter extends CustomPainter {
     this.negativeUp = true,
     this.hoverX,
     this.decode = false,
+    this.dragWindowSec,
+    this.sigMask,
   });
   final Map<String, dynamic> data;
   final bool negativeUp, decode;
   final double? hoverX;
+  final List<double>? dragWindowSec;
+  final List<bool>? sigMask;
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(
@@ -216,12 +220,54 @@ class ErpWorkbenchWavePainter extends CustomPainter {
     }
     canvas.save();
     canvas.clipRect(ax);
-    if (!decode && profile['window'] is List) {
-      final w = erpNumbers(profile['window']);
-      canvas.drawRect(
-        Rect.fromLTRB(x(w[0]), ax.top, x(w[1]), ax.bottom),
-        Paint()..color = const Color(0x147C3AED),
-      );
+    if (!decode && (dragWindowSec != null || profile['window'] is List)) {
+      final w = dragWindowSec ?? erpNumbers(profile['window']);
+      if (w.length == 2) {
+        final x1 = x(math.min(w[0], w[1]));
+        final x2 = x(math.max(w[0], w[1]));
+        canvas.drawRect(
+          Rect.fromLTRB(x1, ax.top, x2, ax.bottom),
+          Paint()
+            ..color = dragWindowSec != null
+                ? const Color(0x2A7C3AED)
+                : const Color(0x147C3AED),
+        );
+        if (dragWindowSec != null) {
+          final edgePaint = Paint()
+            ..color = const Color(0xFF7C3AED)
+            ..strokeWidth = 1.6;
+          canvas.drawLine(Offset(x1, ax.top), Offset(x1, ax.bottom), edgePaint);
+          canvas.drawLine(Offset(x2, ax.top), Offset(x2, ax.bottom), edgePaint);
+          erpText(
+            canvas,
+            'Window: ${(math.min(w[0], w[1]) * 1000).round()}–${(math.max(w[0], w[1]) * 1000).round()} ms',
+            Offset(math.min(ax.right - 140, math.max(ax.left + 6, x1 + 6)), ax.top + 22),
+            size: 11,
+            color: const Color(0xFF5B21B6),
+          );
+        }
+      }
+    }
+    if (!decode && sigMask != null && sigMask!.length == times.length) {
+      var start = -1;
+      for (var i = 0; i <= times.length; i++) {
+        final active = i < times.length && sigMask![i];
+        if (active && start < 0) {
+          start = i;
+        } else if (!active && start >= 0) {
+          final x1 = x(times[start]);
+          final x2 = x(times[i - 1]);
+          canvas.drawRect(
+            Rect.fromLTRB(x1, ax.top, math.max(x1 + 2, x2), ax.bottom),
+            Paint()..color = const Color(0x1610B981),
+          );
+          canvas.drawRect(
+            Rect.fromLTRB(x1, ax.bottom - 5, math.max(x1 + 2, x2), ax.bottom),
+            Paint()..color = const Color(0xFF10B981),
+          );
+          start = -1;
+        }
+      }
     }
     if (xMin <= 0 && xMax >= 0)
       canvas.drawLine(
@@ -349,6 +395,248 @@ class ErpWorkbenchWavePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant ErpWorkbenchWavePainter old) => true;
+}
+
+/// Butterfly plot overlaying all scalp channels plus Global Field Power (GFP).
+class ErpButterflyPainter extends CustomPainter {
+  ErpButterflyPainter({
+    required this.times,
+    required this.channelWaves,
+    this.highlightedChannel,
+    this.negativeUp = true,
+    this.windowSec,
+    this.hoverX,
+    this.showGfp = true,
+  });
+
+  final List<double> times;
+  final Map<String, List<double>> channelWaves;
+  final String? highlightedChannel;
+  final bool negativeUp;
+  final List<double>? windowSec;
+  final double? hoverX;
+  final bool showGfp;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = const Color(0xFFFFFFFF),
+    );
+    if (times.length < 2 || channelWaves.isEmpty) return;
+
+    final ax = Rect.fromLTRB(62, 34, size.width - 20, size.height - 40);
+    if (ax.width <= 0 || ax.height <= 0) return;
+
+    var minV = 0.0;
+    var maxV = 0.0;
+    for (final wave in channelWaves.values) {
+      for (final v in wave) {
+        if (!v.isFinite) continue;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+      }
+    }
+    final pad = math.max((maxV - minV) * 0.12, 0.2);
+    minV -= pad;
+    maxV += pad;
+    if (maxV == minV) maxV = minV + 1.0;
+
+    final xMin = times.first;
+    final xMax = times.last;
+    double x(double t) => ax.left + (t - xMin) / (xMax - xMin) * ax.width;
+    double y(double v) => negativeUp
+        ? ax.top + (v - minV) / (maxV - minV) * ax.height
+        : ax.bottom - (v - minV) / (maxV - minV) * ax.height;
+
+    final grid = Paint()..color = const Color(0xFFE2E8F0);
+    for (var i = 0; i <= 4; i++) {
+      final t = xMin + (xMax - xMin) * i / 4;
+      canvas.drawLine(Offset(x(t), ax.top), Offset(x(t), ax.bottom), grid);
+      erpText(
+        canvas,
+        '${(t * 1000).round()}',
+        Offset(x(t) - 10, ax.bottom + 6),
+        size: 10,
+      );
+      final v = minV + (maxV - minV) * i / 4;
+      canvas.drawLine(Offset(ax.left, y(v)), Offset(ax.right, y(v)), grid);
+      erpText(
+        canvas,
+        v.toStringAsFixed(2),
+        Offset(4, y(v) - 6),
+        size: 10,
+      );
+    }
+
+    canvas.save();
+    canvas.clipRect(ax);
+
+    if (windowSec != null && windowSec!.length == 2) {
+      canvas.drawRect(
+        Rect.fromLTRB(
+          x(windowSec![0]),
+          ax.top,
+          x(windowSec![1]),
+          ax.bottom,
+        ),
+        Paint()..color = const Color(0x187C3AED),
+      );
+    }
+
+    if (xMin <= 0 && xMax >= 0) {
+      canvas.drawLine(
+        Offset(x(0), ax.top),
+        Offset(x(0), ax.bottom),
+        Paint()
+          ..color = const Color(0xFF334155)
+          ..strokeWidth = 1.5,
+      );
+    }
+    canvas.drawLine(
+      Offset(ax.left, y(0)),
+      Offset(ax.right, y(0)),
+      Paint()
+        ..color = const Color(0xFF334155)
+        ..strokeWidth = 1.5,
+    );
+
+    final palette = [
+      const Color(0xFF3B82F6),
+      const Color(0xFF6366F1),
+      const Color(0xFF0EA5E9),
+      const Color(0xFF64748B),
+      const Color(0xFF14B8A6),
+    ];
+    var idx = 0;
+    for (final entry in channelWaves.entries) {
+      if (highlightedChannel != null &&
+          entry.key.toUpperCase() == highlightedChannel!.toUpperCase()) {
+        idx++;
+        continue;
+      }
+      final w = entry.value;
+      if (w.length != times.length) continue;
+      final path = Path()..moveTo(x(times.first), y(w.first));
+      for (var i = 1; i < times.length; i++) {
+        path.lineTo(x(times[i]), y(w[i]));
+      }
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = palette[idx % palette.length].withValues(alpha: 0.35)
+          ..strokeWidth = 1.0
+          ..style = PaintingStyle.stroke,
+      );
+      idx++;
+    }
+
+    if (highlightedChannel != null) {
+      final key = channelWaves.keys.firstWhere(
+        (k) => k.toUpperCase() == highlightedChannel!.toUpperCase(),
+        orElse: () => '',
+      );
+      if (key.isNotEmpty) {
+        final w = channelWaves[key]!;
+        if (w.length == times.length) {
+          final path = Path()..moveTo(x(times.first), y(w.first));
+          for (var i = 1; i < times.length; i++) {
+            path.lineTo(x(times[i]), y(w[i]));
+          }
+          canvas.drawPath(
+            path,
+            Paint()
+              ..color = const Color(0xFFDC2626)
+              ..strokeWidth = 2.2
+              ..style = PaintingStyle.stroke,
+          );
+        }
+      }
+    }
+
+    if (showGfp) {
+      final gfp = List<double>.filled(times.length, 0.0);
+      final validWaves = channelWaves.values
+          .where((w) => w.length == times.length)
+          .toList();
+      if (validWaves.isNotEmpty) {
+        for (var i = 0; i < times.length; i++) {
+          var mean = 0.0;
+          for (final w in validWaves) {
+            mean += w[i];
+          }
+          mean /= validWaves.length;
+          var sumSq = 0.0;
+          for (final w in validWaves) {
+            final d = w[i] - mean;
+            sumSq += d * d;
+          }
+          gfp[i] = math.sqrt(sumSq / validWaves.length);
+        }
+        final gfpPath = Path()..moveTo(x(times.first), y(gfp.first));
+        for (var i = 1; i < times.length; i++) {
+          gfpPath.lineTo(x(times[i]), y(gfp[i]));
+        }
+        canvas.drawPath(
+          gfpPath,
+          Paint()
+            ..color = const Color(0xFFD97706)
+            ..strokeWidth = 2.2
+            ..style = PaintingStyle.stroke,
+        );
+      }
+    }
+
+    if (hoverX != null) {
+      final t =
+          xMin +
+          ((hoverX! - ax.left) / ax.width).clamp(0.0, 1.0) * (xMax - xMin);
+      canvas.drawLine(
+        Offset(x(t), ax.top),
+        Offset(x(t), ax.bottom),
+        Paint()..color = const Color(0xFF7C3AED),
+      );
+      final i = times.indexWhere((v) => v >= t);
+      if (i >= 0) {
+        String maxCh = '';
+        double maxAbs = -1.0;
+        double maxVal = 0.0;
+        for (final entry in channelWaves.entries) {
+          if (i < entry.value.length && entry.value[i].abs() > maxAbs) {
+            maxAbs = entry.value[i].abs();
+            maxVal = entry.value[i];
+            maxCh = entry.key;
+          }
+        }
+        erpText(
+          canvas,
+          '${(t * 1000).round()} ms · Peak: $maxCh (${maxVal.toStringAsFixed(2)} µV)',
+          Offset(ax.left + 8, ax.top + 6),
+          size: 11,
+          color: const Color(0xFF0F172A),
+        );
+      }
+    }
+    canvas.restore();
+
+    erpText(
+      canvas,
+      'Butterfly (${channelWaves.length} ch)${highlightedChannel != null ? ' · Red: $highlightedChannel' : ''}${showGfp ? ' · Amber: GFP' : ''}',
+      const Offset(64, 10),
+      size: 11,
+      color: const Color(0xFF0F172A),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant ErpButterflyPainter old) =>
+      old.times != times ||
+      old.channelWaves != channelWaves ||
+      old.highlightedChannel != highlightedChannel ||
+      old.negativeUp != negativeUp ||
+      old.windowSec != windowSec ||
+      old.hoverX != hoverX ||
+      old.showGfp != showGfp;
 }
 
 List<Map<String, dynamic>> extractErpConditionTopos(

@@ -89,6 +89,68 @@ class InteractiveErpSession {
     ]);
   }
 
+  double trialSample(int trialIndex, int channel, int sample) =>
+      epochs.preview[channel][trialIndex * points + sample];
+
+  /// Returns a new session with per-trial baseline `[startMs, endMs]` subtracted,
+  /// preserving current rejected trial indices.
+  InteractiveErpSession withBaselineCorrection(double startMs, double endMs) {
+    final tminMs = (epochs.epochTmin ?? -0.2) * 1000.0;
+    final dtMs = 1000.0 / epochs.sampleRate;
+    final baseIndices = <int>[
+      for (var s = 0; s < points; s++)
+        if (tminMs + s * dtMs >= startMs && tminMs + s * dtMs <= endMs) s,
+    ];
+    if (baseIndices.isEmpty) {
+      baseIndices.add(0);
+    }
+    final newPreview = <Float32List>[
+      for (var ch = 0; ch < epochs.preview.length; ch++)
+        Float32List.fromList(epochs.preview[ch]),
+    ];
+    for (var t = 0; t < epochs.epochCount; t++) {
+      final offset = t * points;
+      for (var ch = 0; ch < newPreview.length; ch++) {
+        var bSum = 0.0;
+        for (final bi in baseIndices) {
+          bSum += newPreview[ch][offset + bi];
+        }
+        final bMean = bSum / baseIndices.length;
+        for (var s = 0; s < points; s++) {
+          newPreview[ch][offset + s] = (newPreview[ch][offset + s] - bMean)
+              .toDouble();
+        }
+      }
+    }
+    final updatedEpochs = EegRecording(
+      path: epochs.path,
+      format: epochs.format,
+      sampleRate: epochs.sampleRate,
+      labels: epochs.labels,
+      preview: newPreview,
+      sampleCount: epochs.sampleCount,
+      pointsPerEpoch: epochs.pointsPerEpoch,
+      epochCount: epochs.epochCount,
+      epochLabels: epochs.epochLabels,
+      epochTmin: epochs.epochTmin,
+      completedStages: epochs.completedStages,
+      sourceDurationSeconds: epochs.sourceDurationSeconds,
+      epochStartSeconds: epochs.epochStartSeconds,
+      provenance: {
+        ...epochs.provenance,
+        'baseline_ms': [startMs, endMs],
+      },
+      markers: epochs.markers,
+    );
+    final next = InteractiveErpSession(updatedEpochs);
+    for (final r in rejected) {
+      if (r >= 0 && r < epochs.epochCount) {
+        next.setRejected(r, true);
+      }
+    }
+    return next;
+  }
+
   EegRecording trial(int index) => _copy(
     [
       for (final ch in epochs.preview)

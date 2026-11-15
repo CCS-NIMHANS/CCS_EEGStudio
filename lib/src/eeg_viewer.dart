@@ -2544,7 +2544,7 @@ List<double> _filterViewerSeries(
     }
 
     // 2. Low-pass filter (EMA, based on high)
-    if (bandpass) {
+    if (bandpass && high > 0.0) {
       final highHz = high;
       final rcLP = 1.0 / (2 * math.pi * highHz);
       final alphaLP = dt / (rcLP + dt);

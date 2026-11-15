@@ -664,7 +664,7 @@ class _FeatureHomeState extends State<FeatureHome>
   List<EegRecording> get _stageRecordings {
     final result = <EegRecording>[];
     for (final recording in [
-      _interactivePreview,
+      if (_previewNeedsFinalizing) _interactivePreview,
       _directInput,
       _source,
       _preprocessed,
@@ -787,9 +787,15 @@ class _FeatureHomeState extends State<FeatureHome>
     final gedaiEpoch = double.tryParse(_gedaiEpoch.text);
     _cfg
       ..gedaiThreshold = _gedaiThreshold.text.trim().toLowerCase()
-      ..lowHz = double.tryParse(_preLow.text) ?? _cfg.lowHz
-      ..highHz = double.tryParse(_preHigh.text) ?? _cfg.highHz
-      ..notchHz = double.tryParse(_preNotch.text) ?? _cfg.notchHz
+      ..lowHz = _preLow.text.trim().isEmpty
+          ? 0.0
+          : (double.tryParse(_preLow.text) ?? _cfg.lowHz)
+      ..highHz = _preHigh.text.trim().isEmpty
+          ? 0.0
+          : (double.tryParse(_preHigh.text) ?? _cfg.highHz)
+      ..notchHz = _preNotch.text.trim().isEmpty
+          ? 0.0
+          : (double.tryParse(_preNotch.text) ?? _cfg.notchHz)
       ..downsampleFreq =
           double.tryParse(_preDownsample.text) ?? _cfg.downsampleFreq
       ..dfaFeiWindowSeconds = double.tryParse(_dfaWindow.text) ?? 60
@@ -815,15 +821,21 @@ class _FeatureHomeState extends State<FeatureHome>
   }
 
   void _syncControllersFromConfig() {
-    _preLow.text = _cfg.lowHz == _cfg.lowHz.roundToDouble()
-        ? _cfg.lowHz.toStringAsFixed(1)
-        : _cfg.lowHz.toString();
-    _preHigh.text = _cfg.highHz == _cfg.highHz.roundToDouble()
-        ? _cfg.highHz.toStringAsFixed(0)
-        : _cfg.highHz.toString();
-    _preNotch.text = _cfg.notchHz == _cfg.notchHz.roundToDouble()
-        ? _cfg.notchHz.toStringAsFixed(0)
-        : _cfg.notchHz.toString();
+    _preLow.text = _cfg.lowHz <= 0
+        ? ''
+        : (_cfg.lowHz == _cfg.lowHz.roundToDouble()
+            ? _cfg.lowHz.toStringAsFixed(1)
+            : _cfg.lowHz.toString());
+    _preHigh.text = _cfg.highHz <= 0
+        ? ''
+        : (_cfg.highHz == _cfg.highHz.roundToDouble()
+            ? _cfg.highHz.toStringAsFixed(0)
+            : _cfg.highHz.toString());
+    _preNotch.text = _cfg.notchHz <= 0
+        ? ''
+        : (_cfg.notchHz == _cfg.notchHz.roundToDouble()
+            ? _cfg.notchHz.toStringAsFixed(0)
+            : _cfg.notchHz.toString());
     _preDownsample.text = _cfg.downsampleFreq.round().toString();
     _dfaWindow.text = _cfg.dfaFeiWindowSeconds.round().toString();
     _epoch.text = _cfg.epochSeconds.toString();
@@ -1234,17 +1246,31 @@ class _FeatureHomeState extends State<FeatureHome>
     }
   }
 
-  void _selectOpenedRecording(EegRecording recording) {
-    if (identical(recording, _interactivePreview)) return;
+  void _selectOpenedRecording(
+    EegRecording recording, {
+    bool keepModule = false,
+  }) {
+    if (identical(recording, _interactivePreview)) {
+      setState(() {
+        _directInput = null;
+      });
+      return;
+    }
     _resetInteractivePreview();
     _restoreSavedEpochProtocol(recording);
     setState(() {
-      _raw = recording;
+      if (_preprocessed?.path == recording.path) {
+        _directInput = null;
+      } else {
+        _raw = recording;
+        _directInput = recording;
+      }
       _source = null;
       _sourceInput = null;
-      _selectedModule = _Module.loadRaw;
+      if (!keepModule) {
+        _selectedModule = _Module.loadRaw;
+      }
 
-      _directInput = recording;
       final csv =
           '${File(recording.path).parent.path}${Platform.pathSeparator}${_stem(recording.path)}.features.csv';
       _featuresCsv = File(csv).existsSync() ? csv : null;
@@ -1257,7 +1283,9 @@ class _FeatureHomeState extends State<FeatureHome>
       _channels = ChannelTypeMap.autoDetect(recording.labels);
     });
     _log('Active recording: ${_shortName(recording.path)}');
-    unawaited(_restoreInteractivePreview(recording));
+    if (_preprocessed?.path != recording.path) {
+      unawaited(_restoreInteractivePreview(recording));
+    }
   }
 
   /// Loads a preprocessed file as the Stage 2 input, bypassing Stage 1.
@@ -2891,6 +2919,11 @@ class _FeatureHomeState extends State<FeatureHome>
             'interactive-erp-${(_directInput ?? _preprocessed ?? _raw)?.path}',
           ),
           recording: _directInput ?? _preprocessed ?? _raw,
+          availableRecordings: _stageRecordings
+              .where((r) => !identical(r, _interactivePreview))
+              .toList(),
+          onSelectRecording: (rec) =>
+              _selectOpenedRecording(rec, keepModule: true),
           config: _cfg,
           onOpenRecording: () => _loadRaw(destination: _Module.erpAnalysis),
           onUseReviewed: (recording) => setState(() {
@@ -3130,12 +3163,17 @@ class _FeatureHomeState extends State<FeatureHome>
                         rawRecording: _raw,
                         allRecordings: _stageRecordings,
                         onSelectRecording: (rec) {
-                          if (_running || identical(rec, _interactivePreview))
+                          if (_running) return;
+                          if (identical(rec, _interactivePreview)) {
+                            setState(() => _directInput = null);
                             return;
+                          }
                           if (_openedRecordings.any(
-                            (item) => item.path == rec.path,
-                          )) {
-                            _selectOpenedRecording(rec);
+                                (item) => item.path == rec.path,
+                              ) ||
+                              _raw?.path == rec.path ||
+                              _preprocessed?.path == rec.path) {
+                            _selectOpenedRecording(rec, keepModule: true);
                           } else {
                             _resetInteractivePreview();
                             setState(() => _directInput = rec);
@@ -4391,7 +4429,7 @@ class _FeatureHomeState extends State<FeatureHome>
         _previewStep(
           'filter',
           'Bandpass + notch filter',
-          '${_cfg.lowHz}–${_cfg.highHz} Hz · notch ${_cfg.notchHz} Hz',
+          '${_cfg.lowHz > 0 ? _cfg.lowHz : 'off'}–${_cfg.highHz > 0 ? _cfg.highHz : 'off'} Hz · notch ${_cfg.notchHz > 0 ? _cfg.notchHz : 'off'} Hz',
           {
             for (final k in [
               'filter',
