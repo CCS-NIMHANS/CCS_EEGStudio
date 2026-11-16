@@ -15,6 +15,24 @@ import 'erp/event_group_editor.dart';
 ///
 /// Supports a side-by-side Raw / Processed toggle when [rawRecording] is
 /// provided alongside [recording] (the preprocessed version).
+class EpochShadeSpec {
+  const EpochShadeSpec({
+    required this.index,
+    required this.startSeconds,
+    required this.endSeconds,
+    required this.label,
+    required this.color,
+    this.enabled = true,
+  });
+
+  final int index;
+  final double startSeconds;
+  final double endSeconds;
+  final String label;
+  final Color color;
+  final bool enabled;
+}
+
 class EegViewer extends StatefulWidget {
   const EegViewer({
     super.key,
@@ -36,6 +54,8 @@ class EegViewer extends StatefulWidget {
     this.lowHz = 0.5,
     this.highHz = 40.0,
     this.notchHz = 50.0,
+    this.epochShades = const [],
+    this.onToggleEpochShade,
   });
 
   /// Parent workspace supplies the trial picker for a single-trial view.
@@ -65,6 +85,8 @@ class EegViewer extends StatefulWidget {
   final double lowHz;
   final double highHz;
   final double notchHz;
+  final List<EpochShadeSpec> epochShades;
+  final ValueChanged<int>? onToggleEpochShade;
 
   @override
   State<EegViewer> createState() => _EegViewerState();
@@ -1426,18 +1448,24 @@ class _EegViewerState extends State<EegViewer> {
         child: GestureDetector(
           onTapDown: (details) {
             _focusNode.requestFocus();
-            if (widget.onTimeSelected != null) {
-              final width = context.size?.width ?? 800;
-              final left = _waveformLabelGutter(eeg, width);
-              final fraction =
-                  ((details.localPosition.dx - left) /
-                          math.max(1, width - left))
-                      .clamp(0.0, 1.0);
-              final start = eeg.isEpoched && !_stitchEpochs
-                  ? _currentEpochIndex * eeg.epochDurationSeconds
-                  : _startSeconds;
-              widget.onTimeSelected!(start + fraction * _viewWindow(eeg));
+            final width = context.size?.width ?? 800;
+            final left = _waveformLabelGutter(eeg, width);
+            final fraction =
+                ((details.localPosition.dx - left) / math.max(1, width - left))
+                    .clamp(0.0, 1.0);
+            final start = eeg.isEpoched && !_stitchEpochs
+                ? _currentEpochIndex * eeg.epochDurationSeconds
+                : _startSeconds;
+            final tapSec = start + fraction * _viewWindow(eeg);
+            if (widget.onToggleEpochShade != null && widget.epochShades.isNotEmpty) {
+              for (final shade in widget.epochShades) {
+                if (tapSec >= shade.startSeconds && tapSec <= shade.endSeconds) {
+                  widget.onToggleEpochShade!(shade.index);
+                  return;
+                }
+              }
             }
+            widget.onTimeSelected?.call(tapSec);
           },
           onScaleStart: (_) => _baseGain = _gain,
           onScaleUpdate: (details) => setState(
@@ -1489,6 +1517,7 @@ class _EegViewerState extends State<EegViewer> {
                 traceSpacing: _traceSpacing,
                 stitchedEpochs: _stitchEpochs,
                 visibleMarkers: _markersForView(eeg),
+                epochShades: widget.epochShades,
               ),
               child: const SizedBox.expand(),
             ),
@@ -2034,6 +2063,7 @@ class _EegSignalPainter extends CustomPainter {
     required this.traceSpacing,
     required this.stitchedEpochs,
     this.visibleMarkers = const [],
+    this.epochShades = const [],
   });
 
   final Map<String, Color> traceColors;
@@ -2051,6 +2081,7 @@ class _EegSignalPainter extends CustomPainter {
   final double traceSpacing;
   final bool stitchedEpochs;
   final List<EegMarker> visibleMarkers;
+  final List<EpochShadeSpec> epochShades;
 
   static const _timeAxisH = 20.0;
   static const _traceColor = Color(0xFF172033);
@@ -2167,6 +2198,67 @@ class _EegSignalPainter extends CustomPainter {
           Offset(size.width, l * laneH),
           sep,
         );
+      }
+    }
+
+    if (epochShades.isNotEmpty) {
+      final origin = eeg.isEpoched && !stitchedEpochs
+          ? currentEpochIndex * eeg.epochDurationSeconds
+          : startSeconds;
+      final viewEnd = origin + windowSeconds;
+      final shadeLabelPainter = TextPainter(textDirection: TextDirection.ltr);
+      for (final shade in epochShades) {
+        if (shade.endSeconds < origin || shade.startSeconds > viewEnd) continue;
+        final x0 = (plotLeft + (shade.startSeconds - origin) / windowSeconds * plotW)
+            .clamp(plotLeft, size.width);
+        final x1 = (plotLeft + (shade.endSeconds - origin) / windowSeconds * plotW)
+            .clamp(plotLeft, size.width);
+        if (x1 - x0 < 2) continue;
+        final rect = Rect.fromLTRB(x0, 0, x1, drawH);
+        canvas.drawRect(
+          rect,
+          Paint()
+            ..color = shade.enabled
+                ? shade.color.withValues(alpha: 0.16)
+                : const Color(0xFF64748B).withValues(alpha: 0.07),
+        );
+        canvas.drawRect(
+          rect,
+          Paint()
+            ..color = shade.enabled
+                ? shade.color.withValues(alpha: 0.65)
+                : const Color(0xFF64748B).withValues(alpha: 0.35)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.0,
+        );
+        final tagText = shade.enabled
+            ? '#${shade.index + 1} · ${shade.label}'
+            : '#${shade.index + 1} · OFF';
+        shadeLabelPainter.text = TextSpan(
+          text: tagText,
+          style: TextStyle(
+            fontFamily: 'DejaVuSans',
+            fontSize: 9.5,
+            fontWeight: FontWeight.w600,
+            color: shade.enabled ? Colors.white : Colors.white54,
+            decoration: shade.enabled ? null : TextDecoration.lineThrough,
+          ),
+        );
+        shadeLabelPainter.layout(maxWidth: math.max(1.0, x1 - x0 - 6));
+        final pillW = math.min(x1 - x0 - 2, shadeLabelPainter.width + 8);
+        if (pillW > 14) {
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(
+              Rect.fromLTWH(x0 + 2, 3, pillW, shadeLabelPainter.height + 4),
+              const Radius.circular(4),
+            ),
+            Paint()
+              ..color = shade.enabled
+                  ? shade.color.withValues(alpha: 0.85)
+                  : const Color(0xFF334155).withValues(alpha: 0.85),
+          );
+          shadeLabelPainter.paint(canvas, Offset(x0 + 6, 5));
+        }
       }
     }
 
@@ -2465,6 +2557,7 @@ class _EegSignalPainter extends CustomPainter {
   bool shouldRepaint(covariant _EegSignalPainter old) =>
       old.cursorSeconds != cursorSeconds ||
       old.highlightWindowSeconds != highlightWindowSeconds ||
+      old.epochShades != epochShades ||
       old.traceColors != traceColors ||
       old.effectivePreview != effectivePreview ||
       old.currentEpochIndex != currentEpochIndex ||

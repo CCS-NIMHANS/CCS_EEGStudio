@@ -19,6 +19,7 @@ import 'erp_workbench_view.dart';
 import 'interactive_erp_session.dart';
 import 'stim_epoch_panel.dart';
 import 'protocol_tools.dart';
+import 'workbench_figures.dart';
 
 const List<Color> _erpCondColors = [
   Color(0xFF3B82F6), // Blue: Condition A
@@ -52,12 +53,32 @@ class InteractiveErpWorkspace extends StatefulWidget {
 
 class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
   InteractiveErpSession? _session;
-  String _preset = 'Custom', _mode = 'epochs', _trialSubView = 'trial', _status = '';
+  String _preset = 'Custom', _mode = 'epochs', _trialSubView = 'erpimage', _status = '';
+  String _epochPreviewMode = 'distributed'; // 'distributed' | 'butterfly'
+  int _activeStep = 1; // 1 = Protocol & Epoching, 2 = Review & Multi-Stream, 3 = Measurements & Export
+  int _workbenchTab = 0; // 0=ERP & Topo, 1=ERPimage, 2=ERSP & ITC, 3=rERP & ML, 4=Measurements & Export
+  double _winStartMs = 300.0;
+  double _winEndMs = 600.0;
   bool _busy = false, _dirty = false, _closing = false;
   int _trial = 0, _channel = 0;
   String? _condition;
+  final Set<int> _disabledProtocolEpochs = {};
+  final Set<String> _includedChannels = {};
   late final TextEditingController _baseStartCtrl = TextEditingController(text: '-200');
   late final TextEditingController _baseEndCtrl = TextEditingController(text: '0');
+  late final TextEditingController _win0Ctrl = TextEditingController(text: '300');
+  late final TextEditingController _win1Ctrl = TextEditingController(text: '600');
+
+  void _updateMeasurementWindow(double startMs, double endMs) {
+    final lo = math.min(startMs, endMs);
+    final hi = math.max(startMs, endMs);
+    setState(() {
+      _winStartMs = lo;
+      _winEndMs = hi;
+      _win0Ctrl.text = '${lo.round()}';
+      _win1Ctrl.text = '${hi.round()}';
+    });
+  }
   File? _reviewFile;
   Timer? _persistTimer;
   EegRecording? _savedReviewed;
@@ -67,18 +88,22 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
   String? _measurementOutput;
   int _measurementRevision = -1;
 
-  Future<void> _openMeasurements() async {
+  Future<void> _openMeasurements({int targetTab = 4, int? targetStep}) async {
     final session = _session;
     if (session == null || _dirty || _busy || session.acceptedCount == 0)
       return;
     if (_measurementRecording != null &&
         _measurementRevision == session.revision) {
-      setState(() => _mode = 'measurements');
+      setState(() {
+        _mode = 'measurements';
+        _workbenchTab = targetTab;
+        if (targetStep != null) _activeStep = targetStep;
+      });
       return;
     }
     setState(() {
       _busy = true;
-      _status = 'Preparing accepted trials for measurements…';
+      _status = 'Preparing accepted trials for analysis & measurements…';
     });
     try {
       final identity = sha256
@@ -102,7 +127,9 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         _measurementOutput = dir.path;
         _measurementRevision = session.revision;
         _mode = 'measurements';
-        _status = 'Measurements use the current accepted trials automatically.';
+        _workbenchTab = targetTab;
+        if (targetStep != null) _activeStep = targetStep;
+        _status = 'All streams use the current ${session.acceptedCount} accepted trials & ${_winStartMs.round()}–${_winEndMs.round()} ms window.';
       });
     } catch (e) {
       if (mounted)
@@ -136,6 +163,8 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
     _persist();
     _baseStartCtrl.dispose();
     _baseEndCtrl.dispose();
+    _win0Ctrl.dispose();
+    _win1Ctrl.dispose();
     super.dispose();
   }
 
@@ -219,6 +248,11 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         );
       }
       final session = InteractiveErpSession(epochs);
+      for (final idx in _disabledProtocolEpochs) {
+        if (idx >= 0 && idx < epochs.epochCount) {
+          session.setRejected(idx, true);
+        }
+      }
       // Keep the signal cache separate from review decisions. A protocol or
       // input change gets a different decision file, so old rejections cannot leak.
       final stat = await File(input.path).stat();
@@ -273,8 +307,14 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
           }
         }
         _dirty = false;
+        _activeStep = 2;
+        _includedChannels
+          ..clear()
+          ..addAll(epochs.labels);
         _savedReviewed = null;
         _savedRevision = -1;
+        _measurementRecording = null;
+        _measurementRevision = -1;
         _mode = 'epochs';
         _status =
             '${session.acceptedCount}/${epochs.epochCount} trials included. Review decisions are saved locally.';
@@ -284,6 +324,46 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  List<EpochShadeSpec> _buildProtocolEpochShades(EegRecording input) {
+    final spec = widget.config.stimEpochSpec;
+    if (spec == null || input.isEpoched) return const [];
+    final events = spec.selectEvents(input.markers);
+    final groupNames = spec.markerGroups.keys.toList();
+    return [
+      for (var i = 0; i < events.length; i++)
+        () {
+          final (tSec, groupLabel) = events[i];
+          final gIdx = math.max(0, groupNames.indexOf(groupLabel));
+          final color = _erpCondColors[gIdx % _erpCondColors.length];
+          return EpochShadeSpec(
+            index: i,
+            startSeconds: tSec + spec.tmin,
+            endSeconds: tSec + spec.tmax,
+            label: groupLabel,
+            color: color,
+            enabled: !_disabledProtocolEpochs.contains(i),
+          );
+        }(),
+    ];
+  }
+
+  Map<String, List<double>> _buildEpochButterflyWaves(
+    InteractiveErpSession session,
+    int trialIdx,
+  ) {
+    final activeCh = _includedChannels.isEmpty
+        ? session.epochs.labels.toSet()
+        : _includedChannels;
+    final pts = session.points;
+    return {
+      for (var c = 0; c < session.epochs.labels.length; c++)
+        if (activeCh.contains(session.epochs.labels[c]))
+          session.epochs.labels[c]: [
+            for (var s = 0; s < pts; s++) session.trialSample(trialIdx, c, s),
+          ],
+    };
   }
 
   void _persist() {
@@ -303,6 +383,88 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
       if (mounted && !_closing)
         setState(() => _status = 'Could not save review decisions: $e');
     }
+  }
+
+  Future<void> _showChannelInclusionDialog(InteractiveErpSession session) async {
+    final labels = session.epochs.labels;
+    final current = _includedChannels.isEmpty
+        ? labels.toSet()
+        : Set<String>.from(_includedChannels);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          title: const Text('Include / Remove Channels'),
+          content: SizedBox(
+            width: 440,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TopoChannelSelector(
+                    availableChannels: labels,
+                    selectedChannels: current,
+                    multiSelect: true,
+                    size: 240,
+                    onSelectChannel: (ch) {
+                      setDlg(() {
+                        if (current.contains(ch)) {
+                          if (current.length > 1) current.remove(ch);
+                        } else {
+                          current.add(ch);
+                        }
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final ch in labels)
+                        FilterChip(
+                          label: Text(ch, style: const TextStyle(fontSize: 11)),
+                          selected: current.contains(ch),
+                          onSelected: (v) {
+                            setDlg(() {
+                              if (v) {
+                                current.add(ch);
+                              } else if (current.length > 1) {
+                                current.remove(ch);
+                              }
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => setDlg(() => current..clear()..addAll(labels)),
+              child: const Text('Select all'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                setState(() {
+                  _includedChannels
+                    ..clear()
+                    ..addAll(current);
+                });
+                Navigator.pop(ctx);
+              },
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _reject(int index, bool value) {
@@ -432,97 +594,135 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
           ];
     if (filtered.isNotEmpty && !filtered.contains(_trial))
       _trial = filtered.first;
-    if (_mode == 'measurements' && _measurementRecording != null) {
-      final resultPath = '$_measurementOutput/erp_results.ccserp';
-      var validResult = false;
+    final String? workbenchResultPath = _measurementOutput != null
+        ? '$_measurementOutput/erp_results.ccserp'
+        : null;
+    var validWorkbenchResult = false;
+    if (workbenchResultPath != null) {
       try {
-        final result = jsonDecode(File(resultPath).readAsStringSync());
-        validResult =
+        final result = jsonDecode(File(workbenchResultPath).readAsStringSync());
+        validWorkbenchResult =
             result is Map &&
             result['files'] is List &&
             (result['files'] as List).isNotEmpty;
       } catch (_) {
         /* unfinished or missing results are computed again */
       }
-      return Column(
-        children: [
-          _buildRecordingSwitcherBar(input),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: const BoxDecoration(
-              color: Color(0xFF0F172A),
-              border: Border(bottom: BorderSide(color: Colors.white12)),
-            ),
-            child: Row(
-              children: [
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(
-                      value: 'epochs',
-                      icon: Icon(Icons.view_list, size: 16),
-                      label: Text('Trial Review & ERPimage'),
+    }
+    Widget stepCard({
+      required int step,
+      required String title,
+      required String subtitle,
+      required bool done,
+      required String actionLabel,
+      required VoidCallback? onAction,
+      Widget? body,
+    }) {
+      final active = _activeStep == step;
+      return Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        decoration: BoxDecoration(
+          color: active ? const Color(0xFF172554).withValues(alpha: 0.45) : const Color(0xFF0F172A),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: active ? const Color(0xFF3B82F6) : Colors.white12,
+            width: active ? 1.4 : 1.0,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => setState(() => _activeStep = step),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 22,
+                      height: 22,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: done
+                            ? const Color(0xFF16A34A).withValues(alpha: 0.25)
+                            : (active ? const Color(0xFF2563EB).withValues(alpha: 0.25) : Colors.white10),
+                        border: Border.all(
+                          color: done
+                              ? const Color(0xFF22C55E)
+                              : (active ? const Color(0xFF60A5FA) : Colors.white38),
+                        ),
+                      ),
+                      child: done
+                          ? const Icon(Icons.check, size: 13, color: Color(0xFF4ADE80))
+                          : Text('$step', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                     ),
-                    ButtonSegment(
-                      value: 'measurements',
-                      icon: Icon(Icons.analytics_outlined, size: 16),
-                      label: Text('ERP Analysis & Measurements'),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                          Text(
+                            subtitle,
+                            style: const TextStyle(fontSize: 11, color: Colors.white60),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    TextButton(
+                      onPressed: onAction,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(actionLabel, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                     ),
                   ],
-                  selected: const {'measurements'},
-                  onSelectionChanged: (v) {
-                    if (v.first == 'epochs') {
-                      setState(() => _mode = 'epochs');
-                    }
-                  },
                 ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Text(
-                    '${session!.acceptedCount} accepted trials · conditions & baseline carried from review',
-                    style: const TextStyle(fontSize: 12, color: Colors.white70),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-          Expanded(
-            child: ErpWorkbenchView(
-              key: ValueKey('linked-measurements-$_measurementRevision'),
-              activeRecording: _measurementRecording,
-              config: widget.config,
-              batchMode: false,
-              linkedReview: true,
-              linkedOutputDirectory: _measurementOutput,
-              initialInspection: _measurementInspection,
-              initialResultPath: validResult ? resultPath : null,
-            ),
-          ),
-        ],
+            if (active && body != null) ...[
+              const Divider(height: 1, color: Colors.white12),
+              Padding(padding: const EdgeInsets.all(10), child: body),
+            ],
+          ],
+        ),
       );
     }
+
+    final shades = _buildProtocolEpochShades(input);
+    final enabledShadeCount = shades.where((s) => s.enabled).length;
+
     final sidebar = ListView(
       padding: const EdgeInsets.all(12),
       children: [
         const Text(
           'Epochs & ERP',
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 4),
         Text(
-          'Input: ${input.path.split(RegExp(r'[/\\]')).last}',
-          style: const TextStyle(fontSize: 12),
+          input.path.split(RegExp(r'[/\\]')).last,
+          style: const TextStyle(fontSize: 11, color: Colors.white60),
         ),
         const SizedBox(height: 12),
-        Card(
-          child: ExpansionTile(
-            key: ValueKey('erp-protocol-${session == null}'),
-            initiallyExpanded: session == null && !input.isEpoched,
-            title: const Text('1. Protocol & event groups'),
-            subtitle: Text(
-              input.isEpoched ? 'Saved trial definitions retained' : _preset,
-            ),
-            childrenPadding: const EdgeInsets.all(10),
+        stepCard(
+          step: 1,
+          title: 'Define ERP Protocol',
+          subtitle: input.isEpoched
+              ? '${input.epochCount} saved epochs'
+              : '$_preset · $enabledShadeCount/${shades.length} epochs enabled',
+          done: session != null && !_dirty,
+          actionLabel: session == null ? 'Create' : 'Update',
+          onAction: _busy ? null : _createEpochs,
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (!input.isEpoched) ...[
                 DropdownButtonFormField<String>(
@@ -530,6 +730,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                   isExpanded: true,
                   decoration: const InputDecoration(
                     labelText: 'ERP-CORE / custom protocol',
+                    isDense: true,
                   ),
                   items: [
                     for (final p in [...erpCorePresets.keys, 'Custom'])
@@ -540,9 +741,11 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                       : (v) => setState(() {
                           _preset = v!;
                           _applyPreset(v);
+                          _disabledProtocolEpochs.clear();
                           _dirty = session != null;
                         }),
                 ),
+                const SizedBox(height: 6),
                 ProtocolTools(
                   config: widget.config,
                   onChanged: () => setState(() => _dirty = session != null),
@@ -557,127 +760,175 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                     _dirty = session != null;
                   }),
                 ),
+                if (shades.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Click shaded epochs on the EEG plot to enable/disable ($enabledShadeCount/${shades.length} active).',
+                      style: const TextStyle(fontSize: 11, color: Colors.cyanAccent),
+                    ),
+                  ),
               ] else
                 Text(
                   '${input.epochCount} saved trials. Their groups and baseline are preserved.',
+                  style: const TextStyle(fontSize: 12),
                 ),
               const SizedBox(height: 8),
               FilledButton.icon(
                 onPressed: _busy ? null : _createEpochs,
-                icon: const Icon(Icons.content_cut),
+                icon: const Icon(Icons.content_cut, size: 16),
                 label: Text(
-                  session == null
-                      ? 'Create / load trial preview'
-                      : 'Update trial preview',
+                  session == null ? 'Create Epochs & Review' : 'Update Epochs',
                 ),
               ),
-              if (_dirty)
-                const Text(
-                  'Protocol changed. Update trials before continuing.',
-                ),
             ],
           ),
         ),
-        Card(
-          child: ExpansionTile(
-            title: const Text('2. Epoching & trial review'),
-            subtitle: Text(
-              session == null
-                  ? 'Create trials first'
-                  : '${session.acceptedCount} included · ${session.rejected.length} excluded',
-            ),
-            onExpansionChanged: (open) {
-              if (open) setState(() => _mode = 'epochs');
-            },
-            childrenPadding: const EdgeInsets.all(10),
-            children: [
-              const Text(
-                'Browse trials, exclude artifacts, or reinstate any excluded trial. Original samples stay intact.',
-              ),
-              if (session != null)
-                DropdownButtonFormField<String>(
-                  value: _condition ?? '*',
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Browse condition',
-                  ),
-                  items: [
-                    const DropdownMenuItem(
-                      value: '*',
-                      child: Text('All conditions'),
-                    ),
-                    for (final c in session.conditions)
-                      DropdownMenuItem(
-                        value: c,
-                        child: Text('$c (${session.counts[c]} included)'),
+        stepCard(
+          step: 2,
+          title: 'Epoch Review & Analysis',
+          subtitle: session == null
+              ? 'Create epochs in Step 1 first'
+              : '${session.acceptedCount} included · ${session.rejected.length} excluded',
+          done: session != null && session.acceptedCount > 0,
+          actionLabel: 'ERP & Topo',
+          onAction: session == null || _busy || _dirty
+              ? null
+              : () => _openMeasurements(targetTab: 0, targetStep: 2),
+          body: session == null
+              ? const Text('Create epochs in Step 1 to begin reviewing.', style: TextStyle(fontSize: 12, color: Colors.white60))
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      value: _condition ?? '*',
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Filter condition',
+                        isDense: true,
                       ),
-                  ],
-                  onChanged: (v) =>
-                      setState(() => _condition = v == '*' ? null : v),
-                ),
-              if (session != null)
-                SizedBox(
-                  height: 220,
-                  child: ListView(
-                    children: [
-                      for (final i in filtered)
-                        CheckboxListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(
-                            'Trial ${i + 1} · ${session.condition(i)}',
+                      items: [
+                        const DropdownMenuItem(value: '*', child: Text('All conditions')),
+                        for (final c in session.conditions)
+                          DropdownMenuItem(
+                            value: c,
+                            child: Text('$c (${session.counts[c]} included)'),
                           ),
-                          subtitle: i < session.epochs.epochStartSeconds.length
-                              ? Text(
-                                  'Source ${session.epochs.epochStartSeconds[i].toStringAsFixed(3)} s',
-                                )
-                              : null,
-                          value: !session.rejected.contains(i),
-                          onChanged: _busy || _dirty
-                              ? null
-                              : (v) => _reject(i, !v!),
-                          secondary: IconButton(
-                            icon: Icon(
-                              _trial == i
-                                  ? Icons.visibility
-                                  : Icons.visibility_outlined,
+                      ],
+                      onChanged: (v) => setState(() => _condition = v == '*' ? null : v),
+                    ),
+                    const SizedBox(height: 6),
+                    OutlinedButton.icon(
+                      onPressed: () => _showChannelInclusionDialog(session),
+                      icon: const Icon(Icons.radar, size: 15),
+                      label: Text(
+                        'Channels (${_includedChannels.isEmpty ? session.epochs.labels.length : _includedChannels.length}/${session.epochs.labels.length})',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      height: 200,
+                      child: ListView(
+                        children: [
+                          for (final i in filtered)
+                            CheckboxListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              title: Text('Trial ${i + 1} · ${session.condition(i)}', style: const TextStyle(fontSize: 12)),
+                              subtitle: i < session.epochs.epochStartSeconds.length
+                                  ? Text('Source ${session.epochs.epochStartSeconds[i].toStringAsFixed(2)} s', style: const TextStyle(fontSize: 10))
+                                  : null,
+                              value: !session.rejected.contains(i),
+                              onChanged: _busy || _dirty ? null : (v) => _reject(i, !v!),
+                              secondary: IconButton(
+                                icon: Icon(
+                                  _trial == i ? Icons.visibility : Icons.visibility_outlined,
+                                  size: 16,
+                                ),
+                                onPressed: () => setState(() {
+                                  _trial = i;
+                                  _activeStep = 2;
+                                }),
+                              ),
                             ),
-                            onPressed: () => setState(() {
-                              _trial = i;
-                              _mode = 'epochs';
-                            }),
-                          ),
-                        ),
-                    ],
-                  ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    FilledButton.icon(
+                      onPressed: _busy || _dirty
+                          ? null
+                          : () => _openMeasurements(targetTab: 0, targetStep: 2),
+                      icon: const Icon(Icons.analytics_outlined, size: 16),
+                      label: const Text('Open Analysis Streams (ERP, ERSP, rERP, ML)'),
+                    ),
+                  ],
                 ),
-            ],
-          ),
         ),
-        Card(
-          child: ExpansionTile(
-            title: const Text('3. Save & ERP Analysis'),
-            subtitle: const Text('Export accepted epochs or open full ERP suite'),
-            childrenPadding: const EdgeInsets.all(10),
+        stepCard(
+          step: 3,
+          title: 'Measurements, Plots & Save',
+          subtitle: 'Window ${_winStartMs.round()}–${_winEndMs.round()} ms · tables & export',
+          done: _savedReviewed != null,
+          actionLabel: 'Save',
+          onAction: session == null || _busy || _dirty ? null : () => _save(),
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (session != null) ...[
+              if (session != null)
                 for (final c in session.conditions)
-                  Text('$c: n = ${session.counts[c]}'),
-              ],
+                  Text('$c: n = ${session.counts[c]}', style: const TextStyle(fontSize: 12)),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Text('Window (ms):', style: TextStyle(fontSize: 11, color: Colors.white70)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: TextField(
+                      controller: _win0Ctrl,
+                      decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6)),
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    child: Text('–', style: TextStyle(fontSize: 11)),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _win1Ctrl,
+                      decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6)),
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    onPressed: () {
+                      final a = double.tryParse(_win0Ctrl.text.trim());
+                      final b = double.tryParse(_win1Ctrl.text.trim());
+                      if (a != null && b != null) _updateMeasurementWindow(a, b);
+                    },
+                    child: const Text('Sync', style: TextStyle(fontSize: 11)),
+                  ),
+                ],
+              ),
               const SizedBox(height: 8),
               FilledButton.icon(
                 onPressed: session == null || _busy || _dirty
                     ? null
-                    : _openMeasurements,
-                icon: const Icon(Icons.analytics_outlined),
-                label: const Text('Open ERP Analysis & Measurements'),
+                    : () => _openMeasurements(targetTab: 4, targetStep: 3),
+                icon: const Icon(Icons.table_chart_outlined, size: 16),
+                label: const Text('Measurements & Result Plots'),
               ),
               const SizedBox(height: 6),
               OutlinedButton.icon(
-                onPressed: session == null || _busy || _dirty
-                    ? null
-                    : () => _save(),
-                icon: const Icon(Icons.save_outlined),
+                onPressed: session == null || _busy || _dirty ? null : () => _save(),
+                icon: const Icon(Icons.save_outlined, size: 16),
                 label: const Text('Save accepted epochs…'),
               ),
               if (widget.config.erpEpochFirst)
@@ -686,8 +937,9 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                       ? null
                       : () async {
                           await _save();
-                          if (_savedReviewed != null && mounted)
+                          if (_savedReviewed != null && mounted) {
                             widget.onUseReviewed(_savedReviewed!);
+                          }
                         },
                   child: const Text('Use reviewed epochs for cleaning'),
                 ),
@@ -697,10 +949,10 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         if (_busy) const LinearProgressIndicator(),
         if (_dirty)
           const Text(
-            'Displayed trials and averages belong to the previous protocol.',
-            style: TextStyle(color: Colors.orange),
+            'Protocol changed — click Update Epochs to apply.',
+            style: TextStyle(color: Colors.orange, fontSize: 12),
           ),
-        Text(_status, style: const TextStyle(fontSize: 12)),
+        Text(_status, style: const TextStyle(fontSize: 12, color: Colors.white70)),
       ],
     );
     return Column(
@@ -715,61 +967,126 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
               ),
               const VerticalDivider(width: 1),
               Expanded(
-                child: session == null
-                    ? Center(
-                        child: Text(
-                          _busy
-                              ? 'Preparing trials…'
-                              : 'Choose an ERP-CORE preset or define event groups, then create a trial preview.',
-                        ),
-                      )
+                child: (_activeStep == 1 && !input.isEpoched) || session == null
+                    ? (!input.isEpoched
+                          ? Column(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                  decoration: const BoxDecoration(
+                                    color: Color(0xFF0F172A),
+                                    border: Border(bottom: BorderSide(color: Colors.white12)),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.layers, size: 16, color: Colors.cyanAccent),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          'Protocol Epoch Preview: $enabledShadeCount/${shades.length} epochs enabled · Click any shaded epoch on the EEG plot to enable/disable it',
+                                          style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      if (_disabledProtocolEpochs.isNotEmpty)
+                                        TextButton(
+                                          onPressed: () => setState(() {
+                                            _disabledProtocolEpochs.clear();
+                                            _dirty = session != null;
+                                          }),
+                                          child: const Text('Enable all', style: TextStyle(fontSize: 11)),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                Expanded(
+                                  child: EegViewer(
+                                    key: ValueKey('protocol-preview-${input.path}'),
+                                    recording: input,
+                                    selection: const ViewerSelection.empty(),
+                                    onSelectionChanged: (_) {},
+                                    autoscaleByDefault: true,
+                                    epochShades: shades,
+                                    onToggleEpochShade: (idx) {
+                                      setState(() {
+                                        if (_disabledProtocolEpochs.contains(idx)) {
+                                          _disabledProtocolEpochs.remove(idx);
+                                        } else {
+                                          _disabledProtocolEpochs.add(idx);
+                                        }
+                                        if (session != null && idx < session.epochs.epochCount) {
+                                          _reject(idx, _disabledProtocolEpochs.contains(idx));
+                                        }
+                                      });
+                                    },
+                                  ),
+                                ),
+                              ],
+                            )
+                          : Center(
+                              child: Text(
+                                _busy
+                                    ? 'Preparing trials…'
+                                    : 'Click Create Epochs & Review in Step 1 to begin.',
+                              ),
+                            ))
                     : Column(
                         children: [
                           Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
                             child: Wrap(
-                              spacing: 10,
-                              runSpacing: 6,
+                              spacing: 8,
+                              runSpacing: 4,
                               crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
                                 SegmentedButton<String>(
+                                  style: SegmentedButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                                    textStyle: const TextStyle(fontSize: 12),
+                                  ),
                                   segments: const [
-                                    ButtonSegment(
-                                      value: 'epochs',
-                                      icon: Icon(Icons.view_list, size: 16),
-                                      label: Text('Trial Review & ERPimage'),
-                                    ),
-                                    ButtonSegment(
-                                      value: 'measurements',
-                                      icon: Icon(Icons.analytics_outlined, size: 16),
-                                      label: Text('ERP Analysis & Measurements'),
-                                    ),
+                                    ButtonSegment(value: 'erpimage', label: Text('ERPimage')),
+                                    ButtonSegment(value: 'trial', label: Text('Distributed')),
+                                    ButtonSegment(value: 'butterfly', label: Text('Butterfly')),
+                                    ButtonSegment(value: 'wb_0', label: Text('ERP & Topo')),
+                                    ButtonSegment(value: 'wb_2', label: Text('ERSP & ITC')),
+                                    ButtonSegment(value: 'wb_3', label: Text('rERP & ML')),
+                                    ButtonSegment(value: 'wb_4', label: Text('Measurements')),
                                   ],
-                                  selected: {_mode},
+                                  selected: {
+                                    _mode == 'measurements'
+                                        ? 'wb_$_workbenchTab'
+                                        : (_trialSubView == 'trial' && _epochPreviewMode == 'butterfly'
+                                            ? 'butterfly'
+                                            : _trialSubView),
+                                  },
                                   onSelectionChanged: (v) {
-                                    if (v.first == 'measurements') {
-                                      _openMeasurements();
+                                    final sel = v.first;
+                                    if (sel.startsWith('wb_')) {
+                                      final tab = int.parse(sel.substring(3));
+                                      _openMeasurements(
+                                        targetTab: tab,
+                                        targetStep: tab == 4 ? 3 : 2,
+                                      );
                                     } else {
-                                      setState(() => _mode = v.first);
+                                      setState(() {
+                                        _mode = 'epochs';
+                                        _activeStep = 2;
+                                        if (sel == 'butterfly') {
+                                          _trialSubView = 'trial';
+                                          _epochPreviewMode = 'butterfly';
+                                        } else if (sel == 'trial') {
+                                          _trialSubView = 'trial';
+                                          _epochPreviewMode = 'distributed';
+                                        } else {
+                                          _trialSubView = 'erpimage';
+                                        }
+                                      });
                                     }
                                   },
                                 ),
-                                SegmentedButton<String>(
-                                  segments: const [
-                                    ButtonSegment(
-                                      value: 'trial',
-                                      label: Text('Single Trial'),
-                                    ),
-                                    ButtonSegment(
-                                      value: 'erpimage',
-                                      label: Text('ERPimage'),
-                                    ),
-                                  ],
-                                  selected: {_trialSubView},
-                                  onSelectionChanged: (v) =>
-                                      setState(() => _trialSubView = v.first),
-                                ),
-                                if (_trialSubView == 'trial') ...[
+                                if (_mode != 'measurements') ...[
                                   IconButton(
                                     onPressed: filtered.indexOf(_trial) > 0
                                         ? () => setState(
@@ -810,21 +1127,58 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                               ],
                             ),
                           ),
+                          if (_mode == 'measurements' && _measurementRecording != null)
+                            Expanded(
+                              child: ErpWorkbenchView(
+                                key: ValueKey('linked-measurements-$_measurementRevision'),
+                                activeRecording: _measurementRecording,
+                                config: widget.config,
+                                batchMode: false,
+                                linkedReview: true,
+                                embeddedInEpochWorkspace: true,
+                                controlledTabIndex: _workbenchTab,
+                                onTabChanged: (t) => setState(() {
+                                  _workbenchTab = t;
+                                  _activeStep = t == 4 ? 3 : 2;
+                                }),
+                                externalMeasurementWindow: (_winStartMs, _winEndMs),
+                                onMeasurementWindowChanged: (w) =>
+                                    _updateMeasurementWindow(w.$1, w.$2),
+                                externalRoi: input.labels[_channel],
+                                onRoiChanged: (ch) {
+                                  final idx = input.labels.indexWhere(
+                                    (l) => l.toUpperCase() == ch.toUpperCase(),
+                                  );
+                                  if (idx >= 0 && idx != _channel) {
+                                    setState(() => _channel = idx);
+                                  }
+                                },
+                                linkedOutputDirectory: _measurementOutput,
+                                initialInspection: _measurementInspection,
+                                initialResultPath: validWorkbenchResult ? workbenchResultPath : null,
+                                onEditEpochs: () => setState(() {
+                                  _mode = 'epochs';
+                                  _activeStep = 2;
+                                }),
+                              ),
+                            )
+                          else ...[
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                             child: Wrap(
-                              spacing: 12,
-                              runSpacing: 6,
+                              spacing: 8,
+                              runSpacing: 4,
                               crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
                                 SizedBox(
-                                  width: 170,
+                                  width: 130,
                                   child: DropdownButtonFormField<int>(
                                     value: _channel,
                                     isDense: true,
                                     decoration: const InputDecoration(
                                       labelText: 'ERP channel',
                                       isDense: true,
+                                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                                     ),
                                     items: [
                                       for (var c = 0; c < input.labels.length; c++)
@@ -895,101 +1249,235 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                             ),
                           ),
                           Expanded(
-                            flex: 3,
-                            child: _trialSubView == 'erpimage'
-                                ? ErpImagePanel(
-                                    session: session,
-                                    channelIndex: _channel,
-                                    trialIndices: filtered,
-                                    onToggleReject: _reject,
-                                    onInspectTrial: (idx) => setState(() {
-                                      _trial = idx;
-                                      _trialSubView = 'trial';
-                                    }),
-                                  )
-                                : EegViewer(
-                                    key: ValueKey(
-                                      'erp-trial-$_trial-${identityHashCode(session)}',
-                                    ),
-                                    recording: session.trial(_trial),
-                                    externalEpochNavigation: true,
-                                    selection: const ViewerSelection.empty(),
-                                    onSelectionChanged: (_) {},
-                                    autoscaleByDefault: true,
-                                  ),
-                          ),
-                          Container(
-                            height: 200,
-                            margin: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF0F172A),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.white12),
-                            ),
-                            child: Column(
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                Row(
-                                  children: [
-                                    Text(
-                                      'Live ERP Preview (${input.labels[_channel]})',
-                                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                                    ),
-                                    const SizedBox(width: 14),
-                                    for (var i = 0; i < session.conditions.length; i++)
-                                      Padding(
-                                        padding: const EdgeInsets.only(right: 12),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
+                                Expanded(
+                                  child: Column(
+                                    children: [
+                                      Expanded(
+                                        flex: 5,
+                                        child: _trialSubView == 'erpimage'
+                                            ? ErpImagePanel(
+                                                session: session,
+                                                channelIndex: _channel,
+                                                trialIndices: filtered,
+                                                windowStartMs: _winStartMs,
+                                                windowEndMs: _winEndMs,
+                                                activeTrialIndex: _trial,
+                                                onTopoWindowChanged: (w) =>
+                                                    _updateMeasurementWindow(w.$1, w.$2),
+                                                onToggleReject: _reject,
+                                                onInspectTrial: (idx) => setState(() {
+                                                  _trial = idx;
+                                                  _trialSubView = 'trial';
+                                                }),
+                                              )
+                                            : (_epochPreviewMode == 'butterfly'
+                                                  ? Container(
+                                                      margin: const EdgeInsets.fromLTRB(12, 2, 12, 2),
+                                                      padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.white,
+                                                        borderRadius: BorderRadius.circular(8),
+                                                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                                                      ),
+                                                      child: CustomPaint(
+                                                        painter: ErpButterflyPainter(
+                                                          times: [
+                                                            for (var s = 0; s < session.points; s++)
+                                                              (session.epochs.epochTmin ?? -0.2) +
+                                                                  s / session.epochs.sampleRate,
+                                                          ],
+                                                          channelWaves: _buildEpochButterflyWaves(session, _trial),
+                                                          highlightedChannel: input.labels[_channel],
+                                                          negativeUp: true,
+                                                          windowSec: [_winStartMs / 1000.0, _winEndMs / 1000.0],
+                                                        ),
+                                                        child: const SizedBox.expand(),
+                                                      ),
+                                                    )
+                                                  : EegViewer(
+                                                      key: ValueKey(
+                                                        'erp-trial-$_trial-${_includedChannels.length}-${identityHashCode(session)}',
+                                                      ),
+                                                      recording: session.trial(_trial),
+                                                      externalEpochNavigation: true,
+                                                      selection: ViewerSelection(
+                                                        selectedChannels: (_includedChannels.isEmpty
+                                                            ? session.epochs.labels
+                                                            : _includedChannels.toList()),
+                                                        acceptedIntervals: const [],
+                                                        rejectedIntervals: const [],
+                                                      ),
+                                                      onSelectionChanged: (_) {},
+                                                      autoscaleByDefault: true,
+                                                    )),
+                                      ),
+                                      Container(
+                                        height: 130,
+                                        margin: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+                                        padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF0F172A),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: Colors.white12),
+                                        ),
+                                        child: Column(
                                           children: [
-                                            Container(
-                                              width: 12,
-                                              height: 3,
-                                              color: _erpCondColors[i % _erpCondColors.length],
+                                            Row(
+                                              children: [
+                                                Text(
+                                                  'Live ERP Preview (${input.labels[_channel]})',
+                                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                                ),
+                                                const SizedBox(width: 14),
+                                                for (var i = 0; i < session.conditions.length; i++)
+                                                  Padding(
+                                                    padding: const EdgeInsets.only(right: 12),
+                                                    child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Container(
+                                                          width: 12,
+                                                          height: 3,
+                                                          color: _erpCondColors[i % _erpCondColors.length],
+                                                        ),
+                                                        const SizedBox(width: 4),
+                                                        Text(
+                                                          '${session.conditions[i]} (n=${session.counts[session.conditions[i]]})',
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            color: _erpCondColors[i % _erpCondColors.length],
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                if (session.conditions.length >= 2)
+                                                  const Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      SizedBox(
+                                                        width: 12,
+                                                        height: 3,
+                                                        child: ColoredBox(color: Colors.white70),
+                                                      ),
+                                                      SizedBox(width: 4),
+                                                      Text(
+                                                        'Difference (B − A)',
+                                                        style: TextStyle(fontSize: 11, color: Colors.white70),
+                                                      ),
+                                                    ],
+                                                  ),
+                                              ],
                                             ),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              '${session.conditions[i]} (n=${session.counts[session.conditions[i]]})',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: _erpCondColors[i % _erpCondColors.length],
+                                            const SizedBox(height: 6),
+                                            Expanded(
+                                              child: CustomPaint(
+                                                painter: _AveragePainter(
+                                                  session,
+                                                  _channel,
+                                                  session.revision,
+                                                  windowStartMs: _winStartMs,
+                                                  windowEndMs: _winEndMs,
+                                                ),
+                                                child: const SizedBox.expand(),
                                               ),
                                             ),
                                           ],
                                         ),
                                       ),
-                                    if (session.conditions.length >= 2)
-                                      const Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          SizedBox(
-                                            width: 12,
-                                            height: 3,
-                                            child: ColoredBox(color: Colors.white70),
-                                          ),
-                                          SizedBox(width: 4),
-                                          Text(
-                                            'Difference (B − A)',
-                                            style: TextStyle(fontSize: 11, color: Colors.white70),
-                                          ),
-                                        ],
-                                      ),
-                                  ],
-                                ),
-                                const SizedBox(height: 6),
-                                Expanded(
-                                  child: CustomPaint(
-                                    painter: _AveragePainter(
-                                      session,
-                                      _channel,
-                                      session.revision,
-                                    ),
-                                    child: const SizedBox.expand(),
+                                    ],
                                   ),
                                 ),
+                                if (_trialSubView == 'trial' &&
+                                    _epochPreviewMode == 'butterfly' &&
+                                    input.labels.length >= 4) ...[
+                                  Container(
+                                    width: 215,
+                                    margin: const EdgeInsets.fromLTRB(0, 2, 12, 6),
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF0F172A),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: Colors.white12),
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        Text(
+                                          'Pick Channel: ${input.labels[_channel]}',
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.cyanAccent,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Expanded(
+                                          child: FittedBox(
+                                            child: TopoChannelSelector(
+                                              availableChannels: input.labels,
+                                              selectedChannels: {input.labels[_channel]},
+                                              multiSelect: false,
+                                              size: 185,
+                                              onSelectChannel: (ch) {
+                                                final idx = input.labels.indexWhere(
+                                                  (l) => l.toUpperCase() == ch.toUpperCase(),
+                                                );
+                                                if (idx >= 0) {
+                                                  setState(() => _channel = idx);
+                                                }
+                                              },
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Builder(
+                                          builder: (_) {
+                                            final chName = input.labels[_channel];
+                                            final activeSet = _includedChannels.isEmpty
+                                                ? input.labels.toSet()
+                                                : _includedChannels;
+                                            final isIncluded = activeSet.contains(chName);
+                                            return OutlinedButton.icon(
+                                              style: OutlinedButton.styleFrom(
+                                                visualDensity: VisualDensity.compact,
+                                                foregroundColor: isIncluded
+                                                    ? Colors.orangeAccent
+                                                    : Colors.greenAccent,
+                                              ),
+                                              onPressed: () {
+                                                setState(() {
+                                                  if (_includedChannels.isEmpty) {
+                                                    _includedChannels.addAll(input.labels);
+                                                  }
+                                                  if (isIncluded && _includedChannels.length > 1) {
+                                                    _includedChannels.remove(chName);
+                                                  } else {
+                                                    _includedChannels.add(chName);
+                                                  }
+                                                });
+                                              },
+                                              icon: Icon(
+                                                isIncluded ? Icons.block : Icons.check_circle_outline,
+                                                size: 14,
+                                              ),
+                                              label: Text(
+                                                isIncluded ? 'Mark $chName Bad' : 'Restore $chName',
+                                                style: const TextStyle(fontSize: 11),
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                           ),
+                          ],
                         ],
                       ),
               ),
@@ -1002,9 +1490,16 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
 }
 
 class _AveragePainter extends CustomPainter {
-  _AveragePainter(this.session, this.channel, this.revision);
+  _AveragePainter(
+    this.session,
+    this.channel,
+    this.revision, {
+    this.windowStartMs = 300.0,
+    this.windowEndMs = 600.0,
+  });
   final InteractiveErpSession session;
   final int channel, revision;
+  final double windowStartMs, windowEndMs;
   @override
   void paint(Canvas canvas, Size size) {
     final box = Rect.fromLTRB(
@@ -1037,6 +1532,18 @@ class _AveragePainter extends CustomPainter {
     final axis = Paint()
       ..color = Colors.grey
       ..strokeWidth = 1;
+    if (duration > 0) {
+      final x0 = (box.left + box.width * ((windowStartMs / 1000.0) - start) / duration)
+          .clamp(box.left, box.right);
+      final x1 = (box.left + box.width * ((windowEndMs / 1000.0) - start) / duration)
+          .clamp(box.left, box.right);
+      if (x1 > x0) {
+        canvas.drawRect(
+          Rect.fromLTRB(x0, box.top, x1, box.bottom),
+          Paint()..color = const Color(0xFFFACC15).withValues(alpha: 0.10),
+        );
+      }
+    }
     canvas.drawLine(
       Offset(box.left, box.center.dy),
       Offset(box.right, box.center.dy),

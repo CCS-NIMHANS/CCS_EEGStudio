@@ -39,6 +39,14 @@ pub struct ErspItcJob {
     pub n_perm: usize,
     #[serde(default = "default_seed")]
     pub seed: u64,
+    #[serde(default)]
+    pub topo_tmin_ms: Option<f64>,
+    #[serde(default)]
+    pub topo_tmax_ms: Option<f64>,
+    #[serde(default)]
+    pub topo_fmin_hz: Option<f64>,
+    #[serde(default)]
+    pub topo_fmax_hz: Option<f64>,
 }
 
 fn default_fmin() -> f64 {
@@ -72,6 +80,7 @@ fn default_seed() -> u64 {
 #[derive(Debug, Serialize)]
 pub struct ErspItcResult {
     pub channel: String,
+    pub labels: Vec<String>,
     pub times_ms: Vec<f64>,
     pub freqs_hz: Vec<f64>,
     pub n_trials_a: usize,
@@ -84,6 +93,12 @@ pub struct ErspItcResult {
     pub itc_diff: Option<Vec<f64>>,
     pub p_values_ersp: Vec<f64>,
     pub p_values_itc: Vec<f64>,
+    pub topo_ersp_a: Vec<f64>,
+    pub topo_itc_a: Vec<f64>,
+    pub topo_ersp_b: Option<Vec<f64>>,
+    pub topo_itc_b: Option<Vec<f64>>,
+    pub topo_ersp_diff: Option<Vec<f64>>,
+    pub topo_itc_diff: Option<Vec<f64>>,
     pub trial_indices_a: Vec<usize>,
     pub trial_power_a_db: Vec<f64>,
     pub trial_itc_a: Vec<f64>,
@@ -582,8 +597,132 @@ pub fn run(job: &ErspItcJob) -> Result<ErspItcResult, String> {
         }
     }
 
+    // Compute per-channel ERSP & ITC scalp topography averages across requested time/freq window (falling back to post-stimulus)
+    let topo_time_indices: Vec<usize> = match (job.topo_tmin_ms, job.topo_tmax_ms) {
+        (Some(t0), Some(t1)) => {
+            let lo = t0.min(t1);
+            let hi = t0.max(t1);
+            let v: Vec<usize> = times_ms
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &t)| if t >= lo && t <= hi { Some(i) } else { None })
+                .collect();
+            if v.is_empty() { post_indices.clone() } else { v }
+        }
+        _ => post_indices.clone(),
+    };
+    let topo_freq_indices: Vec<usize> = match (job.topo_fmin_hz, job.topo_fmax_hz) {
+        (Some(f0), Some(f1)) => {
+            let lo = f0.min(f1);
+            let hi = f0.max(f1);
+            let v: Vec<usize> = freqs_hz
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &f)| if f >= lo && f <= hi { Some(i) } else { None })
+                .collect();
+            if v.is_empty() { (0..n_freqs).collect() } else { v }
+        }
+        _ => (0..n_freqs).collect(),
+    };
+    let ch_topo: Vec<(f64, f64, Option<f64>, Option<f64>)> = (0..rec.channels.len())
+        .into_par_iter()
+        .map(|ch| {
+            let extract_ch = |indices: &[usize]| -> Vec<Vec<f64>> {
+                indices
+                    .iter()
+                    .filter_map(|&t_idx| {
+                        let start = t_idx * n_pts;
+                        if t_idx < epoch_count && start + n_pts <= rec.channels[ch].len() {
+                            Some(
+                                rec.channels[ch][start..start + n_pts]
+                                    .iter()
+                                    .map(|&v| v as f64)
+                                    .collect(),
+                            )
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+            let ta = extract_ch(&trials_a_idx);
+            let tb = extract_ch(&trials_b_idx);
+            if ta.is_empty() {
+                return (0.0, 0.0, None, None);
+            }
+            let (pa, pha) = morlet_tfr(&ta, srate, &freqs_hz, &cycles, &out_indices);
+            let (pb, phb) = if !tb.is_empty() {
+                morlet_tfr(&tb, srate, &freqs_hz, &cycles, &out_indices)
+            } else {
+                (vec![], vec![])
+            };
+            let n_all = (pa.len() + pb.len()).max(1) as f64;
+            let mut ch_base = vec![0.0; n_freqs];
+            for fi in 0..n_freqs {
+                let mut sum = 0.0;
+                for tr in pa.iter().chain(pb.iter()) {
+                    for &bi in &base_indices {
+                        sum += tr[fi][bi];
+                    }
+                }
+                ch_base[fi] = (sum / (n_all * base_indices.len() as f64)).max(1e-20);
+            }
+            let mean_post = |pow: &[Vec<Vec<f64>>], phase: &[Vec<Vec<Complex64>>]| -> (f64, f64) {
+                let n_tr = pow.len().max(1) as f64;
+                let mut e_sum = 0.0_f64;
+                let mut i_sum = 0.0_f64;
+                let mut cnt = 0.0_f64;
+                for &fi in &topo_freq_indices {
+                    for &ti in &topo_time_indices {
+                        let mut p_mean = 0.0;
+                        let mut ph_sum = Complex64::new(0.0, 0.0);
+                        for k in 0..pow.len() {
+                            p_mean += pow[k][fi][ti];
+                            ph_sum += phase[k][fi][ti];
+                        }
+                        p_mean /= n_tr;
+                        e_sum += 10.0 * (p_mean / ch_base[fi]).max(1e-20).log10();
+                        i_sum += (ph_sum.norm() / n_tr).clamp(0.0, 1.0);
+                        cnt += 1.0;
+                    }
+                }
+                let denom = cnt.max(1.0);
+                (e_sum / denom, i_sum / denom)
+            };
+            let (ea, ia) = mean_post(&pa, &pha);
+            let (eb, ib) = if !pb.is_empty() {
+                let (e, i) = mean_post(&pb, &phb);
+                (Some(e), Some(i))
+            } else {
+                (None, None)
+            };
+            (ea, ia, eb, ib)
+        })
+        .collect();
+
+    let topo_ersp_a: Vec<f64> = ch_topo.iter().map(|x| x.0).collect();
+    let topo_itc_a: Vec<f64> = ch_topo.iter().map(|x| x.1).collect();
+    let has_b_topo = !trials_b.is_empty();
+    let topo_ersp_b: Option<Vec<f64>> = if has_b_topo {
+        Some(ch_topo.iter().map(|x| x.2.unwrap_or(0.0)).collect())
+    } else {
+        None
+    };
+    let topo_itc_b: Option<Vec<f64>> = if has_b_topo {
+        Some(ch_topo.iter().map(|x| x.3.unwrap_or(0.0)).collect())
+    } else {
+        None
+    };
+    let topo_ersp_diff: Option<Vec<f64>> = topo_ersp_b.as_ref().map(|eb| {
+        eb.iter().zip(&topo_ersp_a).map(|(b, a)| b - a).collect()
+    });
+    let topo_itc_diff: Option<Vec<f64>> = topo_itc_b.as_ref().map(|ib| {
+        ib.iter().zip(&topo_itc_a).map(|(b, a)| b - a).collect()
+    });
+
     Ok(ErspItcResult {
         channel: channel_label,
+        labels: rec.labels.clone(),
         times_ms,
         freqs_hz,
         n_trials_a: trials_a.len(),
@@ -596,6 +735,12 @@ pub fn run(job: &ErspItcJob) -> Result<ErspItcResult, String> {
         itc_diff,
         p_values_ersp,
         p_values_itc,
+        topo_ersp_a,
+        topo_itc_a,
+        topo_ersp_b,
+        topo_itc_b,
+        topo_ersp_diff,
+        topo_itc_diff,
         trial_indices_a: trials_a_idx,
         trial_power_a_db,
         trial_itc_a,

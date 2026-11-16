@@ -1,5 +1,7 @@
 import 'erp_core_presets.dart';
+import 'erp_image_panel.dart';
 import 'ersp_itc_panel.dart';
+import 'interactive_erp_session.dart';
 import 'axis_controls.dart';
 import 'dart:io';
 import 'dart:convert';
@@ -61,6 +63,14 @@ class ErpWorkbenchView extends StatefulWidget {
     this.stage1Builder,
     this.onRunPreprocessing,
     this.onCloseBatch,
+    this.onEditEpochs,
+    this.embeddedInEpochWorkspace = false,
+    this.controlledTabIndex,
+    this.onTabChanged,
+    this.externalMeasurementWindow,
+    this.onMeasurementWindowChanged,
+    this.externalRoi,
+    this.onRoiChanged,
   });
   final EegRecording? activeRecording;
   final AnalysisConfig? config;
@@ -75,6 +85,14 @@ class ErpWorkbenchView extends StatefulWidget {
   final Widget Function({VoidCallback? onNext})? stage1Builder;
   final Future<List<String>> Function()? onRunPreprocessing;
   final VoidCallback? onCloseBatch;
+  final VoidCallback? onEditEpochs;
+  final bool embeddedInEpochWorkspace;
+  final int? controlledTabIndex;
+  final ValueChanged<int>? onTabChanged;
+  final (double, double)? externalMeasurementWindow;
+  final ValueChanged<(double, double)>? onMeasurementWindowChanged;
+  final String? externalRoi;
+  final ValueChanged<String>? onRoiChanged;
   @override
   State<ErpWorkbenchView> createState() => _ErpWorkbenchViewState();
 }
@@ -549,8 +567,24 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 9, vsync: this);
+    _tabs = TabController(
+      length: 5,
+      vsync: this,
+      initialIndex: (widget.controlledTabIndex ?? 0).clamp(0, 4),
+    );
+    _tabs.addListener(() {
+      if (!_tabs.indexIsChanging) {
+        widget.onTabChanged?.call(_tabs.index);
+      }
+    });
     _restoreProtocol();
+    if (widget.externalMeasurementWindow != null) {
+      _window0.text = '${widget.externalMeasurementWindow!.$1.round()}';
+      _window1.text = '${widget.externalMeasurementWindow!.$2.round()}';
+    }
+    if (widget.externalRoi != null && widget.externalRoi!.isNotEmpty) {
+      _primaryPlotChannel = widget.externalRoi;
+    }
     if (widget.initialResultPath != null) {
       final result = Map<String, dynamic>.from(
         jsonDecode(File(widget.initialResultPath!).readAsStringSync()) as Map,
@@ -605,6 +639,32 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   @override
   void didUpdateWidget(covariant ErpWorkbenchView old) {
     super.didUpdateWidget(old);
+    if (widget.controlledTabIndex != null &&
+        widget.controlledTabIndex != _tabs.index &&
+        widget.controlledTabIndex! >= 0 &&
+        widget.controlledTabIndex! < _tabs.length) {
+      _tabs.animateTo(widget.controlledTabIndex!);
+    }
+    if (widget.externalMeasurementWindow != null &&
+        widget.externalMeasurementWindow != old.externalMeasurementWindow) {
+      final w = widget.externalMeasurementWindow!;
+      final w0 = '${w.$1.round()}';
+      final w1 = '${w.$2.round()}';
+      if (_window0.text != w0 || _window1.text != w1) {
+        _window0.text = w0;
+        _window1.text = w1;
+        if (_canRun && !_busy) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _canRun && !_busy) _run();
+          });
+        }
+      }
+    }
+    if (widget.externalRoi != null &&
+        widget.externalRoi != old.externalRoi &&
+        widget.externalRoi != _primaryPlotChannel) {
+      _primaryPlotChannel = widget.externalRoi;
+    }
     if (!widget.batchMode &&
         old.activeRecording?.path != widget.activeRecording?.path) {
       _paths.clear();
@@ -1679,21 +1739,28 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       (f) => _file == null || f['path'] == _file,
       orElse: () => d,
     );
+    final chA = erpMap(activeFile['channel_a'] ?? d['channel_a']);
+    final chB = erpMap(activeFile['channel_b'] ?? d['channel_b']);
+    final chDiff = erpMap(activeFile['channel_difference'] ?? d['channel_difference']);
     final rawWaves = erpMap(activeFile['channel_waves'] ?? d['channel_waves']);
     final out = <String, List<double>>{};
     for (final ch in labels) {
-      final chMap = erpMap(rawWaves[ch]);
       List<double> w;
       if (_butterflyCondition == 'a') {
-        w = erpNumbers(chMap['a']);
+        w = erpNumbers(chA[ch]);
+        if (w.isEmpty) w = erpNumbers(erpMap(rawWaves[ch])['a']);
       } else if (_butterflyCondition == 'b') {
-        w = erpNumbers(chMap['b']);
+        w = erpNumbers(chB[ch]);
+        if (w.isEmpty) w = erpNumbers(erpMap(rawWaves[ch])['b']);
       } else {
-        final a = erpNumbers(chMap['a']);
-        final b = erpNumbers(chMap['b']);
-        w = [
-          for (var i = 0; i < math.min(a.length, b.length); i++) b[i] - a[i],
-        ];
+        w = erpNumbers(chDiff[ch]);
+        if (w.isEmpty) {
+          final a = chA[ch] != null ? erpNumbers(chA[ch]) : erpNumbers(erpMap(rawWaves[ch])['a']);
+          final b = chB[ch] != null ? erpNumbers(chB[ch]) : erpNumbers(erpMap(rawWaves[ch])['b']);
+          w = [
+            for (var i = 0; i < math.min(a.length, b.length); i++) b[i] - a[i],
+          ];
+        }
       }
       if (w.isNotEmpty) out[ch] = w;
     }
@@ -1710,8 +1777,17 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       (f) => _file == null || f['path'] == _file,
       orElse: () => d,
     );
+    final chA = erpMap(activeFile['channel_a'] ?? d['channel_a']);
+    final chB = erpMap(activeFile['channel_b'] ?? d['channel_b']);
     final rawWaves = erpMap(activeFile['channel_waves'] ?? d['channel_waves']);
     final profile = erpMap(d['profile']);
+
+    List<double> waveFor(String ch, String ab) {
+      final primary = erpNumbers(ab == 'a' ? chA[ch] : chB[ch]);
+      return primary.isNotEmpty
+          ? primary
+          : erpNumbers(erpMap(rawWaves[ch])[ab]);
+    }
 
     String pick(List<String> candidates) {
       for (final c in candidates) {
@@ -1737,20 +1813,27 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       title = 'Custom Channel Algebra ($chLeft − $chRight)';
     }
 
-    final wLeftA = erpNumbers(erpMap(rawWaves[chLeft])['a']);
-    final wLeftB = erpNumbers(erpMap(rawWaves[chLeft])['b']);
-    final wRightA = erpNumbers(erpMap(rawWaves[chRight])['a']);
-    final wRightB = erpNumbers(erpMap(rawWaves[chRight])['b']);
+    final wLeftA = waveFor(chLeft, 'a');
+    final wLeftB = waveFor(chLeft, 'b');
+    final wRightA = waveFor(chRight, 'a');
+    final wRightB = waveFor(chRight, 'b');
     final n = [times.length, wLeftA.length, wRightA.length, wLeftB.length, wRightB.length].reduce(math.min);
 
-    final ipsi = <double>[
-      for (var i = 0; i < n; i++) (wLeftA[i] + wRightB[i]) / 2.0,
+    final waveA = <double>[
+      for (var i = 0; i < n; i++)
+        _lateralPreset == 'Custom'
+            ? (wLeftB[i] - wLeftA[i])
+            : (wLeftA[i] + wRightB[i]) / 2.0,
     ];
-    final contra = <double>[
-      for (var i = 0; i < n; i++) (wRightA[i] + wLeftB[i]) / 2.0,
+    final waveB = <double>[
+      for (var i = 0; i < n; i++)
+        _lateralPreset == 'Custom'
+            ? (wRightB[i] - wRightA[i])
+            : (wRightA[i] + wLeftB[i]) / 2.0,
     ];
     final diff = <double>[
-      for (var i = 0; i < n; i++) contra[i] - ipsi[i],
+      for (var i = 0; i < n; i++)
+        _lateralPreset == 'Custom' ? (waveA[i] - waveB[i]) : (waveB[i] - waveA[i]),
     ];
 
     return Card(
@@ -1803,13 +1886,17 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     painter: ErpWorkbenchWavePainter(
                       {
                         'times': times.take(n).toList(),
-                        'a': ipsi,
-                        'b': contra,
+                        'a': waveA,
+                        'b': waveB,
                         'difference': diff,
                         'profile': {
                           ...profile,
-                          'a_name': _lateralPreset == 'Custom' ? chLeft : 'Ipsilateral ($chLeft/$chRight)',
-                          'b_name': _lateralPreset == 'Custom' ? chRight : 'Contralateral',
+                          'a_name': _lateralPreset == 'Custom'
+                              ? '$chLeft (B−A)'
+                              : 'Ipsilateral ($chLeft/$chRight)',
+                          'b_name': _lateralPreset == 'Custom'
+                              ? '$chRight (B−A)'
+                              : 'Contralateral',
                         },
                       },
                       negativeUp: _negativeUp,
@@ -2732,6 +2819,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ],
             );
       final results = _resultsPane();
+      if (widget.embeddedInEpochWorkspace) {
+        return results;
+      }
       final body = constraints.maxWidth < 850
           ? Column(
               children: [
@@ -4909,6 +4999,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
 
     return Column(
       children: [
+        if (!widget.embeddedInEpochWorkspace)
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
@@ -5239,19 +5330,16 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             ],
           ),
         ),
+        if (!(widget.embeddedInEpochWorkspace && widget.controlledTabIndex != null))
         TabBar(
           controller: _tabs,
           isScrollable: true,
           tabs: const [
-            Tab(text: 'Waveforms'),
-            Tab(text: 'Measurements'),
-            Tab(text: 'Group / topography'),
-            Tab(text: 'Models'),
-            Tab(text: 'Decoding'),
-            Tab(text: 'Quality'),
-            Tab(text: 'Individual ERPs'),
-            Tab(text: 'Publication plots'),
+            Tab(text: 'ERP & Topo'),
+            Tab(text: 'ERPimage'),
             Tab(text: 'ERSP & ITC'),
+            Tab(text: 'rERP & ML'),
+            Tab(text: 'Measurements & Export'),
           ],
         ),
         Expanded(
@@ -5263,7 +5351,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _buildActiveRecordingIdentityCard(d, current),
+                    if (!widget.embeddedInEpochWorkspace)
+                      _buildActiveRecordingIdentityCard(d, current),
                     // Compact single-row Channel Selector & Display Controls Bar
                     Container(
                       margin: const EdgeInsets.only(bottom: 8),
@@ -5629,6 +5718,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                           final eMs = (math.max(w[0], w[1]) * 1000).round();
                                           _window0.text = '$sMs';
                                           _window1.text = '$eMs';
+                                          widget.onMeasurementWindowChanged?.call(
+                                            (sMs.toDouble(), eMs.toDouble()),
+                                          );
                                           setState(() {
                                             _dragStartSec = null;
                                             _dragWindowSec = null;
@@ -5741,22 +5833,73 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               const SizedBox(height: 6),
                               SizedBox(
                                 height: 240,
-                                child: MouseRegion(
-                                  onHover: (e) => _hover.value = e.localPosition.dx,
-                                  onExit: (_) => _hover.value = null,
-                                  child: ValueListenableBuilder<double?>(
-                                    valueListenable: _hover,
-                                    builder: (context, hover, _) => CustomPaint(
-                                      painter: ErpButterflyPainter(
-                                        times: erpNumbers(primaryWaveSource['times']),
-                                        channelWaves: _extractButterflyChannelWaves(d, current),
-                                        highlightedChannel: effectivePlotChannel ?? (roiLabels.isNotEmpty ? roiLabels.first : null),
-                                        negativeUp: _negativeUp,
-                                        windowSec: erpNumbers(erpMap(d['profile'])['window']),
-                                        hoverX: hover,
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                  children: [
+                                    Expanded(
+                                      child: MouseRegion(
+                                        onHover: (e) => _hover.value = e.localPosition.dx,
+                                        onExit: (_) => _hover.value = null,
+                                        child: ValueListenableBuilder<double?>(
+                                          valueListenable: _hover,
+                                          builder: (context, hover, _) => CustomPaint(
+                                            painter: ErpButterflyPainter(
+                                              times: erpNumbers(primaryWaveSource['times']),
+                                              channelWaves: _extractButterflyChannelWaves(d, current),
+                                              highlightedChannel: effectivePlotChannel ?? (roiLabels.isNotEmpty ? roiLabels.first : null),
+                                              negativeUp: _negativeUp,
+                                              windowSec: erpNumbers(erpMap(d['profile'])['window']),
+                                              hoverX: hover,
+                                            ),
+                                            child: const SizedBox.expand(),
+                                          ),
+                                        ),
                                       ),
                                     ),
-                                  ),
+                                    if (allLabels.length >= 4) ...[
+                                      const SizedBox(width: 10),
+                                      Container(
+                                        width: 210,
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF0F172A),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: Column(
+                                          children: [
+                                            Text(
+                                              'Channel: ${effectivePlotChannel ?? (roiLabels.isNotEmpty ? roiLabels.first : allLabels.first)}',
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.cyanAccent,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Expanded(
+                                              child: FittedBox(
+                                                child: TopoChannelSelector(
+                                                  availableChannels: allLabels,
+                                                  selectedChannels: {
+                                                    if (effectivePlotChannel != null)
+                                                      effectivePlotChannel
+                                                    else if (roiLabels.isNotEmpty)
+                                                      roiLabels.first,
+                                                  },
+                                                  multiSelect: false,
+                                                  size: 180,
+                                                  onSelectChannel: (ch) {
+                                                    setState(() => _primaryPlotChannel = ch);
+                                                    widget.onRoiChanged?.call(ch);
+                                                  },
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                               ),
                             ],
@@ -5791,137 +5934,229 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       smoothingMs: _displaySmoothing,
                       axisLimits: _axisLimits,
                     ),
+                    const SizedBox(height: 8),
+                    ExpansionTile(
+                      title: const Text('Group Statistics & Spatiotemporal t-Map', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('${d['warning'] ?? 'Participant-level descriptive map; select Group for population statistics.'}'),
+                              if (d['statistics'] is List)
+                                _table(
+                                  ['Measure', 'N', 'Difference', 'p', 'q (FDR)'],
+                                  [
+                                    for (final s in (d['statistics'] as List).map(erpMap))
+                                      [s['metric'], s['n_subjects'], s['mean_difference'], s['p'], s['q_fdr']],
+                                  ],
+                                  shrink: true,
+                                ),
+                              Text('TANOVA GMD ${d['tanova_gmd'] ?? '—'} · p ${d['tanova_p'] ?? '—'}'),
+                              SwitchListTile(
+                                title: const Text('Mask channel-time maps at corrected p ≤ .05'),
+                                value: _significantOnly,
+                                onChanged: (v) => setState(() => _significantOnly = v),
+                              ),
+                              if (erpNumbers(d['spatiotemporal_t']).isNotEmpty)
+                                SizedBox(
+                                  height: 280,
+                                  width: double.infinity,
+                                  child: CustomPaint(
+                                    painter: ErpWorkbenchHeatPainter(
+                                      _statValues(d, 'spatiotemporal_t', 'spatiotemporal_p_fwer'),
+                                      (d['labels'] as List).length,
+                                      (d['bin_times'] as List).length,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
-              _table(
-                [
-                  'Participant',
-                  'Condition',
-                  'Mean µV',
-                  'AUC µV s',
-                  'Peak µV',
-                  'Peak ms',
-                  '50% area ms',
-                ],
-                [
-                  for (final f in current)
-                    for (final item in erpMap(f['measurements']).entries.where(
-                      (e) =>
-                          f['condition_names'] is! List ||
-                          !(const ['A', 'B'].contains(e.key)),
-                    ))
-                      [
-                        f['subject'],
-                        item.key == 'B_minus_A'
-                            ? '${erpMap(f['profile'])['b_name']} − ${erpMap(f['profile'])['a_name']}'
-                            : item.key,
-                        erpMap(item.value)['mean'],
-                        erpMap(item.value)['signed_auc'],
-                        erpMap(item.value)['peak_amplitude'],
-                        (erpMap(item.value)['peak_latency'] as num?)
-                            ?.toDouble()
-                            .times1000,
-                        (erpMap(item.value)['fractional_area_latency'] as num?)
-                            ?.toDouble()
-                            .times1000,
-                      ],
-                ],
-              ),
-              SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildMultiConditionTopoSection(
-                      d,
-                      current,
-                      highlightedOnTopo,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      '${d['warning'] ?? 'Participant-level descriptive map; select Group for population statistics.'}',
-                    ),
-                    if (d['statistics'] is List)
-                      _table(
-                        ['Measure', 'N', 'Difference', 'p', 'q (FDR)'],
-                        [
-                          for (final s in (d['statistics'] as List).map(erpMap))
-                            [
-                              s['metric'],
-                              s['n_subjects'],
-                              s['mean_difference'],
-                              s['p'],
-                              s['q_fdr'],
-                            ],
-                        ],
-                        shrink: true,
-                      ),
-                    Text(
-                      'TANOVA GMD ${d['tanova_gmd'] ?? '—'} · p ${d['tanova_p'] ?? '—'}',
-                    ),
-                    const SizedBox(height: 12),
-                    SwitchListTile(
-                      title: const Text(
-                        'Mask channel-time maps at corrected p ≤ .05',
-                      ),
-                      value: _significantOnly,
-                      onChanged: (v) => setState(() => _significantOnly = v),
-                    ),
-                    const Text(
-                      'Channel × time t statistic. Red = positive, blue = negative; masked points are white.',
-                    ),
-                    if (erpNumbers(d['spatiotemporal_t']).isNotEmpty)
-                      SizedBox(
-                        height: 300,
-                        width: double.infinity,
-                        child: CustomPaint(
-                          painter: ErpWorkbenchHeatPainter(
-                            _statValues(
-                              d,
-                              'spatiotemporal_t',
-                              'spatiotemporal_p_fwer',
-                            ),
-                            (d['labels'] as List).length,
-                            (d['bin_times'] as List).length,
+              Builder(
+                builder: (context) {
+                  final activeRec = widget.activeRecording;
+                  if (activeRec == null ||
+                      !activeRec.isEpoched ||
+                      (activeRec.pointsPerEpoch ?? 0) <= 0) {
+                    return Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text(
+                            'ERPimage requires an active epoched recording.',
+                            style: TextStyle(color: Colors.white70),
                           ),
+                          if (widget.onEditEpochs != null) ...[
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              onPressed: widget.onEditEpochs,
+                              icon: const Icon(Icons.view_list, size: 16),
+                              label: const Text('Open Trial Review & ERPimage'),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }
+                  final imgSession = InteractiveErpSession(activeRec);
+                  final chName = effectivePlotChannel ??
+                      (roiLabels.isNotEmpty ? roiLabels.first : activeRec.labels.first);
+                  final chIdx = math.max(
+                    0,
+                    activeRec.labels.indexWhere(
+                      (l) => l.toUpperCase() == chName.toUpperCase(),
+                    ),
+                  );
+                  final win0 = double.tryParse(_window0.text) ?? 300.0;
+                  final win1 = double.tryParse(_window1.text) ?? 600.0;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                        child: Wrap(
+                          spacing: 10,
+                          runSpacing: 6,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            Text(
+                              'Common Accepted Epochs: ${activeRec.epochCount} trials · Channel: ${activeRec.labels[chIdx]}',
+                              style: const TextStyle(fontSize: 12, color: Colors.white70),
+                            ),
+                            if (widget.onEditEpochs != null)
+                              OutlinedButton.icon(
+                                onPressed: widget.onEditEpochs,
+                                icon: const Icon(Icons.tune, size: 14),
+                                label: const Text('Modify Epoch Selection in Trial Review', style: TextStyle(fontSize: 11)),
+                              ),
+                          ],
                         ),
                       ),
-                    if (d['labels'] is List)
-                      Text('Rows: ${(d['labels'] as List).join(', ')}'),
-                    if (d['regression_inference'] is Map) ...[
-                      const SizedBox(height: 20),
-                      const Text(
-                        'rERP class beta: participant-level channel × time max-|t| inference',
-                      ),
-                      SizedBox(
-                        height: 300,
-                        width: double.infinity,
-                        child: CustomPaint(
-                          painter: ErpWorkbenchHeatPainter(
-                            _statValues(
-                              erpMap(d['regression_inference']),
-                              't',
-                              'p_fwer',
-                            ),
-                            (erpMap(d['regression_inference'])['channels']
-                                    as List)
-                                .length,
-                            (erpMap(d['regression_inference'])['times'] as List)
-                                .length,
-                          ),
+                      Expanded(
+                        child: ErpImagePanel(
+                          session: imgSession,
+                          channelIndex: chIdx,
+                          trialIndices: List<int>.generate(activeRec.epochCount, (i) => i),
+                          windowStartMs: win0,
+                          windowEndMs: win1,
+                          onTopoWindowChanged: (w) {
+                            _window0.text = '${w.$1.round()}';
+                            _window1.text = '${w.$2.round()}';
+                            widget.onMeasurementWindowChanged?.call(w);
+                            _run();
+                          },
+                          onToggleReject: (_, _) {
+                            widget.onEditEpochs?.call();
+                          },
                         ),
                       ),
                     ],
-                  ],
-                ),
+                  );
+                },
               ),
-              _models(modelFile),
+              // Tab 2: ERSP & ITC
+              Builder(
+                builder: (context) {
+                  final activeRec = widget.activeRecording;
+                  final profile = erpMap(d['profile']);
+                  final aName = profile['a_name']?.toString() ?? (_conditions.isNotEmpty ? _conditions[0].name : 'Condition A');
+                  final bName = profile['b_name']?.toString() ?? (_conditions.length > 1 ? _conditions[1].name : 'Condition B');
+                  final condATrials = <int>[];
+                  final condBTrials = <int>[];
+                  if (activeRec != null && activeRec.isEpoched && activeRec.epochLabels != null) {
+                    for (var i = 0; i < activeRec.epochLabels!.length; i++) {
+                      final lbl = activeRec.epochLabels![i];
+                      if (_savedA.contains(lbl) || lbl == aName) {
+                        condATrials.add(i);
+                      } else if (_savedB.contains(lbl) || lbl == bName) {
+                        condBTrials.add(i);
+                      }
+                    }
+                  }
+                  final win0 = double.tryParse(_window0.text) ?? 300.0;
+                  final win1 = double.tryParse(_window1.text) ?? 600.0;
+                  return ErspItcPanel(
+                    recordingPath: activeRec?.path ?? (current.isNotEmpty ? current.first['path']?.toString() : null),
+                    labels: allLabels,
+                    roiLabels: roiLabels,
+                    conditionATrials: condATrials,
+                    conditionBTrials: condBTrials,
+                    conditionAName: aName,
+                    conditionBName: bName,
+                    epochTminMs: activeRec?.epochTmin != null ? activeRec!.epochTmin! * 1000.0 : null,
+                    outputDirectory: _output.text,
+                    onEditEpochs: widget.onEditEpochs,
+                    initialChannel: effectivePlotChannel ?? (roiLabels.isNotEmpty ? 'ROI' : null),
+                    topoStartMs: win0,
+                    topoEndMs: win1,
+                    onTopoWindowChanged: (w) {
+                      _window0.text = '${w.$1.round()}';
+                      _window1.text = '${w.$2.round()}';
+                      widget.onMeasurementWindowChanged?.call(w);
+                      _run();
+                    },
+                    onChannelChanged: (ch) {
+                      if (ch != 'ROI' && allLabels.contains(ch)) {
+                        setState(() => _primaryPlotChannel = ch);
+                        widget.onRoiChanged?.call(ch);
+                      } else if (ch == 'ROI') {
+                        setState(() => _primaryPlotChannel = null);
+                      }
+                    },
+                  );
+                },
+              ),
+              // Tab 3: rERP & ML (Unified Comparison with Conventional ERP)
               SingleChildScrollView(
                 padding: const EdgeInsets.all(12),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    Card(
+                      color: const Color(0xFF132238),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                const Icon(Icons.compare_arrows, color: Colors.cyanAccent, size: 18),
+                                const Text(
+                                  'rERP & ML Decoding Compared to Conventional ERP',
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                ),
+                                Chip(
+                                  label: Text(
+                                    'Window: ${_window0.text}–${_window1.text} ms · ROI: ${effectivePlotChannel ?? (roiLabels.isEmpty ? "All" : roiLabels.join(", "))}',
+                                    style: const TextStyle(fontSize: 11),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              '• rERP (Regression ERP) estimates the µV effect of each condition after accounting for covariates & overlapping events—compare it directly on the same µV scale against Conventional ERP.\n'
+                              '• ML Decoding (Shrinkage LDA) measures how reliably all channels together distinguish Condition B from A at each timepoint (AUC 0.50 = chance, > 0.60 = strong separation).',
+                              style: TextStyle(fontSize: 11, color: Colors.white70),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _models(modelFile),
+                    const Divider(height: 24),
                     Card(
                       color: const Color(0xFF1E293B),
                       child: Padding(
@@ -5962,38 +6197,94 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           final dec = erpMap(modelFile['decoding']);
                           final aucs = erpNumbers(dec['auc']);
                           final times = erpNumbers(dec['times']);
+                          final win0Sec = (double.tryParse(_window0.text) ?? 300.0) / 1000.0;
+                          final win1Sec = (double.tryParse(_window1.text) ?? 600.0) / 1000.0;
                           var peakAuc = 0.5;
                           var peakMs = 0;
+                          var peakIdx = 0;
+                          var winSum = 0.0;
+                          var winCnt = 0;
                           for (var i = 0; i < math.min(aucs.length, times.length); i++) {
                             if (aucs[i] > peakAuc) {
                               peakAuc = aucs[i];
                               peakMs = (times[i] * 1000).round();
+                              peakIdx = i;
+                            }
+                            if (times[i] >= win0Sec && times[i] <= win1Sec) {
+                              winSum += aucs[i];
+                              winCnt++;
                             }
                           }
-                          return Wrap(
-                            spacing: 10,
-                            runSpacing: 6,
+                          final winMeanAuc = winCnt > 0 ? winSum / winCnt : peakAuc;
+                          final decChannels = (dec['channels'] as List?)?.cast<String>() ?? allLabels;
+                          final patterns = dec['channel_patterns'] as List?;
+                          final topoValues = (patterns != null && peakIdx < patterns.length && patterns[peakIdx] is List)
+                              ? erpNumbers(patterns[peakIdx])
+                              : erpNumbers(d['topo_difference']);
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Chip(label: Text('Peak AUC: ${peakAuc.toStringAsFixed(3)} @ $peakMs ms')),
-                              Chip(label: Text('CV Folds: ${dec['folds_used']}')),
-                              const Chip(label: Text('Chance: 0.500')),
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 6,
+                                children: [
+                                  Chip(label: Text('Window (${_window0.text}–${_window1.text} ms) Mean AUC: ${winMeanAuc.toStringAsFixed(3)}')),
+                                  Chip(label: Text('Peak AUC: ${peakAuc.toStringAsFixed(3)} @ $peakMs ms')),
+                                  Chip(label: Text('CV Folds: ${dec['folds_used']}')),
+                                  const Chip(label: Text('Chance: 0.500')),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    flex: 3,
+                                    child: SizedBox(
+                                      height: 330,
+                                      child: CustomPaint(
+                                        painter: ErpWorkbenchWavePainter(
+                                          {
+                                            ...dec,
+                                            'window': [win0Sec, win1Sec],
+                                          },
+                                          decode: true,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  if (decChannels.length >= 4 && topoValues.length == decChannels.length) ...[
+                                    const SizedBox(width: 12),
+                                    Container(
+                                      width: 240,
+                                      height: 330,
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                                      ),
+                                      child: CustomPaint(
+                                        painter: ErpWorkbenchTopoPainter(
+                                          {
+                                            'labels': decChannels,
+                                            'profile': erpMap(d['profile']),
+                                          },
+                                          valuesOverride: topoValues,
+                                          customTitle: 'ML Spatial Pattern @ $peakMs ms (B − A µV)',
+                                          showPValues: false,
+                                        ),
+                                        child: const SizedBox.expand(),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
                             ],
                           );
                         },
                       ),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        height: 330,
-                        width: double.infinity,
-                        child: CustomPaint(
-                          painter: ErpWorkbenchWavePainter(
-                            erpMap(modelFile['decoding']),
-                            decode: true,
-                          ),
-                        ),
-                      ),
-                      if (erpMap(modelFile['decoding'])['generalization_auc']
-                          is List) ...[
+                      if (erpMap(modelFile['decoding'])['generalization_auc'] is List) ...[
                         const SizedBox(height: 10),
                         const Text(
                           'Temporal generalization: rows=train time, columns=test time; blue < .5, white=.5, red > .5.',
@@ -6003,15 +6294,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           width: double.infinity,
                           child: CustomPaint(
                             painter: ErpWorkbenchHeatPainter(
-                              erpNumbers(
-                                erpMap(
-                                  modelFile['decoding'],
-                                )['generalization_auc'],
-                              ),
-                              (erpMap(modelFile['decoding'])['times'] as List)
-                                  .length,
-                              (erpMap(modelFile['decoding'])['times'] as List)
-                                  .length,
+                              erpNumbers(erpMap(modelFile['decoding'])['generalization_auc']),
+                              (erpMap(modelFile['decoding'])['times'] as List).length,
+                              (erpMap(modelFile['decoding'])['times'] as List).length,
                               probability: true,
                             ),
                           ),
@@ -6028,77 +6313,106 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   ],
                 ),
               ),
+              // Tab 4: Measurements & Export
               SingleChildScrollView(
                 padding: const EdgeInsets.all(12),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    for (final f in current) ...[
-                      Text(
-                        'Participant ${f['subject']} · ${f['n_a']}/${f['n_b']} accepted',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      Text(
-                        'Source: ${f['marker_source']}\nExcluded: behavior ${f['rejected_behavior']}, edge ${f['rejected_boundary']}, amplitude ${f['rejected_amplitude']}',
-                      ),
-                      if (f['timing_audit'] is Map)
-                        Text(
-                          'Timing comparison: ${_timingSummary(f['timing_audit'])}',
+                    _table(
+                      [
+                        'Participant',
+                        'Condition',
+                        'Mean µV',
+                        'AUC µV s',
+                        'Peak µV',
+                        'Peak ms',
+                        '50% area ms',
+                      ],
+                      [
+                        for (final f in current)
+                          for (final item in erpMap(f['measurements']).entries.where(
+                            (e) =>
+                                f['condition_names'] is! List ||
+                                !(const ['A', 'B'].contains(e.key)),
+                          ))
+                            [
+                              f['subject'],
+                              item.key == 'B_minus_A'
+                                  ? '${erpMap(f['profile'])['b_name']} − ${erpMap(f['profile'])['a_name']}'
+                                  : item.key,
+                              erpMap(item.value)['mean'],
+                              erpMap(item.value)['signed_auc'],
+                              erpMap(item.value)['peak_amplitude'],
+                              (erpMap(item.value)['peak_latency'] as num?)
+                                  ?.toDouble()
+                                  .times1000,
+                              (erpMap(item.value)['fractional_area_latency'] as num?)
+                                  ?.toDouble()
+                                  .times1000,
+                            ],
+                      ],
+                      shrink: true,
+                    ),
+                    const SizedBox(height: 12),
+                    ExpansionTile(
+                      title: const Text('Quality, Trial Counts & Timing Summary', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (final f in current) ...[
+                                Text(
+                                  'Participant ${f['subject']} · ${f['n_a']}/${f['n_b']} accepted',
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                Text(
+                                  'Source: ${f['marker_source']}\nExcluded: behavior ${f['rejected_behavior']}, edge ${f['rejected_boundary']}, amplitude ${f['rejected_amplitude']}',
+                                ),
+                                if (f['timing_audit'] is Map)
+                                  Text('Timing comparison: ${_timingSummary(f['timing_audit'])}'),
+                                for (final w in (f['warnings'] as List? ?? [])) Text('• $w'),
+                                const Divider(),
+                              ],
+                              for (final fail in (_result?['failures'] as List? ?? []).map(erpMap))
+                                Text('${fail['path']}: ${fail['error']}'),
+                            ],
+                          ),
                         ),
-                      for (final w in (f['warnings'] as List? ?? []))
-                        Text('• $w'),
-                      const Divider(),
-                    ],
-                    for (final fail
-                        in (_result?['failures'] as List? ?? []).map(erpMap))
-                      Text('${fail['path']}: ${fail['error']}'),
+                      ],
+                    ),
+                    ExpansionTile(
+                      title: const Text('Individual ERPs', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      children: [
+                        SizedBox(height: 420, child: _buildIndividualErpGallery(current, d)),
+                      ],
+                    ),
+                    ExpansionTile(
+                      initiallyExpanded: true,
+                      title: const Text('Publication Plots & Export', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      children: [
+                        SizedBox(
+                          height: 620,
+                          child: ErpPublicationPlotsView(
+                            files: current,
+                            groupData: d,
+                            profile: erpMap(d['profile']),
+                            participantGroups: _participantGroups,
+                            onGroupsChanged: (newGroups) {
+                              setState(() {
+                                _participantGroups.clear();
+                                _participantGroups.addAll(newGroups);
+                              });
+                            },
+                            outputDir: _output.text,
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
-              ),
-              _buildIndividualErpGallery(current, d),
-              ErpPublicationPlotsView(
-                files: current,
-                groupData: d,
-                profile: erpMap(d['profile']),
-                participantGroups: _participantGroups,
-                onGroupsChanged: (newGroups) {
-                  setState(() {
-                    _participantGroups.clear();
-                    _participantGroups.addAll(newGroups);
-                  });
-                },
-                outputDir: _output.text,
-              ),
-              Builder(
-                builder: (context) {
-                  final activeRec = widget.activeRecording;
-                  final profile = erpMap(d['profile']);
-                  final aName = profile['a_name']?.toString() ?? (_conditions.isNotEmpty ? _conditions[0].name : 'Condition A');
-                  final bName = profile['b_name']?.toString() ?? (_conditions.length > 1 ? _conditions[1].name : 'Condition B');
-                  final condATrials = <int>[];
-                  final condBTrials = <int>[];
-                  if (activeRec != null && activeRec.isEpoched && activeRec.epochLabels != null) {
-                    for (var i = 0; i < activeRec.epochLabels!.length; i++) {
-                      final lbl = activeRec.epochLabels![i];
-                      if (_savedA.contains(lbl) || lbl == aName) {
-                        condATrials.add(i);
-                      } else if (_savedB.contains(lbl) || lbl == bName) {
-                        condBTrials.add(i);
-                      }
-                    }
-                  }
-                  return ErspItcPanel(
-                    recordingPath: activeRec?.path ?? (current.isNotEmpty ? current.first['path']?.toString() : null),
-                    labels: allLabels,
-                    roiLabels: roiLabels,
-                    conditionATrials: condATrials,
-                    conditionBTrials: condBTrials,
-                    conditionAName: aName,
-                    conditionBName: bName,
-                    epochTminMs: activeRec?.epochTmin != null ? activeRec!.epochTmin! * 1000.0 : null,
-                    outputDirectory: _output.text,
-                  );
-                },
               ),
             ],
           ),
@@ -6278,13 +6592,15 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       as List)[c],
                 );
                 // Extract matching Conventional Average ERP on the same channel for direct visual comparison
-                final chWaves = erpMap(erpMap(file['channel_waves'])[selectedChannel]);
-                final convA = erpNumbers(chWaves['a']);
-                final convB = erpNumbers(chWaves['b']);
-                final convDiff = [
-                  for (var i = 0; i < math.min(convA.length, convB.length); i++)
-                    convB[i] - convA[i],
-                ];
+                final convA = erpNumbers(erpMap(file['channel_a'])[selectedChannel]);
+                final convB = erpNumbers(erpMap(file['channel_b'])[selectedChannel]);
+                final convDiffDirect = erpNumbers(erpMap(file['channel_difference'])[selectedChannel]);
+                final convDiff = convDiffDirect.isNotEmpty
+                    ? convDiffDirect
+                    : [
+                        for (var i = 0; i < math.min(convA.length, convB.length); i++)
+                          convB[i] - convA[i],
+                      ];
                 final convTimes = erpNumbers(file['times']);
                 final modelTimes = erpNumbers(m['times']);
                 final useConv = convDiff.length == modelTimes.length
@@ -6325,24 +6641,89 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       ],
                     ),
                     const SizedBox(height: 6),
-                    SizedBox(
-                      height: 300,
-                      width: double.infinity,
-                      child: CustomPaint(
-                        painter: ErpWorkbenchWavePainter(
-                          {
-                            'times': m['times'],
-                            'a': beta,
-                            'b': useConv,
-                            'model_plot': true,
-                            'profile': {
-                              'a_name': 'rERP: $selectedPredictor',
-                              'b_name': 'Conventional ERP (B − A)',
-                            },
-                          },
-                          negativeUp: _negativeUp,
-                        ),
-                      ),
+                    Builder(
+                      builder: (context) {
+                        final predIdx = predictors.indexOf(selectedPredictor);
+                        final predCoeffs = coefficients[predIdx] as List;
+                        final winStartS = (double.tryParse(_window0.text) ?? 300.0) / 1000.0;
+                        final winEndS = (double.tryParse(_window1.text) ?? 600.0) / 1000.0;
+                        final winIdx = <int>[
+                          for (var t = 0; t < modelTimes.length; t++)
+                            if (modelTimes[t] >= winStartS && modelTimes[t] <= winEndS) t,
+                        ];
+                        final activeIdx = winIdx.isEmpty
+                            ? List<int>.generate(modelTimes.length, (i) => i)
+                            : winIdx;
+                        final rErpTopo = <double>[
+                          for (var chIdx = 0; chIdx < channels.length; chIdx++)
+                            () {
+                              final series = erpNumbers(predCoeffs[chIdx]);
+                              if (series.isEmpty || activeIdx.isEmpty) return 0.0;
+                              var sum = 0.0;
+                              var cnt = 0;
+                              for (final ti in activeIdx) {
+                                if (ti < series.length) {
+                                  sum += series[ti];
+                                  cnt++;
+                                }
+                              }
+                              return cnt > 0 ? sum / cnt : 0.0;
+                            }(),
+                        ];
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: SizedBox(
+                                height: 300,
+                                child: CustomPaint(
+                                  painter: ErpWorkbenchWavePainter(
+                                    {
+                                      'times': m['times'],
+                                      'a': beta,
+                                      'b': useConv,
+                                      'model_plot': true,
+                                      'profile': {
+                                        'a_name': 'rERP: $selectedPredictor',
+                                        'b_name': 'Conventional ERP (B − A)',
+                                      },
+                                    },
+                                    negativeUp: _negativeUp,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (channels.length >= 4 && rErpTopo.length == channels.length) ...[
+                              const SizedBox(width: 12),
+                              Container(
+                                width: 240,
+                                height: 300,
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: const Color(0xFFCBD5E1)),
+                                ),
+                                child: CustomPaint(
+                                  painter: ErpWorkbenchTopoPainter(
+                                    {
+                                      'labels': channels,
+                                      'profile': erpMap(file['profile']),
+                                    },
+                                    valuesOverride: rErpTopo,
+                                    customTitle:
+                                        'rERP: $selectedPredictor (${(winStartS * 1000).round()}–${(winEndS * 1000).round()} ms)',
+                                    showPValues: false,
+                                    selectedChannels: {selectedChannel},
+                                  ),
+                                  child: const SizedBox.expand(),
+                                ),
+                              ),
+                            ],
+                          ],
+                        );
+                      },
                     ),
                   ],
                 );

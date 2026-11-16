@@ -14,6 +14,24 @@ class XdfStreamInfo {
   String toString() => '$name · $type · $channels channels · $rate Hz';
 }
 
+class _Float64Buffer {
+  _Float64Buffer([int initialCapacity = 1024])
+    : _data = Float64List(initialCapacity);
+  Float64List _data;
+  int length = 0;
+
+  void add(double v) {
+    if (length == _data.length) {
+      final next = Float64List(_data.length * 2);
+      next.setRange(0, length, _data);
+      _data = next;
+    }
+    _data[length++] = v;
+  }
+
+  double operator [](int index) => _data[index];
+}
+
 class _Stream {
   _Stream(this.id, this.xml);
   final int id;
@@ -23,8 +41,8 @@ class _Stream {
   int get count => int.parse(field('channel_count'));
   double get rate => double.parse(field('nominal_srate'));
   String get format => field('channel_format');
-  final times = <double>[];
-  final values = <List<double>>[];
+  final times = _Float64Buffer();
+  final flatValues = _Float64Buffer(4096);
   final events = <(double, String)>[];
   final clocks = <(double, double)>[];
   double last = 0;
@@ -45,38 +63,95 @@ class _Stream {
 }
 
 class _Reader {
-  _Reader(this.bytes);
+  _Reader(this.bytes, [int start = 0, int? end])
+    : _bd = ByteData.sublistView(bytes),
+      pos = start,
+      end = end ?? bytes.length;
   final Uint8List bytes;
-  int pos = 0;
-  ByteData take(int n) {
-    if (n < 0 || pos + n > bytes.length)
+  final ByteData _bd;
+  final int end;
+  int pos;
+
+  void _ensure(int n) {
+    if (n < 0 || pos + n > end) {
       throw const FormatException('Truncated XDF chunk');
-    final result = ByteData.sublistView(bytes, pos, pos + n);
-    pos += n;
-    return result;
+    }
   }
 
-  int u8() => take(1).getUint8(0);
+  int u8() {
+    _ensure(1);
+    return bytes[pos++];
+  }
+
+  int u16() {
+    _ensure(2);
+    final v = _bd.getUint16(pos, Endian.little);
+    pos += 2;
+    return v;
+  }
+
+  int u32() {
+    _ensure(4);
+    final v = _bd.getUint32(pos, Endian.little);
+    pos += 4;
+    return v;
+  }
+
+  int u64() {
+    _ensure(8);
+    final v = _bd.getUint64(pos, Endian.little);
+    pos += 8;
+    return v;
+  }
+
   int variable() => switch (u8()) {
     1 => u8(),
-    4 => take(4).getUint32(0, Endian.little),
-    8 => take(8).getUint64(0, Endian.little),
+    4 => u32(),
+    8 => u64(),
     _ => throw const FormatException('Invalid XDF variable integer'),
   };
+
   String string(int n) {
-    final data = take(n);
-    return utf8.decode(data.buffer.asUint8List(data.offsetInBytes, n));
+    _ensure(n);
+    final s = utf8.decode(Uint8List.sublistView(bytes, pos, pos + n));
+    pos += n;
+    return s;
   }
 
-  double number(String format) => switch (format) {
-    'float32' => take(4).getFloat32(0, Endian.little),
-    'double64' => take(8).getFloat64(0, Endian.little),
-    'int8' => take(1).getInt8(0).toDouble(),
-    'int16' => take(2).getInt16(0, Endian.little).toDouble(),
-    'int32' => take(4).getInt32(0, Endian.little).toDouble(),
-    'int64' => take(8).getInt64(0, Endian.little).toDouble(),
-    _ => throw FormatException('Unsupported XDF channel format: $format'),
-  };
+  double number(String format) {
+    switch (format) {
+      case 'float32':
+        _ensure(4);
+        final v = _bd.getFloat32(pos, Endian.little);
+        pos += 4;
+        return v;
+      case 'double64':
+        _ensure(8);
+        final v = _bd.getFloat64(pos, Endian.little);
+        pos += 8;
+        return v;
+      case 'int8':
+        _ensure(1);
+        return _bd.getInt8(pos++).toDouble();
+      case 'int16':
+        _ensure(2);
+        final v = _bd.getInt16(pos, Endian.little).toDouble();
+        pos += 2;
+        return v;
+      case 'int32':
+        _ensure(4);
+        final v = _bd.getInt32(pos, Endian.little).toDouble();
+        pos += 4;
+        return v;
+      case 'int64':
+        _ensure(8);
+        final v = _bd.getInt64(pos, Endian.little).toDouble();
+        pos += 8;
+        return v;
+      default:
+        throw FormatException('Unsupported XDF channel format: $format');
+    }
+  }
 }
 
 const _liveAmp32Labels = [
@@ -116,108 +191,150 @@ class XdfLoader {
     bool Function()? isCancelled,
     void Function(double)? onProgress,
   }) async {
-    final file = File(path).openSync();
     final streams = <int, _Stream>{};
-    try {
-      final length = file.lengthSync();
-      if (ascii.decode(file.readSync(4)) != 'XDF:')
-        throw const FormatException('Not an XDF file');
-      while (file.positionSync() < length) {
-        await _checkpoint(isCancelled);
-        final size = file.readByteSync();
-        if (![1, 4, 8].contains(size))
-          throw const FormatException('Invalid XDF chunk length');
-        final raw = file.readSync(size);
-        if (raw.length != size)
-          throw const FormatException('Truncated XDF chunk length');
-        final data = ByteData.sublistView(raw);
-        final n = size == 1
-            ? data.getUint8(0)
-            : size == 4
-            ? data.getUint32(0, Endian.little)
-            : data.getUint64(0, Endian.little);
-        final start = file.positionSync();
-        if (n < 2 || start + n > length)
-          throw const FormatException('Truncated XDF chunk');
-        final tagBytes = file.readSync(2);
-        final tag = ByteData.sublistView(tagBytes).getUint16(0, Endian.little);
-        if (tag == 2) {
-          final reader = _Reader(file.readSync(n - 2));
-          final id = reader.take(4).getUint32(0, Endian.little);
-          final stream = _Stream(id, XmlDocument.parse(reader.string(n - 6)));
-          if (streams.containsKey(id))
-            throw const FormatException('Duplicate XDF stream ID');
-          if (stream.count <= 0 ||
-              stream.count > 100000 ||
-              !stream.rate.isFinite ||
-              stream.rate < 0) {
-            throw const FormatException('Invalid XDF stream dimensions');
+    if (headersOnly) {
+      final file = File(path).openSync();
+      try {
+        final length = file.lengthSync();
+        if (ascii.decode(file.readSync(4)) != 'XDF:')
+          throw const FormatException('Not an XDF file');
+        while (file.positionSync() < length) {
+          if (isCancelled?.call() ?? false) {
+            throw StateError('File loading cancelled');
           }
-          streams[id] = stream;
-        } else if (!headersOnly && (tag == 3 || tag == 4)) {
-          final reader = _Reader(file.readSync(n - 2));
-          final id = reader.take(4).getUint32(0, Endian.little);
-          final stream = streams[id];
-          if (stream == null)
-            throw const FormatException(
-              'XDF sample precedes its stream header',
-            );
-          final include =
-              streamId == null ||
-              id == streamId ||
-              stream.format == 'string' ||
-              stream.rate == 0;
-          if (include && tag == 4) {
-            stream.clocks.add((
-              reader.number('double64'),
-              reader.number('double64'),
-            ));
-          } else if (include) {
-            final count = reader.variable();
-            if (count > n)
-              throw const FormatException('Invalid XDF sample count');
-            for (var i = 0; i < count; i++) {
-              if (i % 2048 == 0) await _checkpoint(isCancelled);
-              final flag = reader.u8();
-              final time = flag == 8
-                  ? reader.number('double64')
-                  : flag == 0
-                  ? stream.last + (stream.rate > 0 ? 1 / stream.rate : 0)
-                  : throw const FormatException('Invalid XDF timestamp flag');
-              if (!time.isFinite)
-                throw const FormatException('Non-finite XDF timestamp');
-              stream.last = time;
-              if (stream.format == 'string') {
-                final labels = [
-                  for (var c = 0; c < stream.count; c++)
-                    reader.string(reader.variable()),
-                ];
-                stream.events.add((time, labels.join(' | ')));
-              } else {
-                final values = [
-                  for (var c = 0; c < stream.count; c++)
-                    reader.number(stream.format),
-                ];
-                if (stream.rate == 0) {
-                  stream.events.add((
-                    time,
-                    values.map((v) => v.toString()).join(' | '),
-                  ));
-                } else {
-                  stream.times.add(time);
-                  stream.values.add(values);
-                }
+          final size = file.readByteSync();
+          if (![1, 4, 8].contains(size))
+            throw const FormatException('Invalid XDF chunk length');
+          final raw = file.readSync(size);
+          if (raw.length != size)
+            throw const FormatException('Truncated XDF chunk length');
+          final data = ByteData.sublistView(raw);
+          final n = size == 1
+              ? data.getUint8(0)
+              : size == 4
+              ? data.getUint32(0, Endian.little)
+              : data.getUint64(0, Endian.little);
+          final start = file.positionSync();
+          if (n < 2 || start + n > length)
+            throw const FormatException('Truncated XDF chunk');
+          final tagBytes = file.readSync(2);
+          final tag = ByteData.sublistView(tagBytes).getUint16(0, Endian.little);
+          if (tag == 2) {
+            final reader = _Reader(file.readSync(n - 2));
+            final id = reader.u32();
+            final stream = _Stream(id, XmlDocument.parse(reader.string(n - 6)));
+            if (streams.containsKey(id))
+              throw const FormatException('Duplicate XDF stream ID');
+            if (stream.count <= 0 ||
+                stream.count > 100000 ||
+                !stream.rate.isFinite ||
+                stream.rate < 0) {
+              throw const FormatException('Invalid XDF stream dimensions');
+            }
+            streams[id] = stream;
+          }
+          file.setPositionSync(start + n);
+        }
+        return streams;
+      } finally {
+        file.closeSync();
+      }
+    }
+
+    final bytes = await File(path).readAsBytes();
+    if (bytes.length < 4 || ascii.decode(bytes.sublist(0, 4)) != 'XDF:') {
+      throw const FormatException('Not an XDF file');
+    }
+    final reader = _Reader(bytes, 4, bytes.length);
+    final length = bytes.length;
+    var chunkCounter = 0;
+    while (reader.pos < length) {
+      if ((chunkCounter++ & 1023) == 0) {
+        if (isCancelled?.call() ?? false) {
+          throw StateError('File loading cancelled');
+        }
+        onProgress?.call((reader.pos / length) * .75);
+      }
+      final n = reader.variable();
+      final start = reader.pos;
+      if (n < 2 || start + n > length) {
+        throw const FormatException('Truncated XDF chunk');
+      }
+      final tag = reader.u16();
+      final chunkEnd = start + n;
+      if (tag == 2) {
+        final id = reader.u32();
+        final stream = _Stream(id, XmlDocument.parse(reader.string(n - 6)));
+        if (streams.containsKey(id))
+          throw const FormatException('Duplicate XDF stream ID');
+        if (stream.count <= 0 ||
+            stream.count > 100000 ||
+            !stream.rate.isFinite ||
+            stream.rate < 0) {
+          throw const FormatException('Invalid XDF stream dimensions');
+        }
+        streams[id] = stream;
+      } else if (tag == 3 || tag == 4) {
+        final id = reader.u32();
+        final stream = streams[id];
+        if (stream == null) {
+          throw const FormatException('XDF sample precedes its stream header');
+        }
+        final include =
+            streamId == null ||
+            id == streamId ||
+            stream.format == 'string' ||
+            stream.rate == 0;
+        if (include && tag == 4) {
+          stream.clocks.add((
+            reader.number('double64'),
+            reader.number('double64'),
+          ));
+        } else if (include) {
+          final count = reader.variable();
+          if (count > n)
+            throw const FormatException('Invalid XDF sample count');
+          final chCount = stream.count;
+          final fmt = stream.format;
+          final isString = fmt == 'string';
+          final isEventRate = stream.rate == 0;
+          final dt = stream.rate > 0 ? 1 / stream.rate : 0.0;
+          for (var i = 0; i < count; i++) {
+            final flag = reader.u8();
+            final time = flag == 8
+                ? reader.number('double64')
+                : flag == 0
+                ? stream.last + dt
+                : throw const FormatException('Invalid XDF timestamp flag');
+            if (!time.isFinite)
+              throw const FormatException('Non-finite XDF timestamp');
+            stream.last = time;
+            if (isString) {
+              final labels = [
+                for (var c = 0; c < chCount; c++)
+                  reader.string(reader.variable()),
+              ];
+              stream.events.add((time, labels.join(' | ')));
+            } else if (isEventRate) {
+              final values = [
+                for (var c = 0; c < chCount; c++) reader.number(fmt),
+              ];
+              stream.events.add((
+                time,
+                values.map((v) => v.toString()).join(' | '),
+              ));
+            } else {
+              stream.times.add(time);
+              for (var c = 0; c < chCount; c++) {
+                stream.flatValues.add(reader.number(fmt));
               }
             }
           }
         }
-        file.setPositionSync(start + n);
-        onProgress?.call(file.positionSync() / length);
       }
-      return streams;
-    } finally {
-      file.closeSync();
+      reader.pos = chunkEnd;
     }
+    return streams;
   }
 
   Future<List<XdfStreamInfo>> inspect(String path) async =>
@@ -268,18 +385,28 @@ class XdfLoader {
         }
       }
     }
-    final times = stream.times.map(stream.corrected).toList();
-    final rate = (times.length - 1) / (times.last - times.first);
-    if (!rate.isFinite || rate <= 0)
+    final rawTimes = Float64List(stream.times.length);
+    for (var i = 0; i < stream.times.length; i++) {
+      rawTimes[i] = stream.corrected(stream.times[i]);
+    }
+    final effectiveRate = (rawTimes.length - 1) / (rawTimes.last - rawTimes.first);
+    if (!effectiveRate.isFinite || effectiveRate <= 0)
       throw const FormatException('Invalid XDF time axis');
-    for (var i = 1; i < times.length; i++) {
-      if (times[i] <= times[i - 1] ||
-          times[i] - times[i - 1] > 5 / stream.rate) {
+    final rate = (stream.rate > 0 &&
+            (effectiveRate - stream.rate).abs() / stream.rate <= 0.005)
+        ? stream.rate
+        : effectiveRate;
+    for (var i = 1; i < rawTimes.length; i++) {
+      if (rawTimes[i] <= rawTimes[i - 1] ||
+          rawTimes[i] - rawTimes[i - 1] > 5 / stream.rate) {
         throw const FormatException(
           'XDF has non-monotonic timestamps or a data gap; split/repair the stream before analysis.',
         );
       }
     }
+    final outCount = rate == effectiveRate
+        ? rawTimes.length
+        : ((rawTimes.last - rawTimes.first) * rate).round() + 1;
     final channelXml =
         stream.xml
             .findAllElements('channels')
@@ -303,33 +430,40 @@ class XdfLoader {
               : '',
         ),
     ];
+    final chCount = stream.count;
     final channels = [
-      for (var c = 0; c < stream.count; c++) Float32List(times.length),
+      for (var c = 0; c < chCount; c++) Float32List(outCount),
     ];
     var left = 0;
-    for (var i = 0; i < times.length; i++) {
-      if (i % 2048 == 0) await _checkpoint(isCancelled);
-      if (i % 2048 == 0) onProgress?.call(.75 + .25 * i / times.length);
-      final t = times.first + i / rate;
-      while (left + 1 < times.length - 1 && times[left + 1] < t) {
+    final t0 = rawTimes.first;
+    final tEnd = rawTimes.last;
+    final flat = stream.flatValues;
+    for (var i = 0; i < outCount; i++) {
+      if ((i & 8191) == 0) {
+        if (isCancelled?.call() ?? false) {
+          throw StateError('File loading cancelled');
+        }
+        onProgress?.call(.75 + .25 * i / outCount);
+      }
+      final t = (t0 + i / rate).clamp(t0, tEnd);
+      while (left + 1 < rawTimes.length - 1 && rawTimes[left + 1] < t) {
         left++;
       }
-      final f = ((t - times[left]) / (times[left + 1] - times[left])).clamp(
-        0.0,
-        1.0,
-      );
-      for (var c = 0; c < stream.count; c++) {
+      final f = ((t - rawTimes[left]) / (rawTimes[left + 1] - rawTimes[left]))
+          .clamp(0.0, 1.0);
+      final leftBase = left * chCount;
+      final rightBase = (left + 1) * chCount;
+      for (var c = 0; c < chCount; c++) {
         channels[c][i] =
-            (stream.values[left][c] * (1 - f) +
-                stream.values[left + 1][c] * f) *
+            (flat[leftBase + c] * (1 - f) + flat[rightBase + c] * f) *
             scales[c];
       }
     }
     final markers = <EegMarker>[];
     for (final s in streams.values) {
       for (final event in s.events) {
-        final t = s.corrected(event.$1) - times.first;
-        if (t >= 0 && t <= times.last - times.first) {
+        final t = s.corrected(event.$1) - t0;
+        if (t >= 0 && t <= tEnd - t0) {
           markers.add(
             EegMarker(
               type: s.field('name'),
@@ -352,13 +486,14 @@ class XdfLoader {
       sampleRate: rate,
       labels: labels,
       preview: channels,
-      sampleCount: times.length,
+      sampleCount: outCount,
       format: 'xdf',
       markers: markers,
       provenance: {
         'xdf_stream_id': stream.id,
         'xdf_stream_name': stream.field('name'),
         'xdf_nominal_rate': stream.rate,
+        'xdf_effective_rate': effectiveRate,
         'xdf_uniform_resampling': true,
         'xdf_units': 'microvolts; unspecified channel units assumed microvolts',
       },
@@ -377,10 +512,8 @@ class XdfLoader {
   };
 }
 
-Future<void> _checkpoint(bool Function()? isCancelled) async {
-  await Future<void>.delayed(Duration.zero);
-  if (isCancelled?.call() ?? false) throw StateError('File loading cancelled');
-}
-
 Future<List<XdfStreamInfo>> inspectXdfInWorker(String path) =>
     Isolate.run(() => XdfLoader().inspect(path));
+
+Future<EegRecording> loadXdfInWorker(String path, {int? streamId}) =>
+    Isolate.run(() => XdfLoader().load(path, streamId: streamId));

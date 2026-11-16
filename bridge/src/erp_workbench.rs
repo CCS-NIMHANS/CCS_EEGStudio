@@ -1810,8 +1810,31 @@ fn decode(
             Some(v.iter().sum::<f64>() / v.len() as f64)
         }
     };
+    let n_ch = labels.len();
+    let channel_patterns: Vec<Vec<f64>> = (0..nt)
+        .map(|t| {
+            (0..n_ch)
+                .map(|c| {
+                    let (mut sum_a, mut n_a, mut sum_b, mut n_b) = (0.0, 0usize, 0.0, 0usize);
+                    for (idx, tr) in trials.iter().enumerate() {
+                        let v = binned[idx][c * nt + t];
+                        if tr.class == 0 {
+                            sum_a += v;
+                            n_a += 1;
+                        } else {
+                            sum_b += v;
+                            n_b += 1;
+                        }
+                    }
+                    let ma = if n_a > 0 { sum_a / n_a as f64 } else { 0.0 };
+                    let mb = if n_b > 0 { sum_b / n_b as f64 } else { 0.0 };
+                    mb - ma
+                })
+                .collect()
+        })
+        .collect();
     Ok(
-        json!({"method":"within-recording purged blocked CV; shrinkage LDA; train-fold scaling","folds_used":folds_used,"folds":fold_audit,"times":times,"auc":diagonal.iter().map(mean).collect::<Vec<_>>(),"balanced_accuracy":accuracy.iter().map(mean).collect::<Vec<_>>(),"generalization_auc":if o.temporal_generalization{Some(general.iter().map(mean).collect::<Vec<_>>())}else{None},"generalization_shape":[nt,nt],"class_definition":"Original physical event classes; left/right side for N2pc and LRP","chance":0.5,"inference":"Descriptive CV scores; no above-chance significance claim without permutation testing"}),
+        json!({"method":"within-recording purged blocked CV; shrinkage LDA; train-fold scaling","folds_used":folds_used,"folds":fold_audit,"times":times,"channels":labels,"channel_patterns":channel_patterns,"auc":diagonal.iter().map(mean).collect::<Vec<_>>(),"balanced_accuracy":accuracy.iter().map(mean).collect::<Vec<_>>(),"generalization_auc":if o.temporal_generalization{Some(general.iter().map(mean).collect::<Vec<_>>())}else{None},"generalization_shape":[nt,nt],"class_definition":"Original physical event classes; left/right side for N2pc and LRP","chance":0.5,"inference":"Descriptive CV scores; no above-chance significance claim without permutation testing"}),
     )
 }
 fn deconvolve(

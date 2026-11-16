@@ -20,6 +20,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import 'channel_types.dart';
+import 'topostats/mne_constants.dart';
 import 'eeg_viewer.dart';
 import 'extraction_service.dart';
 import 'models.dart';
@@ -499,11 +500,30 @@ class _FeatureHomeState extends State<FeatureHome>
     });
     try {
       _log('Finalising the displayed cached signal. No cleaning is repeated…');
-      final saved = await _previewSession!.finalize(
-        recording: recording,
-        outputPath: path,
-        steps: _appliedPreviewSteps,
-      );
+      var outPath = path;
+      EegRecording saved;
+      try {
+        saved = await _previewSession!.finalize(
+          recording: recording,
+          outputPath: outPath,
+          steps: _appliedPreviewSteps,
+        );
+      } on FormatException catch (fe) {
+        if (fe.message.contains('EDF header') &&
+            outPath.toLowerCase().endsWith('.edf')) {
+          outPath = '${outPath.substring(0, outPath.length - 4)}.ccseeg';
+          _log(
+            'EDF header cannot represent ${recording.sampleRate} Hz exactly — saving as CCSEEG: $outPath',
+          );
+          saved = await _previewSession!.finalize(
+            recording: recording,
+            outputPath: outPath,
+            steps: _appliedPreviewSteps,
+          );
+        } else {
+          rethrow;
+        }
+      }
       if (!mounted) return;
       setState(() {
         _preprocessed = saved;
@@ -517,7 +537,7 @@ class _FeatureHomeState extends State<FeatureHome>
         _progress = 1;
       });
       _log(
-        '✓ Analysis copy ready: $path. Epochs, ERP, source analysis and features use this file.',
+        '✓ Analysis copy ready: $outPath. Epochs, ERP, source analysis and features use this file.',
       );
     } catch (e) {
       _log('Could not finalise preprocessing: $e');
@@ -1285,6 +1305,116 @@ class _FeatureHomeState extends State<FeatureHome>
     _log('Active recording: ${_shortName(recording.path)}');
     if (_preprocessed?.path != recording.path) {
       unawaited(_restoreInteractivePreview(recording));
+    }
+    final unlocated = _unlocatedChannels(recording);
+    if (unlocated.isNotEmpty && _promptedUnlocatedPath != recording.path) {
+      _promptedUnlocatedPath = recording.path;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_promptUnlocatedChannels(recording, unlocated));
+      });
+    }
+  }
+
+  String? _promptedUnlocatedPath;
+
+  static final Set<String> _k1005Upper = {
+    for (final k in kStandard1020Topo.keys) k.toUpperCase(),
+  };
+
+  List<String> _unlocatedChannels(EegRecording rec) {
+    final types = ChannelTypeMap.autoDetect(rec.labels);
+    final out = <String>[];
+    for (final raw in rec.labels) {
+      final clean = suggestedEegName(raw).toUpperCase();
+      if (!types.kindOf(raw).isEeg || !_k1005Upper.contains(clean)) {
+        out.add(raw);
+      }
+    }
+    return out;
+  }
+
+  Future<void> _applyChannelMappingToActiveRecording(
+    BatchChannels mapping,
+  ) async {
+    final active = _directInput ?? _raw;
+    if (active == null) return;
+    try {
+      setState(() => _running = true);
+      final full = await RecordingLoader().loadFull(active);
+      final mapped = mapping.apply(full);
+      final dir = Directory('${Directory.systemTemp.path}/ccs_mapped');
+      await dir.create(recursive: true);
+      final stem = _stem(active.path);
+      final outPath = '${dir.path}/${stem}_eeg_mapped.ccseeg';
+      await RecordingStorage.save(mapped, outPath);
+      final reloaded = await RecordingLoader().load(outPath);
+      if (!mounted) return;
+      _resetInteractivePreview();
+      setState(() {
+        _directInput = reloaded;
+        _preprocessed = null;
+        _channels = ChannelTypeMap.autoDetect(reloaded.labels);
+        _selection = const ViewerSelection.empty();
+      });
+      _log(
+        '✓ Channel mapping applied: ${reloaded.labels.length}/${full.labels.length} channels kept (${reloaded.labels.join(', ')}).',
+      );
+      unawaited(_restoreInteractivePreview(reloaded));
+    } catch (e) {
+      if (mounted) _log('Could not apply channel mapping: $e');
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
+  Future<void> _promptUnlocatedChannels(
+    EegRecording rec,
+    List<String> unlocated,
+  ) async {
+    if (!mounted || unlocated.isEmpty) return;
+    final eegCount = rec.labels.length - unlocated.length;
+    if (eegCount < 4) return;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
+            SizedBox(width: 8),
+            Expanded(child: Text('Non-EEG / Unlocated Channels Detected')),
+          ],
+        ),
+        content: Text(
+          '${unlocated.length} channel(s) have no standard 10-05 scalp location:\n\n'
+          '${unlocated.join(', ')}\n\n'
+          'Keeping non-EEG channels during ICA or GEDAI can prevent spatial leadfield cleaning. Exclude them from EEG preprocessing?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'keep'),
+            child: const Text('Keep All'),
+          ),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(ctx, 'map'),
+            child: const Text('Open Channel Mapping…'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'exclude'),
+            child: Text('Exclude ${unlocated.join(', ')}'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'exclude') {
+      final unlocSet = unlocated.toSet();
+      final mapping = BatchChannels({
+        for (final l in rec.labels) l: unlocSet.contains(l) ? '' : suggestedEegName(l),
+      });
+      setState(() => _batchChannels = mapping);
+      await _applyChannelMappingToActiveRecording(mapping);
+    } else if (action == 'map') {
+      await _editBatchChannels();
     }
   }
 
@@ -2762,13 +2892,16 @@ class _FeatureHomeState extends State<FeatureHome>
         },
       ),
     );
-    if (accepted == true)
-      setState(
-        () => _batchChannels = BatchChannels({
-          ...loadedNames,
-          for (final e in controls.entries) e.key: e.value.text.trim(),
-        }),
-      );
+    if (accepted == true) {
+      final mapping = BatchChannels({
+        ...loadedNames,
+        for (final e in controls.entries) e.key: e.value.text.trim(),
+      });
+      setState(() => _batchChannels = mapping);
+      if (_directInput != null || _raw != null) {
+        await _applyChannelMappingToActiveRecording(mapping);
+      }
+    }
     for (final c in controls.values) c.dispose();
     for (final c in [prefix, suffix, find, replacement, exclude]) c.dispose();
     if (nextExample != null && mounted) await _editBatchChannels(nextExample);
@@ -4350,6 +4483,62 @@ class _FeatureHomeState extends State<FeatureHome>
                   style: const TextStyle(color: _accentGreen, fontSize: 11),
                 ),
               ),
+            if ((_directInput ?? _raw) != null &&
+                _unlocatedChannels((_directInput ?? _raw)!).isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Builder(
+                builder: (_) {
+                  final rec = (_directInput ?? _raw)!;
+                  final unloc = _unlocatedChannels(rec);
+                  return Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.orangeAccent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: Colors.orangeAccent.withValues(alpha: 0.5),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '⚠ ${unloc.length} non-EEG / unlocated channel(s): ${unloc.join(', ')}',
+                          style: const TextStyle(
+                            color: Colors.orangeAccent,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        OutlinedButton.icon(
+                          onPressed: _running
+                              ? null
+                              : () async {
+                                  final unlocSet = unloc.toSet();
+                                  final mapping = BatchChannels({
+                                    for (final l in rec.labels)
+                                      l: unlocSet.contains(l)
+                                          ? ''
+                                          : suggestedEegName(l),
+                                  });
+                                  setState(() => _batchChannels = mapping);
+                                  await _applyChannelMappingToActiveRecording(
+                                    mapping,
+                                  );
+                                },
+                          icon: const Icon(Icons.cleaning_services, size: 14),
+                          label: Text(
+                            'Remove ${unloc.join(', ')}',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ],
           ],
           open: false,
         ),

@@ -196,6 +196,10 @@ impl<R: Read> XdfReader<R> {
 }
 
 pub fn load_xdf(path: &Path) -> Result<XdfRecording, String> {
+    load_xdf_stream(path, None)
+}
+
+pub fn load_xdf_stream(path: &Path, target_stream_id: Option<u32>) -> Result<XdfRecording, String> {
     let file = File::open(path).map_err(|e| format!("Cannot open XDF file {}: {e}", path.display()))?;
     let file_len = file.metadata().map_err(|e| e.to_string())?.len();
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
@@ -369,7 +373,12 @@ pub fn load_xdf(path: &Path) -> Result<XdfRecording, String> {
         return Err("XDF file contains no numeric continuous data stream".into());
     }
 
-    let eeg_stream_idx = if numeric_streams.len() == 1 {
+    let eeg_stream_idx = if let Some(tid) = target_stream_id {
+        numeric_streams
+            .iter()
+            .position(|(id, _)| *id == tid)
+            .ok_or_else(|| format!("Selected XDF stream id {tid} not found"))?
+    } else if numeric_streams.len() == 1 {
         0
     } else {
         numeric_streams
@@ -402,15 +411,23 @@ pub fn load_xdf(path: &Path) -> Result<XdfRecording, String> {
     let duration = t_end - t_start;
     let n_samples = corrected_times.len();
 
-    let rate = if duration > 0.0 {
+    let effective_rate = if duration > 0.0 {
         (n_samples - 1) as f64 / duration
     } else {
         info.nominal_rate
     };
 
-    if !rate.is_finite() || rate <= 0.0 {
+    if !effective_rate.is_finite() || effective_rate <= 0.0 {
         return Err("Invalid sampling rate calculated from XDF timestamps".into());
     }
+
+    let rate = if info.nominal_rate > 0.0
+        && (effective_rate - info.nominal_rate).abs() / info.nominal_rate <= 0.005
+    {
+        info.nominal_rate
+    } else {
+        effective_rate
+    };
 
     // Check monotonic timestamps
     for i in 1..corrected_times.len() {
@@ -431,11 +448,16 @@ pub fn load_xdf(path: &Path) -> Result<XdfRecording, String> {
         .collect();
 
     // Uniform resampling to regular grid
-    let mut channels: Vec<Vec<f32>> = vec![vec![0.0f32; n_samples]; info.channel_count];
+    let out_samples = if (rate - effective_rate).abs() < f64::EPSILON {
+        n_samples
+    } else {
+        ((duration * rate).round() as usize + 1).max(2)
+    };
+    let mut channels: Vec<Vec<f32>> = vec![vec![0.0f32; out_samples]; info.channel_count];
     let mut left = 0;
 
-    for i in 0..n_samples {
-        let t_target = t_start + i as f64 / rate;
+    for i in 0..out_samples {
+        let t_target = (t_start + i as f64 / rate).min(t_end);
         while left + 1 < n_samples - 1 && corrected_times[left + 1] < t_target {
             left += 1;
         }

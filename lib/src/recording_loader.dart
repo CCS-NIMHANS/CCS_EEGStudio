@@ -180,19 +180,102 @@ class RecordingLoader {
     }
   }
 
+  Future<EegRecording> _loadXdfViaRustOrWorker(
+    String path, {
+    int? streamId,
+  }) async {
+    String executable;
+    try {
+      executable = ExtractionService.findEngine();
+    } catch (_) {
+      return loadXdfInWorker(path, streamId: streamId);
+    }
+    final temp = await Directory.systemTemp.createTemp('ccs_eeg_xdf_');
+    try {
+      final jobFile = File('${temp.path}/inspect_xdf.json');
+      final binFile = File('${temp.path}/signals.f32');
+      await jobFile.writeAsString(
+        jsonEncode({
+          'job_type': 'inspect_xdf',
+          'input': path,
+          'output': binFile.path,
+          'stream_id': ?streamId,
+        }),
+      );
+      final process = await Process.run(executable, [jobFile.path]);
+      if (process.exitCode != 0) {
+        throw FormatException(
+          'Engine failed to load XDF file: ${process.stderr}',
+        );
+      }
+      final jsonStr = process.stdout
+          .toString()
+          .split('\n')
+          .where((l) => !l.startsWith('PROGRESS') && l.trim().isNotEmpty)
+          .join('\n');
+      final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final srate = (data['sample_rate'] as num).toDouble();
+      final labels = List<String>.from(data['labels'] as List);
+      final sampleCount = data['sample_count'] as int;
+      final rawBytes = await binFile.readAsBytes();
+      final aligned = rawBytes.offsetInBytes % 4 == 0
+          ? rawBytes
+          : Uint8List.fromList(rawBytes);
+      final flat = aligned.buffer.asFloat32List(
+        aligned.offsetInBytes,
+        aligned.lengthInBytes ~/ 4,
+      );
+      final channels = <Float32List>[
+        for (var c = 0; c < labels.length; c++)
+          Float32List.sublistView(
+            flat,
+            c * sampleCount,
+            (c + 1) * sampleCount,
+          ),
+      ];
+      final markers = [
+        for (final m in (data['markers'] as List? ?? const []))
+          EegMarker.fromJson(m as Map<String, dynamic>),
+      ];
+      return EegRecording(
+        path: path,
+        sampleRate: srate,
+        labels: labels,
+        preview: channels,
+        sampleCount: sampleCount,
+        format: 'xdf',
+        markers: markers,
+        provenance: {
+          'xdf_stream_id': data['stream_id'],
+          'xdf_stream_name': data['stream_name'],
+          'xdf_loader': 'rust',
+        },
+      );
+    } finally {
+      try {
+        await temp.delete(recursive: true);
+      } catch (_) {}
+    }
+  }
+
   Future<EegRecording> _loadInWorker(
     String path, {
     int? xdfStreamId,
     void Function(double)? onProgress,
     bool Function()? isCancelled,
   }) async {
-    if (path.toLowerCase().endsWith('.xdf'))
-      return XdfLoader().load(
+    if (path.toLowerCase().endsWith('.xdf')) {
+      onProgress?.call(0.15);
+      final recording = await _loadXdfViaRustOrWorker(
         path,
         streamId: xdfStreamId,
-        onProgress: onProgress,
-        isCancelled: isCancelled,
       );
+      if (isCancelled?.call() ?? false) {
+        throw StateError('File loading cancelled');
+      }
+      onProgress?.call(1.0);
+      return recording;
+    }
     if (path.toLowerCase().endsWith('.ccseeg') ||
         path.toLowerCase().endsWith('.ccseeg.json') ||
         path.toLowerCase().endsWith('.json'))

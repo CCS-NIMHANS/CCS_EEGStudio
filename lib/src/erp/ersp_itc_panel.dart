@@ -2,10 +2,11 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../recording_save_dialog.dart';
+import 'workbench_figures.dart';
 import 'workbench_service.dart';
 
 /// Interactive ERSP (dB) and ITC (0–1) time-frequency workspace with
-/// permutation masking, trial-level rejection/inclusion, and CSV export.
+/// permutation masking, scalp topographies, common epoch selection, and CSV export.
 class ErspItcPanel extends StatefulWidget {
   const ErspItcPanel({
     super.key,
@@ -18,6 +19,12 @@ class ErspItcPanel extends StatefulWidget {
     required this.conditionBName,
     this.epochTminMs,
     this.outputDirectory,
+    this.onEditEpochs,
+    this.initialChannel,
+    this.onChannelChanged,
+    this.topoStartMs = 300.0,
+    this.topoEndMs = 600.0,
+    this.onTopoWindowChanged,
   });
 
   final String? recordingPath;
@@ -29,6 +36,12 @@ class ErspItcPanel extends StatefulWidget {
   final String conditionBName;
   final double? epochTminMs;
   final String? outputDirectory;
+  final VoidCallback? onEditEpochs;
+  final String? initialChannel;
+  final ValueChanged<String>? onChannelChanged;
+  final double topoStartMs;
+  final double topoEndMs;
+  final ValueChanged<(double, double)>? onTopoWindowChanged;
 
   @override
   State<ErspItcPanel> createState() => _ErspItcPanelState();
@@ -42,7 +55,6 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
   bool _busy = false;
   String _status = '';
   Map<String, dynamic>? _result;
-  final Set<int> _excludedTrials = {};
 
   final TextEditingController _fminCtrl = TextEditingController(text: '2');
   final TextEditingController _fmaxCtrl = TextEditingController(text: '40');
@@ -50,14 +62,36 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     text: '-200',
   );
   final TextEditingController _baseEndCtrl = TextEditingController(text: '0');
+  late final TextEditingController _topoStartCtrl = TextEditingController(
+    text: '${widget.topoStartMs.round()}',
+  );
+  late final TextEditingController _topoEndCtrl = TextEditingController(
+    text: '${widget.topoEndMs.round()}',
+  );
+  final TextEditingController _topoFminCtrl = TextEditingController(text: '2');
+  final TextEditingController _topoFmaxCtrl = TextEditingController(text: '40');
 
   Offset? _hoverErsp;
   Offset? _hoverItc;
 
   @override
+  void didUpdateWidget(covariant ErspItcPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.topoStartMs != widget.topoStartMs) {
+      _topoStartCtrl.text = '${widget.topoStartMs.round()}';
+    }
+    if (oldWidget.topoEndMs != widget.topoEndMs) {
+      _topoEndCtrl.text = '${widget.topoEndMs.round()}';
+    }
+  }
+
+  @override
   void initState() {
     super.initState();
-    if (widget.roiLabels.isEmpty && widget.labels.isNotEmpty) {
+    final init = widget.initialChannel;
+    if (init != null && (init == 'ROI' || widget.labels.contains(init))) {
+      _selectedChannel = init;
+    } else if (widget.roiLabels.isEmpty && widget.labels.isNotEmpty) {
       _selectedChannel = widget.labels.first;
     }
     if (widget.conditionBTrials.isEmpty) {
@@ -71,18 +105,18 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     _fmaxCtrl.dispose();
     _baseStartCtrl.dispose();
     _baseEndCtrl.dispose();
+    _topoStartCtrl.dispose();
+    _topoEndCtrl.dispose();
+    _topoFminCtrl.dispose();
+    _topoFmaxCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _compute() async {
     final path = widget.recordingPath;
     if (path == null || path.isEmpty || _busy) return;
-    final activeA = widget.conditionATrials
-        .where((i) => !_excludedTrials.contains(i))
-        .toList();
-    final activeB = widget.conditionBTrials
-        .where((i) => !_excludedTrials.contains(i))
-        .toList();
+    final activeA = widget.conditionATrials;
+    final activeB = widget.conditionBTrials;
     if (activeA.isEmpty) {
       setState(() => _status = 'Include at least 1 trial in Condition A.');
       return;
@@ -104,6 +138,10 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
         'n_freqs': 24,
         'baseline_start_ms': double.tryParse(_baseStartCtrl.text.trim()) ?? -200.0,
         'baseline_end_ms': double.tryParse(_baseEndCtrl.text.trim()) ?? 0.0,
+        'topo_tmin_ms': double.tryParse(_topoStartCtrl.text.trim()) ?? widget.topoStartMs,
+        'topo_tmax_ms': double.tryParse(_topoEndCtrl.text.trim()) ?? widget.topoEndMs,
+        'topo_fmin_hz': double.tryParse(_topoFminCtrl.text.trim()) ?? 2.0,
+        'topo_fmax_hz': double.tryParse(_topoFmaxCtrl.text.trim()) ?? 40.0,
         'n_perm': 200,
       });
       if (!mounted) return;
@@ -176,7 +214,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     for (var k = 0; k < idxA.length; k++) {
       final tid = idxA[k];
       tBuf.writeln(
-        '${tid + 1},${widget.conditionAName},${!_excludedTrials.contains(tid)},${powA[k].toStringAsFixed(4)},${itcTrA[k].toStringAsFixed(4)}',
+        '${tid + 1},${widget.conditionAName},true,${powA[k].toStringAsFixed(4)},${itcTrA[k].toStringAsFixed(4)}',
       );
     }
     final idxB = (res['trial_indices_b'] as List? ?? []).cast<int>();
@@ -185,7 +223,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     for (var k = 0; k < idxB.length; k++) {
       final tid = idxB[k];
       tBuf.writeln(
-        '${tid + 1},${widget.conditionBName},${!_excludedTrials.contains(tid)},${powB[k].toStringAsFixed(4)},${itcTrB[k].toStringAsFixed(4)}',
+        '${tid + 1},${widget.conditionBName},true,${powB[k].toStringAsFixed(4)},${itcTrB[k].toStringAsFixed(4)}',
       );
     }
     await File(trialPath).writeAsString(tBuf.toString());
@@ -193,17 +231,6 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     if (mounted) {
       setState(() => _status = 'Exported ERSP/ITC CSV & trial table to $path');
     }
-  }
-
-  void _toggleTrial(int trialIndex) {
-    setState(() {
-      if (_excludedTrials.contains(trialIndex)) {
-        _excludedTrials.remove(trialIndex);
-      } else {
-        _excludedTrials.add(trialIndex);
-      }
-    });
-    _compute();
   }
 
   @override
@@ -250,7 +277,10 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                           DropdownMenuItem(value: ch, child: Text(ch)),
                       ],
                       onChanged: (v) {
-                        if (v != null) setState(() => _selectedChannel = v);
+                        if (v != null) {
+                          setState(() => _selectedChannel = v);
+                          widget.onChannelChanged?.call(v);
+                        }
                       },
                     ),
                   ),
@@ -296,16 +326,6 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                       onPressed: _exportCsv,
                       icon: const Icon(Icons.download, size: 16),
                       label: const Text('Export CSV'),
-                    ),
-                  if (_excludedTrials.isNotEmpty)
-                    TextButton(
-                      onPressed: _busy
-                          ? null
-                          : () {
-                              setState(() => _excludedTrials.clear());
-                              _compute();
-                            },
-                      child: Text('Restore ${_excludedTrials.length} excluded'),
                     ),
                 ],
               ),
@@ -373,7 +393,9 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
               ],
             ),
             const SizedBox(height: 12),
-            _buildInteractiveTrialStrip(res),
+            _buildTopoRow(res),
+            const SizedBox(height: 12),
+            _buildCommonTrialStrip(res),
           ],
         ],
       ),
@@ -439,6 +461,10 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                   diverging: !isItc || _viewMode == 'diff',
                   unit: isItc ? '' : ' dB',
                   hoverPos: hover,
+                  roiTminMs: double.tryParse(_topoStartCtrl.text.trim()) ?? widget.topoStartMs,
+                  roiTmaxMs: double.tryParse(_topoEndCtrl.text.trim()) ?? widget.topoEndMs,
+                  roiFminHz: double.tryParse(_topoFminCtrl.text.trim()) ?? 2.0,
+                  roiFmaxHz: double.tryParse(_topoFmaxCtrl.text.trim()) ?? 40.0,
                 ),
                 child: const SizedBox.expand(),
               ),
@@ -449,7 +475,152 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     );
   }
 
-  Widget _buildInteractiveTrialStrip(Map<String, dynamic> res) {
+  List<double> _pickTopo(Map<String, dynamic> res, {required bool isItc}) {
+    final key = isItc
+        ? (_viewMode == 'b' && res['topo_itc_b'] != null
+              ? 'topo_itc_b'
+              : (_viewMode == 'diff' && res['topo_itc_diff'] != null
+                    ? 'topo_itc_diff'
+                    : 'topo_itc_a'))
+        : (_viewMode == 'b' && res['topo_ersp_b'] != null
+              ? 'topo_ersp_b'
+              : (_viewMode == 'diff' && res['topo_ersp_diff'] != null
+                    ? 'topo_ersp_diff'
+                    : 'topo_ersp_a'));
+    return (res[key] as List? ?? []).cast<num>().map((e) => e.toDouble()).toList();
+  }
+
+  Widget _buildTopoRow(Map<String, dynamic> res) {
+    final topoLabels = (res['labels'] as List? ?? widget.labels).cast<String>();
+    final erspTopo = _pickTopo(res, isItc: false);
+    final itcTopo = _pickTopo(res, isItc: true);
+    if (topoLabels.isEmpty || (erspTopo.isEmpty && itcTopo.isEmpty)) {
+      return const SizedBox.shrink();
+    }
+    final modeLabel = _viewMode == 'b'
+        ? widget.conditionBName
+        : (_viewMode == 'diff'
+              ? '${widget.conditionBName} − ${widget.conditionAName}'
+              : widget.conditionAName);
+    final selectedSet = _selectedChannel == 'ROI'
+        ? widget.roiLabels.toSet()
+        : {_selectedChannel};
+
+    Widget topoCard(String title, List<double> values) {
+      return Container(
+        height: 230,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFCBD5E1)),
+        ),
+        child: CustomPaint(
+          painter: ErpWorkbenchTopoPainter(
+            {
+              'labels': topoLabels,
+              'profile': {
+                'a_name': widget.conditionAName,
+                'b_name': widget.conditionBName,
+              },
+            },
+            valuesOverride: values,
+            customTitle: title,
+            showPValues: false,
+            selectedChannels: selectedSet,
+          ),
+          child: const SizedBox.expand(),
+        ),
+      );
+    }
+
+    final t0Label = _topoStartCtrl.text.trim();
+    final t1Label = _topoEndCtrl.text.trim();
+    final f0Label = _topoFminCtrl.text.trim();
+    final f1Label = _topoFmaxCtrl.text.trim();
+    final winSuffix = ' ($t0Label–$t1Label ms · $f0Label–$f1Label Hz)';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          color: const Color(0xFF1E293B),
+          margin: const EdgeInsets.only(bottom: 8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text(
+                  'Topo Window:',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amberAccent),
+                ),
+                SizedBox(
+                  width: 68,
+                  child: TextField(
+                    controller: _topoStartCtrl,
+                    decoration: const InputDecoration(labelText: 'Start ms', isDense: true),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+                SizedBox(
+                  width: 68,
+                  child: TextField(
+                    controller: _topoEndCtrl,
+                    decoration: const InputDecoration(labelText: 'End ms', isDense: true),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+                SizedBox(
+                  width: 62,
+                  child: TextField(
+                    controller: _topoFminCtrl,
+                    decoration: const InputDecoration(labelText: 'Min Hz', isDense: true),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+                SizedBox(
+                  width: 62,
+                  child: TextField(
+                    controller: _topoFmaxCtrl,
+                    decoration: const InputDecoration(labelText: 'Max Hz', isDense: true),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: _busy
+                      ? null
+                      : () {
+                          final a = double.tryParse(_topoStartCtrl.text.trim());
+                          final b = double.tryParse(_topoEndCtrl.text.trim());
+                          if (a != null && b != null) {
+                            widget.onTopoWindowChanged?.call((math.min(a, b), math.max(a, b)));
+                          }
+                          _compute();
+                        },
+                  icon: const Icon(Icons.sync, size: 14),
+                  label: const Text('Update & Link Topo', style: TextStyle(fontSize: 11)),
+                ),
+              ],
+            ),
+          ),
+        ),
+        Row(
+          children: [
+            if (erspTopo.isNotEmpty)
+              Expanded(child: topoCard('ERSP Topo: $modeLabel$winSuffix (dB)', erspTopo)),
+            if (erspTopo.isNotEmpty && itcTopo.isNotEmpty) const SizedBox(width: 12),
+            if (itcTopo.isNotEmpty)
+              Expanded(child: topoCard('ITC Topo: $modeLabel$winSuffix (0–1)', itcTopo)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCommonTrialStrip(Map<String, dynamic> res) {
     final idxA = (res['trial_indices_a'] as List? ?? []).cast<int>();
     final powA = (res['trial_power_a_db'] as List? ?? []).cast<num>();
     final itcA = (res['trial_itc_a'] as List? ?? []).cast<num>();
@@ -481,9 +652,22 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Interactive Trial Inspector (click any trial bar to exclude/include and recompute ERSP & ITC)',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            Wrap(
+              spacing: 10,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  'Common Epoch Selection (${entries.length} accepted trials shared across ERP, rERP, ERPimage, ML, ERSP & ITC)',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+                if (widget.onEditEpochs != null)
+                  OutlinedButton.icon(
+                    onPressed: widget.onEditEpochs,
+                    icon: const Icon(Icons.tune, size: 14),
+                    label: const Text('Modify in Trial Review', style: TextStyle(fontSize: 11)),
+                  ),
+              ],
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -493,38 +677,21 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                 for (final tr in entries)
                   Tooltip(
                     message:
-                        'Trial ${tr.idx + 1} (${tr.cond})\nERSP: ${tr.pow.toStringAsFixed(2)} dB · ITC align: ${tr.itc.toStringAsFixed(2)}\nClick to ${_excludedTrials.contains(tr.idx) ? "reinstate" : "exclude"}',
-                    child: InkWell(
-                      onTap: _busy ? null : () => _toggleTrial(tr.idx),
-                      child: Container(
-                        width: 24,
-                        height: 28,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: _excludedTrials.contains(tr.idx)
-                              ? Colors.red.shade900
-                              : (tr.cond == widget.conditionAName
-                                    ? const Color(0xFF1E3A8A)
-                                    : const Color(0xFF991B1B)),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(
-                            color: _excludedTrials.contains(tr.idx)
-                                ? Colors.redAccent
-                                : Colors.white24,
-                          ),
-                        ),
-                        child: Text(
-                          '${tr.idx + 1}',
-                          style: TextStyle(
-                            fontSize: 9,
-                            decoration: _excludedTrials.contains(tr.idx)
-                                ? TextDecoration.lineThrough
-                                : null,
-                            color: _excludedTrials.contains(tr.idx)
-                                ? Colors.white54
-                                : Colors.white,
-                          ),
-                        ),
+                        'Trial ${tr.idx + 1} (${tr.cond})\nERSP: ${tr.pow.toStringAsFixed(2)} dB · ITC align: ${tr.itc.toStringAsFixed(2)}',
+                    child: Container(
+                      width: 24,
+                      height: 28,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: tr.cond == widget.conditionAName
+                            ? const Color(0xFF1E3A8A)
+                            : const Color(0xFF991B1B),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Text(
+                        '${tr.idx + 1}',
+                        style: const TextStyle(fontSize: 9, color: Colors.white),
                       ),
                     ),
                   ),
@@ -547,6 +714,10 @@ class _TimeFreqPainter extends CustomPainter {
     required this.diverging,
     required this.unit,
     this.hoverPos,
+    this.roiTminMs,
+    this.roiTmaxMs,
+    this.roiFminHz,
+    this.roiFmaxHz,
   });
 
   final List<double> times;
@@ -557,6 +728,10 @@ class _TimeFreqPainter extends CustomPainter {
   final bool diverging;
   final String unit;
   final Offset? hoverPos;
+  final double? roiTminMs;
+  final double? roiTmaxMs;
+  final double? roiFminHz;
+  final double? roiFmaxHz;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -615,6 +790,41 @@ class _TimeFreqPainter extends CustomPainter {
       );
     }
 
+    // Active Topo Time-Frequency ROI Box
+    if (roiTminMs != null &&
+        roiTmaxMs != null &&
+        roiFminHz != null &&
+        roiFmaxHz != null &&
+        times.last > times.first &&
+        freqs.last > freqs.first) {
+      final tLo = math.min(roiTminMs!, roiTmaxMs!);
+      final tHi = math.max(roiTminMs!, roiTmaxMs!);
+      final fLo = math.min(roiFminHz!, roiFmaxHz!);
+      final fHi = math.max(roiFminHz!, roiFmaxHz!);
+      final x0 = (ax.left + (tLo - times.first) / (times.last - times.first) * ax.width)
+          .clamp(ax.left, ax.right);
+      final x1 = (ax.left + (tHi - times.first) / (times.last - times.first) * ax.width)
+          .clamp(ax.left, ax.right);
+      final yBot = (ax.bottom - (fLo - freqs.first) / (freqs.last - freqs.first) * ax.height)
+          .clamp(ax.top, ax.bottom);
+      final yTop = (ax.bottom - (fHi - freqs.first) / (freqs.last - freqs.first) * ax.height)
+          .clamp(ax.top, ax.bottom);
+      if (x1 > x0 && yBot > yTop) {
+        final roiRect = Rect.fromLTRB(x0, yTop, x1, yBot);
+        canvas.drawRect(
+          roiRect,
+          Paint()..color = const Color(0xFFFACC15).withValues(alpha: 0.12),
+        );
+        canvas.drawRect(
+          roiRect,
+          Paint()
+            ..color = const Color(0xFFD97706)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.6,
+        );
+      }
+    }
+
     canvas.drawRect(
       ax,
       Paint()
@@ -665,5 +875,9 @@ class _TimeFreqPainter extends CustomPainter {
   bool shouldRepaint(covariant _TimeFreqPainter old) =>
       old.values != values ||
       old.maskSignificant != maskSignificant ||
+      old.roiTminMs != roiTminMs ||
+      old.roiTmaxMs != roiTmaxMs ||
+      old.roiFminHz != roiFminHz ||
+      old.roiFmaxHz != roiFmaxHz ||
       old.hoverPos != hoverPos;
 }

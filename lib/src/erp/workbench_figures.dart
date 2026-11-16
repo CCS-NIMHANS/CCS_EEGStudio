@@ -423,9 +423,20 @@ class ErpButterflyPainter extends CustomPainter {
       Offset.zero & size,
       Paint()..color = const Color(0xFFFFFFFF),
     );
-    if (times.length < 2 || channelWaves.isEmpty) return;
+    if (times.length < 2 || channelWaves.isEmpty) {
+      erpText(
+        canvas,
+        'Butterfly plot requires per-channel waveforms — click Update measurements.',
+        const Offset(16, 24),
+        size: 11,
+        maxWidth: size.width - 32,
+      );
+      return;
+    }
 
-    final ax = Rect.fromLTRB(62, 34, size.width - 20, size.height - 40);
+    final hasGfpStrip = showGfp && size.height >= 165;
+    final axBottom = hasGfpStrip ? size.height - 92 : size.height - 26;
+    final ax = Rect.fromLTRB(60, 26, math.max(80, size.width - 15), axBottom);
     if (ax.width <= 0 || ax.height <= 0) return;
 
     var minV = 0.0;
@@ -453,17 +464,19 @@ class ErpButterflyPainter extends CustomPainter {
     for (var i = 0; i <= 4; i++) {
       final t = xMin + (xMax - xMin) * i / 4;
       canvas.drawLine(Offset(x(t), ax.top), Offset(x(t), ax.bottom), grid);
-      erpText(
-        canvas,
-        '${(t * 1000).round()}',
-        Offset(x(t) - 10, ax.bottom + 6),
-        size: 10,
-      );
+      if (!hasGfpStrip) {
+        erpText(
+          canvas,
+          '${(t * 1000).round()} ms',
+          Offset(x(t) - 14, ax.bottom + 6),
+          size: 10,
+        );
+      }
       final v = minV + (maxV - minV) * i / 4;
       canvas.drawLine(Offset(ax.left, y(v)), Offset(ax.right, y(v)), grid);
       erpText(
         canvas,
-        v.toStringAsFixed(2),
+        v.toStringAsFixed(1),
         Offset(4, y(v) - 6),
         size: 10,
       );
@@ -554,39 +567,6 @@ class ErpButterflyPainter extends CustomPainter {
       }
     }
 
-    if (showGfp) {
-      final gfp = List<double>.filled(times.length, 0.0);
-      final validWaves = channelWaves.values
-          .where((w) => w.length == times.length)
-          .toList();
-      if (validWaves.isNotEmpty) {
-        for (var i = 0; i < times.length; i++) {
-          var mean = 0.0;
-          for (final w in validWaves) {
-            mean += w[i];
-          }
-          mean /= validWaves.length;
-          var sumSq = 0.0;
-          for (final w in validWaves) {
-            final d = w[i] - mean;
-            sumSq += d * d;
-          }
-          gfp[i] = math.sqrt(sumSq / validWaves.length);
-        }
-        final gfpPath = Path()..moveTo(x(times.first), y(gfp.first));
-        for (var i = 1; i < times.length; i++) {
-          gfpPath.lineTo(x(times[i]), y(gfp[i]));
-        }
-        canvas.drawPath(
-          gfpPath,
-          Paint()
-            ..color = const Color(0xFFD97706)
-            ..strokeWidth = 2.2
-            ..style = PaintingStyle.stroke,
-        );
-      }
-    }
-
     if (hoverX != null) {
       final t =
           xMin +
@@ -619,10 +599,125 @@ class ErpButterflyPainter extends CustomPainter {
     }
     canvas.restore();
 
+    if (hasGfpStrip) {
+      final gfpAx = Rect.fromLTRB(
+        ax.left,
+        ax.bottom + 20,
+        ax.right,
+        size.height - 22,
+      );
+      final gfp = List<double>.filled(times.length, 0.0);
+      final validWaves = channelWaves.values
+          .where((w) => w.length == times.length)
+          .toList();
+      var maxGfp = 0.5;
+      if (validWaves.isNotEmpty) {
+        for (var i = 0; i < times.length; i++) {
+          var mean = 0.0;
+          for (final w in validWaves) {
+            mean += w[i];
+          }
+          mean /= validWaves.length;
+          var sumSq = 0.0;
+          for (final w in validWaves) {
+            final d = w[i] - mean;
+            sumSq += d * d;
+          }
+          gfp[i] = math.sqrt(sumSq / validWaves.length);
+          if (gfp[i] > maxGfp) maxGfp = gfp[i];
+        }
+      }
+      maxGfp *= 1.15;
+
+      canvas.drawRect(
+        gfpAx,
+        Paint()
+          ..color = const Color(0xFFF8FAFC)
+          ..style = PaintingStyle.fill,
+      );
+      canvas.drawRect(
+        gfpAx,
+        Paint()
+          ..color = const Color(0xFFCBD5E1)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+      for (var i = 0; i <= 4; i++) {
+        final t = xMin + (xMax - xMin) * i / 4;
+        canvas.drawLine(
+          Offset(x(t), gfpAx.top),
+          Offset(x(t), gfpAx.bottom),
+          grid,
+        );
+        erpText(
+          canvas,
+          '${(t * 1000).round()} ms',
+          Offset(x(t) - 14, gfpAx.bottom + 4),
+          size: 10,
+        );
+      }
+      if (xMin <= 0 && xMax >= 0) {
+        canvas.drawLine(
+          Offset(x(0), gfpAx.top),
+          Offset(x(0), gfpAx.bottom),
+          Paint()
+            ..color = const Color(0xFF334155)
+            ..strokeWidth = 1.2,
+        );
+      }
+      erpText(
+        canvas,
+        'GFP (µV)',
+        Offset(4, gfpAx.top + 2),
+        size: 10,
+        color: const Color(0xFF0F766E),
+      );
+      erpText(
+        canvas,
+        maxGfp.toStringAsFixed(1),
+        Offset(4, gfpAx.top + 14),
+        size: 9,
+      );
+      erpText(
+        canvas,
+        '0.0',
+        Offset(4, gfpAx.bottom - 10),
+        size: 9,
+      );
+
+      double yGfp(double v) =>
+          gfpAx.bottom - (v / maxGfp).clamp(0.0, 1.0) * gfpAx.height;
+      final fillPath = Path()..moveTo(x(times.first), gfpAx.bottom);
+      final linePath = Path()..moveTo(x(times.first), yGfp(gfp.first));
+      for (var i = 0; i < times.length; i++) {
+        final xi = x(times[i]);
+        final yi = yGfp(gfp[i]);
+        fillPath.lineTo(xi, yi);
+        if (i > 0) linePath.lineTo(xi, yi);
+      }
+      fillPath
+        ..lineTo(x(times.last), gfpAx.bottom)
+        ..close();
+      canvas.save();
+      canvas.clipRect(gfpAx);
+      canvas.drawPath(
+        fillPath,
+        Paint()..color = const Color(0xFF0F766E).withValues(alpha: 0.16),
+      );
+      canvas.drawPath(
+        linePath,
+        Paint()
+          ..color = const Color(0xFF0F766E)
+          ..strokeWidth = 1.8
+          ..style = PaintingStyle.stroke,
+      );
+      canvas.restore();
+    }
+
     erpText(
       canvas,
-      'Butterfly (${channelWaves.length} ch)${highlightedChannel != null ? ' · Red: $highlightedChannel' : ''}${showGfp ? ' · Amber: GFP' : ''}',
-      const Offset(64, 10),
+      'Butterfly (${channelWaves.length} ch)${highlightedChannel != null ? ' · Highlighted: $highlightedChannel' : ''}',
+      const Offset(60, 6),
       size: 11,
       color: const Color(0xFF0F172A),
     );

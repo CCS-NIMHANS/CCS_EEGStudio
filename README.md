@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.45</b> ·
+  <b>Current version: 1.2.47</b> ·
   <a href="CHANGELOG.md">Detailed changelog</a> ·
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/issues">Report a problem</a>
 </p>
@@ -116,13 +116,11 @@ The updater fetches the current installer on each run. Downloads use a private t
 
 ---
 
-## New in 1.2.45: ERP analysis overhaul, ERSP/ITC & topoplot selection
+## New in 1.2.47: Streamlined Epochs & ERP Suite, Rust XDF Import & Linked Topoplots
 
-- **Unified Epochs & ERP Workspace:** Recording tab carry-over (`raw`, `clean`, `interactive preview`) stays synchronized across modules, with streamlined **Trial Review & ERPimage** and **ERP Analysis & Measurements** modes.
-- **Interactive Topoplot Pickers & Measurement Windows:** Select or toggle electrodes directly from 2D scalp topoplots, drag horizontally on the ERP waveform to set measurement windows, and toggle **Butterfly Plot** / GFP overlays.
-- **Baseline Correction, ERPimage & Channel Math:** Interactive `[start, end] ms` baseline correction, sortable single-trial **ERPimage** heatmaps with click/drag trial rejection, guided **rERP** overlap correction, and **Channel Manipulations** (`N2pc`, `LRP`, `Contra − Ipsi`, custom `Ch A − Ch B`).
-- **Statistics, Decoding & Time-Frequency:** Within-subject cluster permutation tests, scalp eTFCE, 1-click Shrinkage LDA decoding with temporal generalization, and parallelized Morlet wavelet **ERSP (dB)** / **ITC (0–1)** panels with CSV export.
-- **Filter Disabling & Formatted Release Notes:** Empty High-pass/Low-pass/Notch filter boxes now cleanly disable the filter (`0.0`), and in-app update dialogs render structured Markdown release notes. See [CHANGELOG.md](CHANGELOG.md#1245) for full details across 1.2.40–1.2.45.
+- **Rust-Accelerated XDF Import & Nominal Rate Snapping:** XDF recordings now load through the native Rust engine (`inspect_xdf`) with binary `f32` transfer (~0.2 s for 40 MB / 35-ch XDF files) and snap minor LSL clock drift within `0.5%` to the exact nominal sampling rate (e.g. `250.0 Hz`), alongside automatic `.ccseeg` fallback for non-integer rates and one-click removal of unlocated non-EEG/motion channels (`X`, `Y`, `Z`).
+- **Coordinated 3-Step Epochs & ERP Workspace:** Unified protocol definition (with clickable epoch shades on the EEG plot), trial review, and analysis streams (`ERPimage`, `Distributed`, `Butterfly`, `ERP & Topo`, `ERSP & ITC`, `rERP & ML`, `Measurements`) sharing one accepted-trial set, active electrode, and measurement window.
+- **Upgraded ERPimage, ERSP/ITC & Butterfly + Separate GFP:** EEGLAB-style RdBu **ERPimage** with condition group selector/dividers and linked topo window, interactive **ERSP & ITC** time–frequency ROI topoplots, fixed **Channel Algebra** (`N2pc`, `LRP`, `Ch A − Ch B`), and a single-electrode **Butterfly** plot aligned to `Live ERP Preview` with **GFP** in its own dedicated lower strip. See [CHANGELOG.md](CHANGELOG.md#1247) for full details across 1.2.45–1.2.47.
 
 ## New in 1.2.29: compact workflow navigation
 

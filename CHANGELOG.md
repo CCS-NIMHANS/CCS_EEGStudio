@@ -4,6 +4,26 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.47]
+
+### Streamlined Epochs & ERP Suite, Rust XDF Import & Linked Topoplots
+
+- **Rust-Accelerated XDF Import & Exact Nominal Sampling Rate:** Ported XDF loading (`inspect_xdf`) to the native Rust engine (`ccs_eeg_engine`) with binary `f32` channel streaming to Dart (loading 40 MB / 35-ch XDF files in ~220 ms, with an optimized `Isolate.run` Dart fallback). Both Rust and Dart XDF loaders now snap effective LSL clock rates within `0.5%` of `nominal_srate` back to the exact nominal rate (e.g. `250.0 Hz` instead of `250.0009988 Hz`), preventing downstream EDF/preprocessing sampling-rate failures.
+- **CCSEEG Fallback & Unlocated Non-EEG Channel Guard:** Automatically falls back to `.ccseeg` when an EDF header cannot represent a non-integer or irregular sampling rate cleanly. Added automatic detection of channels lacking 10–20/10–05 scalp coordinates (e.g. `X`, `Y`, `Z` motion/aux channels) with an on-open prompt and inline Step 1 warning + one-click removal button before preprocessing.
+- **Coordinated 3-Step Epochs & ERP Workspace:** Redesigned `Epochs & ERP` around a unified 3-step sidebar (**1. Define ERP Protocol** with interactive epoch shades on the continuous EEG plot, **2. Epoch Review & Analysis**, **3. Measurements, Plots & Save**) and a single top view switcher (`ERPimage | Distributed | Butterfly | ERP & Topo | ERSP & ITC | rERP & ML | Measurements`) sharing one accepted-trial set, active electrode, and measurement window.
+- **Upgraded ERPimage & Event Group Clarity:** Upgraded `ErpImagePanel` to an EEGLAB-style RdBu diverging heatmap (`Smooth: 1/3/5/10 trials`), right-side `µV` colorbar, `#trial` Y-axis ticks, inline `Group` selector (`Both` / individual conditions), left-gutter condition color strips with horizontal block dividers, and an inline `Topo ms` window linked to the main measurement window.
+- **Butterfly Plot Alignment & Separate GFP Strip:** Highlighted only the single selected electrode in red on `ErpButterflyPainter`, moved **Global Field Power (GFP)** into its own dedicated lower strip with its own Y-axis, and aligned horizontal time axes (`-200 .. 0 .. 800 ms`) vertically with `Live ERP Preview`.
+- **ERSP/ITC Linked Topoplots, Consolidated Tabs & Channel Algebra Fix:** Added interactive time–frequency ROI inputs (`Start ms`, `End ms`, `Min Hz`, `Max Hz`) in **ERSP & ITC** synced to the scalp topographies, consolidated the ERP suite from 10 tabs to 5 (`ERP & Topo`, `ERPimage`, `ERSP & ITC`, `rERP & ML`, `Measurements & Export`), increased vertical space for the `Distributed` all-epochs viewer, and fixed **Custom Channel Algebra** (`N2pc`, `LRP`, `Custom Ch A − Ch B`) to read `channel_a` and `channel_b` waveforms properly.
+
+## [1.2.46]
+
+### Unified Epoch Selection, Scalp Topoplots & Butterfly/ERPimage Fixes
+
+- **Common Epoch Selection:** Removed the separate per-tab trial exclusion state in **ERSP & ITC** so **ERP**, **ERPimage**, **rERP**, **ML Decoding**, **ERSP**, and **ITC** all operate on the exact same accepted epochs from **Trial Review & ERPimage**, with a 1-click **Modify in Trial Review** link.
+- **Interconnected ERP Tabs:** Added **ERPimage** directly inside **ERP Analysis & Measurements** next to **Waveforms (ERP)**, **Models (rERP)**, **Decoding (ML)**, and **ERSP & ITC**, with synchronized active channel and measurement window selection.
+- **Scalp Topoplots Across All Modules:** Added all-channel **ERSP (dB)** and **ITC (0–1)** scalp topographies in Rust (`ersp_itc`) and UI, **ERPimage** window-mean topoplot, **rERP** beta topoplot, and **ML Decoding** spatial activation pattern (`channel_patterns`) topoplot at Peak AUC.
+- **Butterfly Plot & ERPimage Fixes:** Fixed `_extractButterflyChannelWaves` and rERP's Conventional ERP overlay to read `channel_a`, `channel_b`, and `channel_difference` from `erp_results.ccserp`, and fixed `ErpImagePanel` to repaint immediately when changing sort order.
+
 ## [1.2.45]
 
 ### ERP Analysis Overhaul, Time-Frequency (ERSP/ITC) & Topoplot Selection

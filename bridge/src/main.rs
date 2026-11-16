@@ -101,6 +101,49 @@ fn main() -> Result<(), String> {
         println!("{}", serde_json::to_string(&result).map_err(err)?);
         return Ok(());
     }
+    if erp_value["job_type"].as_str() == Some("inspect_xdf") {
+        let input = erp_value["input"].as_str().ok_or("missing input path")?;
+        let output = erp_value["output"].as_str().ok_or("missing output binary path")?;
+        let stream_id = erp_value["stream_id"].as_u64().map(|v| v as u32);
+        let xdf = ccs_eeg_engine::xdf_loader::load_xdf_stream(Path::new(input), stream_id)?;
+        let n_samples = xdf.recording.channels.first().map(Vec::len).unwrap_or(0);
+        {
+            let file = fs::File::create(output).map_err(err)?;
+            let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+            let mut buf = Vec::with_capacity(n_samples * 4);
+            for ch in &xdf.recording.channels {
+                buf.clear();
+                for &v in ch {
+                    buf.extend_from_slice(&v.to_le_bytes());
+                }
+                writer.write_all(&buf).map_err(err)?;
+            }
+            writer.flush().map_err(err)?;
+        }
+        let markers: Vec<serde_json::Value> = xdf
+            .events
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "type": xdf.stream_name,
+                    "description": e.label,
+                    "start_seconds": e.onset,
+                })
+            })
+            .collect();
+        let json = serde_json::json!({
+            "sample_rate": xdf.recording.rate,
+            "labels": xdf.recording.labels,
+            "sample_count": n_samples,
+            "stream_id": xdf.stream_id,
+            "stream_name": xdf.stream_name,
+            "markers": markers,
+            "binary_path": output,
+            "format": "xdf",
+        });
+        println!("{}", serde_json::to_string(&json).map_err(err)?);
+        return Ok(());
+    }
     let job: Job = serde_json::from_slice(&fs::read(&job_path).map_err(err)?).map_err(err)?;
     eprintln!("PROGRESS 0 Loading {}", job.input);
     if job.job_type == "microstates" {

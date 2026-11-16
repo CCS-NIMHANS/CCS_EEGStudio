@@ -161,7 +161,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(config.stimTmin, -.6);
-      final create = find.text('Create / load trial preview');
+      final create = find.text('Create Epochs & Review');
       await tester.ensureVisible(create);
       await tester.pumpAndSettle();
       await tester.runAsync(() async {
@@ -250,7 +250,7 @@ void main() {
           image.dispose();
         });
       }
-      await tester.tap(find.text('ERP Analysis & Measurements'));
+      await tester.tap(find.text('Measurements'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
       expect(tester.takeException(), isNull);
