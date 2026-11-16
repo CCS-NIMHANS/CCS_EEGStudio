@@ -4,6 +4,15 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.48]
+
+### All-States Dynamics Comparison, Batch Step Toggles & CI Node 24 Upgrade
+
+- **State Dynamics All-States Comparison:** Added a side-by-side **Compare All States** view in **State Feature Mapping** so all pooled states are shown together on one page with shared metric rows, clickable state cards, and the active state highlighted (`ACTIVE`).
+- **Intuitive Batch Preprocessing Step Toggles:** Replaced the disabled `Apply` button inside Batch Stage 1 preprocessing step cards with interactive **Checkbox + Switch** toggles (`Included` / `Skipped`) directly on each card header (`Resample`, `Bandpass + notch filter`, `Detect bad channels`, `ICA / ICLabel`, `Muscle / motion cleaning`, `ASR on output`, `GEDAI`, `Bad channel interpolation`, `Re-reference`).
+- **GitHub Actions Node 24 Support:** Upgraded `actions/upload-artifact` (`v4` → `v7`) and `actions/download-artifact` (`v4` → `v8`) in `.github/workflows/build.yml` to eliminate Node.js 20 deprecation warnings.
+- **Updated Documentation & Screenshots:** Incorporated all updated and newly added screenshots (`eeg_feature_plots.png`, `batch_progress.png`, `erpimage.png`, `erp_butterflyplot.png`, `erp_topo.png`, `ersp_itc.png`, `erp_regression_ml.png`, `erp_measurements.png`) into `README.md`.
+
 ## [1.2.47]
 
 ### Streamlined Epochs & ERP Suite, Rust XDF Import & Linked Topoplots

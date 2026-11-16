@@ -572,6 +572,44 @@ class _FeatureHomeState extends State<FeatureHome>
     return !_previewNeedsFinalizing;
   }
 
+  bool _batchStepEnabled(String id) => switch (id) {
+    'resample' => _cfg.downsample,
+    'filter' => _cfg.filter,
+    'badchannels' => _cfg.badChannels,
+    'ica' => _cfg.icaMethod != 'none',
+    'muscle' => _cfg.muscleMethod != 'none',
+    'asr' => _cfg.asrMode != 'none',
+    'gedai' => _cfg.gedai,
+    'interpolate' => _cfg.interpolate,
+    'reference' => _cfg.referenceMode != 'none',
+    _ => false,
+  };
+
+  void _setBatchStepEnabled(String id, bool enabled) {
+    setState(() {
+      switch (id) {
+        case 'resample':
+          _cfg.downsample = enabled;
+        case 'filter':
+          _cfg.filter = enabled;
+        case 'badchannels':
+          _cfg.badChannels = enabled;
+        case 'ica':
+          _cfg.icaMethod = enabled ? 'runica' : 'none';
+        case 'muscle':
+          _cfg.muscleMethod = enabled ? 'cca' : 'none';
+        case 'asr':
+          _cfg.asrMode = enabled ? 'burst_repair' : 'none';
+        case 'gedai':
+          _cfg.gedai = enabled;
+        case 'interpolate':
+          _cfg.interpolate = enabled;
+        case 'reference':
+          _cfg.referenceMode = enabled ? 'average' : 'none';
+      }
+    });
+  }
+
   Widget _previewStep(
     String id,
     String title,
@@ -579,6 +617,7 @@ class _FeatureHomeState extends State<FeatureHome>
     Map<String, dynamic> settings,
     List<Widget> children,
   ) {
+    final batchEnabled = _batchMaximized ? _batchStepEnabled(id) : false;
     final applied = _appliedPreviewSteps.containsKey(id);
     final changed =
         applied &&
@@ -590,38 +629,64 @@ class _FeatureHomeState extends State<FeatureHome>
         initiallyExpanded: false,
         tilePadding: const EdgeInsets.symmetric(horizontal: 8),
         childrenPadding: const EdgeInsets.all(10),
-        leading: Icon(
-          applied ? Icons.check_circle : Icons.radio_button_unchecked,
-          color: applied ? _accentGreen : _textMuted,
-          size: 20,
-        ),
+        leading: _batchMaximized
+            ? Checkbox(
+                value: batchEnabled,
+                onChanged: _running
+                    ? null
+                    : (v) => _setBatchStepEnabled(id, v ?? false),
+                activeColor: _accentGreen,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              )
+            : Icon(
+                applied ? Icons.check_circle : Icons.radio_button_unchecked,
+                color: applied ? _accentGreen : _textMuted,
+                size: 20,
+              ),
         title: Text(
           title,
           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
         ),
         subtitle: Text(
-          applied
+          _batchMaximized
+              ? (batchEnabled ? 'Included · $summary' : 'Skipped · $summary')
+              : applied
               ? (changed
                     ? 'Applied · settings changed'
                     : id == 'ica' && _activeRecording != null
                     ? icaOcularOutcome(_activeRecording!)
                     : 'Applied to waveform')
               : summary,
-          style: const TextStyle(fontSize: 11),
-        ),
-        trailing: TextButton(
-          onPressed:
-              _running || _batchMaximized || (_raw ?? _activeRecording) == null
-              ? null
-              : () => _togglePreviewStep(id, settings),
-          child: Text(
-            changed
-                ? 'Update'
-                : applied
-                ? 'Disable'
-                : 'Apply',
+          style: TextStyle(
+            fontSize: 11,
+            color: _batchMaximized
+                ? (batchEnabled ? _accentGreen : _textMuted)
+                : null,
           ),
         ),
+        trailing: _batchMaximized
+            ? Switch(
+                value: batchEnabled,
+                onChanged: _running
+                    ? null
+                    : (v) => _setBatchStepEnabled(id, v),
+                activeThumbColor: _accentGreen,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              )
+            : TextButton(
+                onPressed:
+                    _running || (_raw ?? _activeRecording) == null
+                    ? null
+                    : () => _togglePreviewStep(id, settings),
+                child: Text(
+                  changed
+                      ? 'Update'
+                      : applied
+                      ? 'Disable'
+                      : 'Apply',
+                ),
+              ),
         children: [
           ...children,
           if (changed)

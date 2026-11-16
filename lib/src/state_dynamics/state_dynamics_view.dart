@@ -294,6 +294,7 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
   String _displayBand = 'Gamma1';
   String _reprChannel = 'Fz';
   String _selectedFamily = 'All';
+  bool _showAllStates = true;
   final bool _rankTransform = false;
 
   bool _loading = false;
@@ -1044,14 +1045,25 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              '${res.featureSet} features, ${res.chosenK} pooled states: State Feature Mapping (dot = sig vs rest & |r|>=0.5 or IV>=${res.ivThreshold})',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            Expanded(
+              child: Text(
+                '${res.featureSet} features, ${res.chosenK} pooled states: State Feature Mapping (dot = sig vs rest & |r|>=0.5 or IV>=${res.ivThreshold})',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
             ),
-            // State selector chips
+            const SizedBox(width: 8),
+            // State selector chips + All-States comparison toggle
             Wrap(
               spacing: 4,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
+                FilterChip(
+                  label: const Text('Compare All States', style: TextStyle(fontSize: 11)),
+                  selected: _showAllStates,
+                  onSelected: (v) => setState(() => _showAllStates = v),
+                  visualDensity: VisualDensity.compact,
+                ),
                 for (final st in res.states)
                   ChoiceChip(
                     label: Text('State ${st.label} (${st.durationMin.toStringAsFixed(1)} min)'),
@@ -1124,18 +1136,153 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
             ),
           ),
 
-        // Interactive Heatmap Grid
+        // Interactive Heatmap Grid (All States side-by-side or Single State)
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
-          child: _buildHeatmapGrid(activeState, res, theme),
+          child: _showAllStates && res.states.length > 1
+              ? _buildAllStatesComparisonGrid(res, activeLabel, theme)
+              : _buildHeatmapGrid(activeState, res, theme),
         ),
       ],
     );
   }
 
-  Widget _buildHeatmapGrid(StateSummary st, StateDynamicsResult res, ThemeData theme) {
-    const double cellW = 32;
-    const double cellH = 14;
+  Widget _buildAllStatesComparisonGrid(
+    StateDynamicsResult res,
+    String activeLabel,
+    ThemeData theme,
+  ) {
+    const double cellW = 19;
+    const double cellH = 13;
+    final matchingRowIndices = <int>[];
+    for (var r = 0; r < res.metrics.length; r++) {
+      final m = res.metrics[r];
+      if (_selectedFamily == 'All' || m.startsWith('$_selectedFamily|')) {
+        matchingRowIndices.add(r);
+      }
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Shared metric labels on the left
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            const SizedBox(height: 102), // header badge (32) + rotated ROI headers (70)
+            for (final r in matchingRowIndices)
+              SizedBox(
+                height: cellH,
+                child: Text(
+                  res.metrics[r],
+                  style: const TextStyle(fontSize: 9),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(width: 8),
+        for (final st in res.states) ...[
+          Builder(
+            builder: (_) {
+              final isSelected = st.label == activeLabel;
+              final stColor = _parseHex(st.color);
+              return InkWell(
+                onTap: () => setState(() => _selectedStateLabel = st.label),
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(6, 4, 6, 6),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? stColor.withValues(alpha: 0.14)
+                        : Colors.white.withValues(alpha: 0.02),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isSelected ? stColor : Colors.white12,
+                      width: isSelected ? 2.2 : 1.0,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        height: 26,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: stColor,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              'State ${st.label} (${st.percentTime.toStringAsFixed(0)}%)',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                                color: isSelected ? Colors.white : Colors.white70,
+                              ),
+                            ),
+                            if (isSelected) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: stColor,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: const Text(
+                                  'ACTIVE',
+                                  style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.black,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      _buildHeatmapGrid(
+                        st,
+                        res,
+                        theme,
+                        showMetricLabels: false,
+                        showColorbar: false,
+                        cellW: cellW,
+                        cellH: cellH,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(width: 8),
+        ],
+        const SizedBox(width: 4),
+        Padding(
+          padding: const EdgeInsets.only(top: 32),
+          child: _buildColorBar(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHeatmapGrid(
+    StateSummary st,
+    StateDynamicsResult res,
+    ThemeData theme, {
+    bool showMetricLabels = true,
+    bool showColorbar = true,
+    double cellW = 32,
+    double cellH = 14,
+  }) {
     final nCols = res.rois.length;
 
     final matchingRowIndices = <int>[];
@@ -1149,23 +1296,25 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Metric labels on left
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            const SizedBox(height: 70), // space for top rotated ROI headers
-            for (final r in matchingRowIndices)
-              SizedBox(
-                height: cellH,
-                child: Text(
-                  res.metrics[r],
-                  style: const TextStyle(fontSize: 9),
-                  overflow: TextOverflow.ellipsis,
+        if (showMetricLabels) ...[
+          // Metric labels on left
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              const SizedBox(height: 70), // space for top rotated ROI headers
+              for (final r in matchingRowIndices)
+                SizedBox(
+                  height: cellH,
+                  child: Text(
+                    res.metrics[r],
+                    style: const TextStyle(fontSize: 9),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-          ],
-        ),
-        const SizedBox(width: 8),
+            ],
+          ),
+          const SizedBox(width: 8),
+        ],
 
         // Heatmap Cells & Column Headers
         Column(
@@ -1243,9 +1392,11 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
           ],
         ),
 
-        const SizedBox(width: 16),
-        // Colorbar legend
-        _buildColorBar(),
+        if (showColorbar) ...[
+          const SizedBox(width: 16),
+          // Colorbar legend
+          _buildColorBar(),
+        ],
       ],
     );
   }

@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.47</b> ·
+  <b>Current version: 1.2.48</b> ·
   <a href="CHANGELOG.md">Detailed changelog</a> ·
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/issues">Report a problem</a>
 </p>
@@ -115,6 +115,12 @@ The updater fetches the current installer on each run. Downloads use a private t
 | ⬆️ | Built-in update checker downloads and installs verified packages directly from GitHub Releases |
 
 ---
+
+## New in 1.2.48: All-States Dynamics Comparison, Batch Step Toggles & Updated Workflow Screenshots
+
+- **All-States Feature Mapping Comparison:** **State Dynamics Analysis** now renders all pooled states side-by-side on one page for instant cross-state comparison, with the currently selected state highlighted and clickable (plus a toggle back to single-state view).
+- **Intuitive Batch Preprocessing Step Selection:** **Stage 1: Preprocessing** in the Batch Workspace now provides direct checkboxes and on/off switches on each preprocessing card header (`Included` vs `Skipped`) so batch pipelines can be configured without expanding every card.
+- **GitHub Actions Node 24 Upgrade & Updated Documentation:** Upgraded CI artifact actions to `actions/upload-artifact@v7` and `actions/download-artifact@v8` for native Node.js 24 support, and updated `README.md` with screenshots across the full continuous, batch, and ERP/ERSP/rERP/ML workflows. See [CHANGELOG.md](CHANGELOG.md#1248) for full details across 1.2.45–1.2.48.
 
 ## New in 1.2.47: Streamlined Epochs & ERP Suite, Rust XDF Import & Linked Topoplots
 
@@ -576,7 +582,9 @@ For already-cleaned recordings, **Epoch only (keep existing cleaning)** preserve
 
 ## 🖥️ Application Screenshots
 
-| Main Workspace | Channel Selection & Overrides |
+### Main Workspace, Preprocessing & Feature Extraction
+
+| Main Workspace | Channel Selection & Montage |
 | :---: | :---: |
 | ![Main Window](screenshots/main.png) | ![Channel Selection](screenshots/channel_selection.png) |
 
@@ -584,9 +592,29 @@ For already-cleaned recordings, **Epoch only (keep existing cleaning)** preserve
 | :---: | :---: |
 | ![Preprocessing Options](screenshots/preprocessing_options.png) | ![Feature Extraction Options](screenshots/feature_extraction_options.png) |
 
-| Batch Analysis Pipeline |
+| Continuous Feature Plots & State Dynamics |
 | :---: |
-| ![Batch Analysis Pipeline](screenshots/batch_analysis.png) |
+| ![EEG Feature Plots](screenshots/eeg_feature_plots.png) |
+
+### Batch Processing Pipeline
+
+| Batch Analysis Pipeline | Batch Progress & Live Status |
+| :---: | :---: |
+| ![Batch Analysis Pipeline](screenshots/batch_analysis.png) | ![Batch Progress](screenshots/batch_progress.png) |
+
+### Epochs & ERP Analysis Suite
+
+| ERPimage Heatmap & Linked Topo | Butterfly Plot & Separate GFP Strip |
+| :---: | :---: |
+| ![ERPimage](screenshots/erpimage.png) | ![ERP Butterfly Plot](screenshots/erp_butterflyplot.png) |
+
+| ERP Waveforms & Scalp Topographies | ERSP & ITC Time–Frequency Topoplots |
+| :---: | :---: |
+| ![ERP & Topo](screenshots/erp_topo.png) | ![ERSP & ITC](screenshots/ersp_itc.png) |
+
+| rERP Overlap Correction & ML Decoding | Measurements, Tables & Export |
+| :---: | :---: |
+| ![rERP & ML](screenshots/erp_regression_ml.png) | ![ERP Measurements](screenshots/erp_measurements.png) |
 
 ---
 
