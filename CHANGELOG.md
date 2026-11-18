@@ -13,6 +13,13 @@ its matching section is missing.
 - **Factor & Grouping Designer (Folder/BIDS, CSV/Excel `.xlsx`, Interactive Filename Cropper & Grouping Tree):** Added `FactorGroupingDesignerDialog` (`TabularSheetReader` supporting `.xlsx`, `.csv`, and `.tsv` sheets like `Groups.xlsx` in pure Dart) with BIDS/folder auto-detection, an interactive **Filename Factor Cropper** that automatically infers extraction rules (keyword+digits, delimiter tokens, context anchors, or fixed slices) with live preview across all files, user-defined multi-factor management, and an interactive **Grouping Tree** to include or reject factor levels, branches, or individual files.
 - **N-Way Permutation GLM / LMM & Configurable Statistical Plots with Dummy Preview:** Added pure-Dart `ErpGroupStatsEngine` supporting N-way Factorial GLM and Linear Mixed Models (LMM with subject random intercepts) with exchangeable permutation testing (`p_perm`) and FDR/Bonferroni post-hoc contrasts. Added `ConfigurableStatsPlotWidget` allowing users to assign any factor to **X-Axis (Points)**, **Lines/Hue (Series)**, **Subplot Columns**, and **Subplot Rows**, reorder/exclude factor levels, and inspect a live **Sample Dummy Preview** before running analysis.
 
+## [1.2.50]
+
+### Interactive Batch File Selector, Unbiased Grand Average Localizer & Permutation GLM/LMM
+
+- **Interactive Batch File Selector & Unbiased Grand Average Localizer:** Added an interactive batch file selector (`batch_file_selector.dart`), unbiased grand-average localizer, factor grouping designer, permutation GLM/LMM statistics, and configurable ERP/statistics plots.
+- **CI Workflow & Linux Media Build Fix:** Upgraded `actions/upload-artifact` (`v7`) and `actions/download-artifact` (`v8`) for Node.js 24, and added `libmpv-dev` + `mpv` to Linux CI dependencies for `media_kit_video`.
+
 ## [1.2.49]
 
 ### Synced Video/Audio, Neural Speech Tracking, XPIKAN Source Localization & Core Reliability Fixes
