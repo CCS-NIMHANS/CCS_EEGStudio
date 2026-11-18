@@ -64,7 +64,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Upload validated release notes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md
@@ -165,7 +165,7 @@ jobs:
             dist/CCSEEGStudio-macos.zip
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CCSEEGStudio-macos
           path: dist/CCSEEGStudio-macos.zip
@@ -246,7 +246,7 @@ jobs:
             /F"CCSEEGStudio-Installer" windows\installer.iss
 
       - name: Upload Windows installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CCSEEGStudio-Installer
           path: dist\CCSEEGStudio-Installer.exe
@@ -276,7 +276,7 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y \
             clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libblkid-dev \
+            libgtk-3-dev liblzma-dev libblkid-dev libmpv-dev mpv \
             dpkg-dev rpm
 
       # ── Rust: engine build (static musl binary for universal GLIBC compatibility) ──
@@ -373,7 +373,7 @@ jobs:
         run: tar -C build/linux/x64/release/bundle -czf dist/CCSEEGStudio-linux-x86_64.tar.gz .
 
       - name: Upload Linux installer artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CCSEEGStudio-linux-installers
           path: |
@@ -402,25 +402,25 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download release notes
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-notes
           path: release
 
       - name: Download macOS artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: CCSEEGStudio-macos
           path: dist
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: CCSEEGStudio-Installer
           path: dist
 
       - name: Download Linux artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: CCSEEGStudio-linux-installers
           path: dist
