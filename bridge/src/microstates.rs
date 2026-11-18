@@ -264,6 +264,17 @@ pub fn analyse(
         }
         samples.flush().map_err(|e|e.to_string())?;
 
+        // Export dedicated per-file / per-epoch microstate sequence files for downstream analysis
+        let seq_csv = format!("{:03}_{}_microstate_sequence.csv", ri + 1, safe_stem(&p.name));
+        let mut seq_out = std::io::BufWriter::new(fs::File::create(output_dir.join(&seq_csv)).map_err(|e| e.to_string())?);
+        writeln!(seq_out, "epoch_index,sequence_indices,sequence_labels,n_samples").map_err(|e| e.to_string())?;
+        for (ei, ep_labels) in trials.iter().enumerate() {
+            let idx_str: String = ep_labels.iter().map(|&s| (s + 1).to_string()).collect::<Vec<_>>().join(" ");
+            let lbl_str: String = ep_labels.iter().map(|&s| state_labels[s].as_str()).collect::<Vec<_>>().join(" ");
+            writeln!(seq_out, "{},\"{}\",\"{}\",{}", ei + 1, idx_str, lbl_str, ep_labels.len()).map_err(|e| e.to_string())?;
+        }
+        seq_out.flush().map_err(|e| e.to_string())?;
+
         let state_probabilities = normalized_fit_probabilities(&correlations);
         let state_stats = calculate_stats(p, &labels, &correlations, &prototypes, &state_labels);
         let mut transition_matrix = vec![vec![0.;selected];selected];

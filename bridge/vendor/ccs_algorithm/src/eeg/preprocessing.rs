@@ -24,6 +24,8 @@ pub struct PreprocessOptions {
     pub notch_hz: f64,
     #[serde(default = "default_true")]
     pub badchannel: bool,
+    #[serde(default)]
+    pub manual_bad_channels: Vec<String>,
     #[serde(default="default_bad_variance_ratio")]
     pub bad_variance_ratio:f64,
     #[serde(default="default_spline_stiffness")]
@@ -410,12 +412,20 @@ pub fn run(
         })?;
     }
 
-    let bad_channels = if options.badchannel {
+    let mut bad_channels = if options.badchannel {
         detect_bad_channels_configured(rec,options.bad_variance_ratio)
     } else {
         Vec::new()
     };
-    if options.badchannel { cache.add("badchannels", params(&["bad_variance_ratio"])); }
+    for manual in &options.manual_bad_channels {
+        let trimmed = manual.trim();
+        if !trimmed.is_empty() && !bad_channels.iter().any(|b| b.eq_ignore_ascii_case(trimmed)) {
+            bad_channels.push(trimmed.to_string());
+        }
+    }
+    if options.badchannel || !options.manual_bad_channels.is_empty() {
+        cache.add("badchannels", params(&["badchannel", "bad_variance_ratio", "manual_bad_channels"]));
+    }
     let ica_on = matches!(options.ica_method.as_str(), "runica" | "picard");
     let asr_on = matches!(options.asr_mode.as_str(), "correct" | "reject");
     let muscle_on = matches!(options.muscle_method.as_str(), "bss_cca" | "icanclean" | "wica");
@@ -944,11 +954,25 @@ fn reflect_index(index: isize, len: usize) -> usize {
 fn detect_bad_channels(rec:&Recording)->Vec<String>{detect_bad_channels_configured(rec,25.0)}
 fn detect_bad_channels_configured(rec: &Recording, variance_ratio:f64) -> Vec<String> {
     let mut bad_chs: Vec<String> = Vec::new();
+    let n_ch = rec.channels.len();
+    if n_ch == 0 {
+        return bad_chs;
+    }
 
     let vars: Vec<f64> = rec.channels.iter().map(|ch| variance_f32(ch)).collect();
     let med = median(vars.clone());
-    for (i, var) in vars.iter().enumerate() {
-        if *var < 1e-18 || *var > med * variance_ratio {
+
+    // Robust log-variance MAD z-score
+    let log_vars: Vec<f64> = vars.iter().map(|v| (v + 1e-12).log10()).collect();
+    let med_log = median(log_vars.clone());
+    let abs_devs: Vec<f64> = log_vars.iter().map(|lv| (lv - med_log).abs()).collect();
+    let mad_log = (median(abs_devs) * 1.4826).max(0.15);
+
+    for (i, &var) in vars.iter().enumerate() {
+        let z_log = (log_vars[i] - med_log) / mad_log;
+        let is_flat = !var.is_finite() || var < 1e-12 || (med > 1e-6 && var < med * 0.005);
+        let is_huge = med > 0.0 && (var > med * variance_ratio || z_log > 4.5);
+        if is_flat || is_huge {
             let label = rec.labels[i].clone();
             if !bad_chs.contains(&label) {
                 bad_chs.push(label);
@@ -956,7 +980,59 @@ fn detect_bad_channels_configured(rec: &Recording, variance_ratio:f64) -> Vec<St
         }
     }
 
+    // Spatial correlation check across strided samples (fast O(C^2 * N_sub))
+    if n_ch >= 6 {
+        let n_samp = rec.channels.iter().map(|c| c.len()).min().unwrap_or(0);
+        if n_samp >= 64 {
+            let stride = (n_samp / 4000).max(1);
+            let sub: Vec<Vec<f64>> = rec
+                .channels
+                .iter()
+                .map(|ch| ch.iter().step_by(stride).map(|&v| v as f64).collect())
+                .collect();
+            for i in 0..n_ch {
+                if bad_chs.contains(&rec.labels[i]) {
+                    continue;
+                }
+                let mut max_abs_r = 0.0_f64;
+                for j in 0..n_ch {
+                    if i == j || bad_chs.contains(&rec.labels[j]) {
+                        continue;
+                    }
+                    let r = pearson_f64(&sub[i], &sub[j]).abs();
+                    if r.is_finite() && r > max_abs_r {
+                        max_abs_r = r;
+                    }
+                }
+                if max_abs_r < 0.25 {
+                    bad_chs.push(rec.labels[i].clone());
+                }
+            }
+        }
+    }
+
     bad_chs
+}
+
+fn pearson_f64(left: &[f64], right: &[f64]) -> f64 {
+    let n = left.len().min(right.len());
+    if n < 2 {
+        return 0.0;
+    }
+    let mean_left = left.iter().take(n).sum::<f64>() / n as f64;
+    let mean_right = right.iter().take(n).sum::<f64>() / n as f64;
+    let mut num = 0.0;
+    let mut lv = 0.0;
+    let mut rv = 0.0;
+    for i in 0..n {
+        let a = left[i] - mean_left;
+        let b = right[i] - mean_right;
+        num += a * b;
+        lv += a * a;
+        rv += b * b;
+    }
+    let denom = (lv * rv).sqrt();
+    if denom <= 1e-18 { 0.0 } else { num / denom }
 }
 
 #[allow(dead_code)]

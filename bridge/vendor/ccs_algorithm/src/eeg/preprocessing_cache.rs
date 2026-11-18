@@ -74,5 +74,13 @@ fn write_checkpoint(path: &std::path::Path, header: &Header, data: &[Vec<f64>]) 
     file.write_all(&bytes).map_err(|e|e.to_string())?;
     for channel in data { for v in channel { file.write_all(&v.to_le_bytes()).map_err(|e|e.to_string())?; } }
     file.flush().map_err(|e|e.to_string())?; drop(file);
-    fs::rename(&temp,path).map_err(|e|e.to_string())
+    #[cfg(windows)]
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+    if let Err(_) = fs::rename(&temp, path) {
+        fs::copy(&temp, path).map_err(|e| e.to_string())?;
+        let _ = fs::remove_file(&temp);
+    }
+    Ok(())
 }

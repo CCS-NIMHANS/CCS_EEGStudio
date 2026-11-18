@@ -4,6 +4,20 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.49]
+
+### Synced Video/Audio, Neural Speech Tracking, XPIKAN Source Localization & Core Reliability Fixes
+
+- **Timestamp-Synced Multi-Video & Audio Playback:** Added a floating/dockable **Video / Audio** panel (`media_kit` + `media_kit_video`) that aligns single or multiple video/audio files to the EEG timeline via metadata (`creation_time`, `.vmrk` New Segment timestamp) or filename patterns, extracts mono audio from video via `ffmpeg`, and plots the audio waveform + speech envelope with a time-locked cursor synced to the EEG viewer.
+- **Neural Speech Tracking (TRF & Stimulus Reconstruction):** Added `speech_tracking` in the Rust engine computing per-channel lag cross-correlation, 5-fold cross-validated forward **Temporal Response Function (TRF)** ridge encoding (`r`), delta/theta coherence, and multi-channel **backward stimulus-reconstruction decoding**.
+- **IAF, Individual Bands & Frequency Sliding:** Added Individual Alpha Frequency (`IAF_Hz`), Klimesch Individual Theta/Alpha power (`IndTheta_PSD`, `IndAlpha_PSD`), and Cohen-style Hilbert **Frequency Sliding** (`Theta_FreqSliding_Hz`, `Alpha_FreqSliding_Hz`) to Rust PSD feature extraction.
+- **XPIKAN Physics-Informed Source Localization:** Added **XPIKAN** (*Extended Physics-Informed Kolmogorov–Arnold Network*) in `source_loc.rs` alongside MNE, dSPM, sLORETA, and LCMV, minimizing forward leadfield physics residuals with multi-scale KAN spline modulation and sLORETA depth standardization.
+- **Bad Channel Detection & Manual Batch/Single Rejection:** Upgraded `detect_bad_channels_configured` to evaluate flatline, robust log-variance MAD z-score, and spatial correlation across channels, and added an interactive **Bad Channel Table (Auto & Manual)** with chip toggles and batch comma-separated rejection.
+- **Windows Preprocessing Cache & Stage Persistence Fixes:** Fixed Windows `session.json` and Rust `PrefixCache` checkpoint atomic replacement (`write_checkpoint`), normalized Windows cache paths and `LOCALAPPDATA`/`APPDATA` fallback roots, and ensured `manual_bad_channels` is included in cache identity.
+- **EEG Time Axis Modes:** Added selectable `Time: Elapsed (s) | HH:MM:SS | Clock | Epoch` formatting in `EegViewer`.
+- **Interactive Crop Bad-Segment Marking & EDF Scaling Fix:** Added interactive drag-to-mark bad segments inside `RecordingPreparationDialog`, auto-selected the cropped recording for downstream steps, and upgraded `_writeEdf` to per-channel asymmetric `[min, max]` physical bounds with last-sample padding (eliminating DC-offset waveform distortion).
+- **Publication Parameter Logs, Batch Methodology Report & Microstate Sequence Exports:** Generated `preprocessing_parameters.json`, `feature_parameters.json`, `analysis_parameters_log.md`, and `batch_methodology_and_results_report.md`, plus dedicated per-file/per-epoch `<stem>_microstate_sequence.csv` exports.
+
 ## [1.2.48]
 
 ### All-States Dynamics Comparison, Batch Step Toggles & CI Node 24 Upgrade

@@ -163,6 +163,7 @@ class PreprocessingOptions {
     this.sourceRegions = const [],
     this.epochBeforeGedai = false,
     this.nonEegChannels = const [],
+    this.manualBadChannels = const [],
     this.stimEpochs,
     this.icaMethod = 'none',
     this.icaBlink = true,
@@ -228,6 +229,8 @@ class PreprocessingOptions {
         : null,
     nonEegChannels:
         (json['non_eeg_channels'] as List?)?.cast<String>() ?? const [],
+    manualBadChannels:
+        (json['manual_bad_channels'] as List?)?.cast<String>() ?? const [],
     icaMethod: json['ica_method'] as String? ?? 'none',
     icaBlink: json['ica_blink'] as bool? ?? true,
     icaOther: json['ica_other'] as bool? ?? true,
@@ -329,6 +332,7 @@ class PreprocessingOptions {
   /// Channels the user has marked as non-EEG.  These are excluded from bad
   /// channel detection, interpolation and the common average reference.
   final List<String> nonEegChannels;
+  final List<String> manualBadChannels;
 
   Map<String, dynamic> toJson() => {
     if (previewCacheDir != null) 'preview_cache_dir': previewCacheDir,
@@ -361,6 +365,7 @@ class PreprocessingOptions {
     'source_regions': sourceRegions,
     'epoch_before_gedai': epochBeforeGedai,
     'non_eeg_channels': nonEegChannels,
+    'manual_bad_channels': manualBadChannels,
     'ica_method': icaMethod,
     'ica_blink': icaBlink,
     'ica_other': icaOther,
@@ -680,8 +685,10 @@ class AnalysisConfig {
       psd || fooof || irasa || nonlinear || dfaFei || acw || anyConnectivity;
 
   // ── Channel handling ─────────────────────────────────────────────────────
-  /// Drop non-EEG channels and re-reference to the common average.
+  /// Channels the user has marked as non-EEG.  These are excluded from bad
+  /// channel detection, interpolation and the common average reference.
   bool removeNonEeg = true;
+  List<String> manualBadChannels = [];
 
   /// Comma-separated filename exclusion patterns.
   List<String> exclusions = const ['OBD', 'HRDT', 'ARSQ'];
@@ -741,6 +748,7 @@ class AnalysisConfig {
         sourceLocalization: true,
         epochBeforeGedai: false,
         nonEegChannels: nonEegChannels,
+        manualBadChannels: manualBadChannels,
       );
     }
     return PreprocessingOptions(
@@ -772,6 +780,7 @@ class AnalysisConfig {
       sourceLocalization: false,
       epochBeforeGedai: stimEpochs ? false : epochBeforeGedai,
       nonEegChannels: nonEegChannels,
+      manualBadChannels: manualBadChannels,
       stimEpochs: stimEpochSpec,
       icaMethod: icaMethod,
       icaBlink: icaBlink,
@@ -865,6 +874,7 @@ class AnalysisConfig {
     'high_hz': highHz,
     'notch_hz': notchHz,
     'bad_channels': badChannels,
+    'manual_bad_channels': manualBadChannels,
     'interpolate': interpolate,
     'gedai': gedai,
     'gedai_epoch_seconds': gedaiEpochSeconds,

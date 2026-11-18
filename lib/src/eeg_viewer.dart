@@ -11,6 +11,8 @@ import 'models.dart';
 import 'event_navigation.dart';
 import 'erp/event_group_editor.dart';
 
+enum TimeAxisMode { elapsedSeconds, hhMmSs, clockTime, epoch }
+
 /// EEG waveform viewer styled after ScoringNidra / trainNidra.
 ///
 /// Supports a side-by-side Raw / Processed toggle when [rawRecording] is
@@ -114,6 +116,7 @@ class _EegViewerState extends State<EegViewer> {
           eeg.pointsPerEpoch! / eeg.sampleRate,
         )
       : _windowSeconds.toDouble();
+  TimeAxisMode _timeAxisMode = TimeAxisMode.elapsedSeconds;
   int _windowSeconds = 20;
   double _startSeconds = 0.0;
 
@@ -847,6 +850,18 @@ class _EegViewerState extends State<EegViewer> {
               );
             }),
           ),
+        // Time axis format
+        _dropdown<TimeAxisMode>(
+          value: _timeAxisMode,
+          items: TimeAxisMode.values,
+          label: (m) => switch (m) {
+            TimeAxisMode.elapsedSeconds => 'Time: Elapsed (s)',
+            TimeAxisMode.hhMmSs => 'Time: HH:MM:SS',
+            TimeAxisMode.clockTime => 'Time: Clock',
+            TimeAxisMode.epoch => 'Time: Epoch',
+          },
+          onChanged: (v) => setState(() => _timeAxisMode = v ?? _timeAxisMode),
+        ),
         // Trace spacing
         _dropdown<double>(
           value: _traceSpacing,
@@ -1518,6 +1533,7 @@ class _EegViewerState extends State<EegViewer> {
                 stitchedEpochs: _stitchEpochs,
                 visibleMarkers: _markersForView(eeg),
                 epochShades: widget.epochShades,
+                timeAxisMode: _timeAxisMode,
               ),
               child: const SizedBox.expand(),
             ),
@@ -2064,7 +2080,10 @@ class _EegSignalPainter extends CustomPainter {
     required this.stitchedEpochs,
     this.visibleMarkers = const [],
     this.epochShades = const [],
+    this.timeAxisMode = TimeAxisMode.elapsedSeconds,
   });
+
+  final TimeAxisMode timeAxisMode;
 
   final Map<String, Color> traceColors;
   final double? cursorSeconds;
@@ -2474,9 +2493,7 @@ class _EegSignalPainter extends CustomPainter {
       if (x >= plotLeft && x <= size.width) {
         canvas.drawLine(Offset(x, drawH), Offset(x, drawH + 5), tickPaint);
         labelPainter.text = TextSpan(
-          text: windowSeconds < 10
-              ? '${t.toStringAsFixed(2)} s'
-              : _formatTime(t),
+          text: _formatAxisTick(t),
           style: const TextStyle(
             fontFamily: 'DejaVuSans',
             fontSize: 9,
@@ -2544,13 +2561,32 @@ class _EegSignalPainter extends CustomPainter {
     return raw;
   }
 
-  static String _formatTime(double t) {
-    if (t < 120 && (t % 1).abs() < 1e-4) {
-      return '${t.round()} s';
+  String _formatAxisTick(double t) {
+    switch (timeAxisMode) {
+      case TimeAxisMode.elapsedSeconds:
+        return windowSeconds < 10
+            ? '${t.toStringAsFixed(2)} s'
+            : '${t.toStringAsFixed(0)} s';
+      case TimeAxisMode.hhMmSs:
+        final total = t.round().clamp(0, 86400 * 30);
+        final h = total ~/ 3600;
+        final m = (total % 3600) ~/ 60;
+        final s = total % 60;
+        return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+      case TimeAxisMode.clockTime:
+        final iso = eeg.provenance['recording_start_iso'] as String?;
+        final base = (iso != null ? DateTime.tryParse(iso) : null) ??
+            DateTime(2026, 1, 1);
+        final dt = base.add(Duration(milliseconds: (t * 1000).round()));
+        return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+      case TimeAxisMode.epoch:
+        final epLen = eeg.isEpoched
+            ? eeg.epochDurationSeconds
+            : math.max(1.0, windowSeconds);
+        final epIdx = (t / epLen).floor() + 1;
+        final offset = t - (epIdx - 1) * epLen;
+        return 'Ep$epIdx +${offset.toStringAsFixed(windowSeconds < 10 ? 1 : 0)}s';
     }
-    final m = (t ~/ 60);
-    final s = (t % 60).toStringAsFixed(0).padLeft(2, '0');
-    return m > 0 ? '$m:$s' : '${t.toStringAsFixed(0)} s';
   }
 
   @override
@@ -2570,7 +2606,8 @@ class _EegSignalPainter extends CustomPainter {
       old.stacked != stacked ||
       old.traceSpacing != traceSpacing ||
       old.stitchedEpochs != stitchedEpochs ||
-      old.visibleMarkers != visibleMarkers;
+      old.visibleMarkers != visibleMarkers ||
+      old.timeAxisMode != timeAxisMode;
 }
 
 Color _markerColor(String label) {

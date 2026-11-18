@@ -28,6 +28,7 @@ flowchart LR
 | [**2. Features & State Dynamics**](Features-and-State-Dynamics.md) | Spectral (PSD/FOOOF/IRASA), connectivity, nonlinear metrics (DFA/fE:I), microstates, feature plots, all-states feature mapping |
 | [**3. Epochs & ERP Suite**](Epochs-and-ERP-Suite.md) | 3-step ERP flow, protocol epoch shades, ERPimage, Distributed, Butterfly + separate GFP, ERP & Topo, ERSP & ITC, rERP & ML, Measurements |
 | [**4. Batch & Group Statistics**](Batch-and-Group-Statistics.md) | Multi-file Stage 1–4 pipeline, step toggles, live progress monitor, grand-average review, group statistics & shortcuts |
+| [**5. Synced Video/Audio & Speech Tracking**](Video-Audio-and-Speech-Tracking.md) | Multi-video/audio timestamp sync, waveform + speech envelope, Neural Speech Tracking (TRF & Decoder) |
 
 ---
 

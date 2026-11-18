@@ -144,6 +144,35 @@ fn main() -> Result<(), String> {
         println!("{}", serde_json::to_string(&json).map_err(err)?);
         return Ok(());
     }
+    if erp_value["job_type"].as_str() == Some("extract_audio_envelope") {
+        let audio_job: speech_tracking::AudioEnvelopeJob =
+            serde_json::from_value(erp_value.clone()).map_err(err)?;
+        let res = speech_tracking::run_audio_envelope(&audio_job)?;
+        println!("{}", serde_json::to_string(&res).map_err(err)?);
+        return Ok(());
+    }
+    if erp_value["job_type"].as_str() == Some("speech_tracking") {
+        let st_job: speech_tracking::SpeechTrackingJob =
+            serde_json::from_value(erp_value.clone()).map_err(err)?;
+        let p = &st_job.eeg_path;
+        let low = p.to_lowercase();
+        let rec = if low.ends_with(".edf") {
+            load_edf(Path::new(p))?
+        } else if low.ends_with(".fif") {
+            mne_fif::load_fif(Path::new(p))?
+        } else if low.ends_with(".xdf") {
+            ccs_eeg_engine::xdf_loader::load_xdf(Path::new(p))?.recording
+        } else if low.ends_with(".mat") {
+            fieldtrip_loader::load_fieldtrip(Path::new(p))?
+        } else if low.ends_with(".vhdr") {
+            vhdr_loader::load_vhdr(Path::new(p))?
+        } else {
+            preprocessing::load_portable(Path::new(p))?
+        };
+        let res = speech_tracking::run_speech_tracking(&st_job, &rec.channels, &rec.labels, rec.rate)?;
+        println!("{}", serde_json::to_string(&res).map_err(err)?);
+        return Ok(());
+    }
     let job: Job = serde_json::from_slice(&fs::read(&job_path).map_err(err)?).map_err(err)?;
     eprintln!("PROGRESS 0 Loading {}", job.input);
     if job.job_type == "microstates" {
@@ -937,6 +966,144 @@ fn groups_for_onsets(
     }
 }
 
+fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f64) {
+    use rustfft::{num_complex::Complex, FftPlanner};
+    let n = signal.len();
+    if n < 32 || !rate.is_finite() || rate < 30.0 {
+        return (10.0, 0.0, 0.0, 6.0, 10.0);
+    }
+
+    let nfft = n.next_power_of_two().max(256);
+    let mut planner = FftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(nfft);
+    let ifft = planner.plan_fft_inverse(nfft);
+
+    let mean = signal.iter().sum::<f64>() / n as f64;
+    let mut buf: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); nfft];
+    for (i, &v) in signal.iter().enumerate() {
+        let w = 0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / (n - 1).max(1) as f64).cos());
+        buf[i] = Complex::new((v - mean) * w, 0.0);
+    }
+    fft.process(&mut buf);
+
+    let df = rate / nfft as f64;
+    let max_bin = ((45.0 / df).floor() as usize).min(nfft / 2);
+    let mut freqs = Vec::new();
+    let mut psd = Vec::new();
+    let norm = rate * n as f64 * 0.375; // Hann window power normalization
+    for k in 1..=max_bin {
+        let f = k as f64 * df;
+        let p = (buf[k].norm_sqr() * 2.0 / norm.max(1e-12)).max(1e-20);
+        freqs.push(f);
+        psd.push(p);
+    }
+
+    // 1/f log-log background fit outside 7..14 Hz for robust IAF peak/CoG
+    let mut sx = 0.0;
+    let mut sy = 0.0;
+    let mut sxx = 0.0;
+    let mut sxy = 0.0;
+    let mut cnt = 0.0;
+    for (&f, &p) in freqs.iter().zip(&psd) {
+        if f >= 1.5 && (f < 7.0 || f > 14.0) {
+            let lx = f.ln();
+            let ly = p.ln();
+            sx += lx;
+            sy += ly;
+            sxx += lx * lx;
+            sxy += lx * ly;
+            cnt += 1.0;
+        }
+    }
+    let denom = (cnt * sxx - sx * sx).max(1e-12);
+    let slope = if cnt >= 4.0 { (cnt * sxy - sx * sy) / denom } else { 0.0 };
+    let intercept = if cnt >= 4.0 { (sy - slope * sx) / cnt } else { 0.0 };
+
+    let mut weighted_f = 0.0;
+    let mut weight_sum = 0.0;
+    let mut best_f = 10.0;
+    let mut best_res = f64::NEG_INFINITY;
+    for (&f, &p) in freqs.iter().zip(&psd) {
+        if (7.0..=14.0).contains(&f) {
+            let res = (p.ln() - (intercept + slope * f.ln())).max(0.0);
+            if res > best_res {
+                best_res = res;
+                best_f = f;
+            }
+            weighted_f += f * res;
+            weight_sum += res;
+        }
+    }
+    let iaf = if weight_sum > 1e-6 {
+        (0.5 * best_f + 0.5 * (weighted_f / weight_sum)).clamp(7.0, 14.0)
+    } else {
+        best_f.clamp(7.0, 14.0)
+    };
+
+    let alpha_lo = (iaf - 2.0).max(6.0);
+    let alpha_hi = (iaf + 2.0).min(16.0);
+    let theta_lo = (iaf - 6.0).max(2.0);
+    let theta_hi = alpha_lo.max(theta_lo + 1.0);
+
+    let band_sum = |lo: f64, hi: f64| -> f64 {
+        freqs
+            .iter()
+            .zip(&psd)
+            .filter(|&(&f, _)| f >= lo && f <= hi)
+            .map(|(_, &p)| p * df)
+            .sum()
+    };
+    let ind_theta_psd = band_sum(theta_lo, theta_hi);
+    let ind_alpha_psd = band_sum(alpha_lo, alpha_hi);
+
+    // Frequency sliding (Cohen 2014): Hilbert analytic phase derivative inside band
+    let mut raw_buf: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); nfft];
+    for (i, &v) in signal.iter().enumerate() {
+        raw_buf[i] = Complex::new(v - mean, 0.0);
+    }
+    fft.process(&mut raw_buf);
+
+    let freq_slide = |lo: f64, hi: f64, fallback: f64| -> f64 {
+        let mut analytic = vec![Complex::new(0.0, 0.0); nfft];
+        for k in 1..(nfft / 2) {
+            let f = k as f64 * df;
+            if f >= lo && f <= hi {
+                analytic[k] = raw_buf[k] * 2.0 / nfft as f64;
+            }
+        }
+        ifft.process(&mut analytic);
+        if n < 8 {
+            return fallback;
+        }
+        let mut inst = Vec::with_capacity(n - 1);
+        let two_pi = 2.0 * std::f64::consts::PI;
+        for i in 1..n {
+            let p0 = analytic[i - 1].im.atan2(analytic[i - 1].re);
+            let p1 = analytic[i].im.atan2(analytic[i].re);
+            let mut dphi = p1 - p0;
+            while dphi > std::f64::consts::PI {
+                dphi -= two_pi;
+            }
+            while dphi < -std::f64::consts::PI {
+                dphi += two_pi;
+            }
+            let f_inst = rate * dphi / two_pi;
+            if f_inst.is_finite() && f_inst >= lo * 0.5 && f_inst <= hi * 1.5 {
+                inst.push(f_inst);
+            }
+        }
+        if inst.is_empty() {
+            return fallback;
+        }
+        inst.sort_by(|a, b| a.total_cmp(b));
+        inst[inst.len() / 2]
+    };
+
+    let theta_fs = freq_slide(theta_lo, theta_hi, (theta_lo + theta_hi) * 0.5);
+    let alpha_fs = freq_slide(alpha_lo, alpha_hi, iaf);
+    (iaf, ind_theta_psd, ind_alpha_psd, theta_fs, alpha_fs)
+}
+
 fn psd_bands(options: &Options) -> Vec<(f64, f64, &str)> {
     if options.psd_bands.is_empty() {
         BANDS.to_vec()
@@ -965,6 +1132,15 @@ fn features(x: &[f32], rate: f64, o: &Options, dfa_context: &[f32]) -> Vec<f64> 
             &bands,
         );
         out.extend(bands.iter().map(|band| values[&format!("{}_PSD", band.2)]));
+        let (iaf_hz, ind_theta_psd, ind_alpha_psd, theta_fs_hz, alpha_fs_hz) =
+            iaf_and_sliding_features(&signal, rate);
+        out.extend([
+            iaf_hz,
+            ind_theta_psd,
+            ind_alpha_psd,
+            theta_fs_hz,
+            alpha_fs_hz,
+        ]);
     }
     if o.fooof {
         let values = spectral::fooof_features_banded(
@@ -1058,6 +1234,13 @@ fn columns(o: &Options) -> Vec<String> {
     let mut c = Vec::new();
     if o.psd {
         c.extend(psd_bands(o).iter().map(|b| format!("{}_PSD", b.2)));
+        c.extend([
+            "IAF_Hz".to_string(),
+            "IndTheta_PSD".to_string(),
+            "IndAlpha_PSD".to_string(),
+            "Theta_FreqSliding_Hz".to_string(),
+            "Alpha_FreqSliding_Hz".to_string(),
+        ]);
     }
     if o.fooof {
         c.extend(psd_bands(o).iter().map(|b| format!("{}_FOOOF", b.2)));

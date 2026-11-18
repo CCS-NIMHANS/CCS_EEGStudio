@@ -76,11 +76,20 @@ class PreprocessingPreview {
   }
 
   Future<void> _writeManifest() async {
+    final target = File('${_directory!.path}/session.json');
     final temp = File(
       '${_directory!.path}/session-${DateTime.now().microsecondsSinceEpoch}.writing',
     );
     await temp.writeAsString(jsonEncode(_manifest));
-    await temp.rename('${_directory!.path}/session.json');
+    try {
+      if (Platform.isWindows && await target.exists()) {
+        await target.delete();
+      }
+      await temp.rename(target.path);
+    } catch (_) {
+      await temp.copy(target.path);
+      if (await temp.exists()) await temp.delete();
+    }
   }
 
   Future<void> _initialize() async {
@@ -90,7 +99,7 @@ class PreprocessingPreview {
     // markers, external sample files, or preparation invalidate stale results.
     final digestParts = <Object?>[
       schema,
-      input.absolute.path,
+      input.absolute.path.replaceAll('\\', '/'),
       baseline.sampleRate,
       baseline.labels,
       baseline.sampleCount,
@@ -127,7 +136,7 @@ class PreprocessingPreview {
       final file = File(path);
       if (await file.exists())
         digestParts.add([
-          file.absolute.path,
+          file.absolute.path.replaceAll('\\', '/'),
           (await sha256.bind(file.openRead()).first).toString(),
         ]);
     }
@@ -138,16 +147,21 @@ class PreprocessingPreview {
     final fingerprint = sha256
         .convert(utf8.encode(jsonEncode(_identityCanonical(digestParts))))
         .toString();
-    final taskHome = Platform.environment['HOME'] ?? Directory.systemTemp.path;
+    final taskHome = Platform.isWindows
+        ? (Platform.environment['LOCALAPPDATA'] ??
+              Platform.environment['APPDATA'] ??
+              Platform.environment['USERPROFILE'] ??
+              Directory.systemTemp.path)
+        : (Platform.environment['HOME'] ?? Directory.systemTemp.path);
+    final appCacheDir = Platform.isMacOS
+        ? '$taskHome/Library/Application Support/CCS EEG Studio/preprocessing_cache'
+        : '$taskHome/CCS EEG Studio/preprocessing_cache';
     final roots = [
       if (cacheRoot != null)
         cacheRoot!
       else
         Directory('${input.parent.path}/.ccs_eegstudio_cache'),
-      if (cacheRoot == null)
-        Directory(
-          '$taskHome/Library/Application Support/CCS EEG Studio/preprocessing_cache',
-        ),
+      if (cacheRoot == null) Directory(appCacheDir),
     ];
     Object? failure;
     for (final root in roots) {
@@ -513,8 +527,9 @@ Map<String, dynamic> effectivePreviewOptions(
       'notch_width_hz',
       'notch_transition_hz',
     ]);
-  if (parsed['badchannel'] == true)
-    include(['badchannel', 'bad_variance_ratio']);
+  if (parsed['badchannel'] == true ||
+      ((parsed['manual_bad_channels'] as List?)?.isNotEmpty ?? false))
+    include(['badchannel', 'bad_variance_ratio', 'manual_bad_channels']);
   if (['runica', 'picard'].contains(parsed['ica_method'])) {
     include(parsed.keys.where((k) => k.startsWith('ica_')));
     include(['fir_taps']);

@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.48</b> ·
+  <b>Current version: 1.2.49</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
   <a href="paper/paper.md"><b>JOSS Paper</b></a> ·
@@ -68,12 +68,11 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 
 ---
 
-## ✨ What's New in v1.2.48
+## ✨ What's New in v1.2.49
 
-- **All-States Feature Mapping Comparison:** **State Dynamics Analysis** displays all pooled states side-by-side on one page with shared metrics and active-state highlighting.
-- **Intuitive Batch Preprocessing Toggles:** Batch Stage 1 preprocessing cards include direct **Checkbox + Switch** (`Included` / `Skipped`) toggles on every step header.
-- **Rust-Accelerated XDF & Exact Nominal Rate (v1.2.47):** Native Rust `inspect_xdf` (~0.2 s for 40 MB / 35-ch XDF files), automatic LSL clock-rate snapping to nominal `Hz`, `.ccseeg` fallback, and one-click removal of unlocated non-EEG/motion channels (`X`, `Y`, `Z`).
-- **Coordinated 3-Step Epochs & ERP Suite (v1.2.46–47):** Unified protocol shades, EEGLAB-style **ERPimage** with condition groups, **Butterfly + separate GFP** aligned with `Live ERP Preview`, **ERSP & ITC** linked topoplots, and **rERP & ML** decoding.
+- **Timestamp-Synced Video/Audio & Neural Speech Tracking:** Floating **Video / Audio** panel (`media_kit`) syncs multiple video or WAV audio files to EEG via metadata/filename timestamps, extracts audio waveforms & speech envelopes, and runs Rust **TRF encoding + backward stimulus-reconstruction decoding**.
+- **IAF, Frequency Sliding & XPIKAN Source Localization:** Added `IAF_Hz`, `IndTheta_PSD`, `IndAlpha_PSD`, `Alpha/Theta_FreqSliding_Hz`, and **XPIKAN** (*Extended Physics-Informed Kolmogorov–Arnold Network*) source localization.
+- **Reliability & Workflow Fixes:** Upgraded bad-channel detection + manual batch/single rejection table, fixed Windows preprocessing stage caching, added `Elapsed (s) | HH:MM:SS | Clock | Epoch` X-axis modes, interactive crop bad-segment marking, asymmetric EDF scaling (fixing DC-offset distortion), per-epoch microstate sequence CSVs, and publication parameter/methodology reports.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history.
 
@@ -103,6 +102,7 @@ flowchart LR
 | [**2. Features & State Dynamics**](docs/wiki/Features-and-State-Dynamics.md) | PSD/FOOOF/IRASA, DFA/fE:I, connectivity, microstates, all-states feature mapping |
 | [**3. Epochs & ERP Suite**](docs/wiki/Epochs-and-ERP-Suite.md) | Protocol shades, ERPimage, Butterfly + separate GFP, ERP & Topo, ERSP/ITC, rERP & ML |
 | [**4. Batch & Group Statistics**](docs/wiki/Batch-and-Group-Statistics.md) | Multi-file Stage 1–4 pipeline, step toggles, progress monitor, grand-average review, shortcuts |
+| [**5. Synced Video/Audio & Speech Tracking**](docs/wiki/Video-Audio-and-Speech-Tracking.md) | Timestamp-synced multi-video/audio, speech envelope, Neural Speech Tracking (TRF & Decoder) |
 
 ---
 

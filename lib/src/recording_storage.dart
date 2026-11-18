@@ -204,6 +204,35 @@ String _ascii(Object value, int width) {
 
 String _signed(double v) =>
     '${v >= 0 ? '+' : ''}${v.toStringAsFixed(7).replaceFirst(RegExp(r'\.?0+$'), '')}';
+String _formatEdfBound(double v, {required bool isMax}) {
+  if (!v.isFinite) return isMax ? '1' : '-1';
+  if (v == 0) return '0';
+  final sign = v < 0 ? '-' : '';
+  final absV = v.abs();
+  final maxChars = sign.isEmpty ? 8 : 7;
+  for (var digits = 6; digits >= 1; digits--) {
+    final power = (math.log(absV) / math.ln10).floor();
+    final step = math.pow(10, power - digits + 1).toDouble();
+    final bumped = isMax
+        ? (v >= 0 ? (absV / step).ceil() * step : -(absV / step).floor() * step)
+        : (v >= 0 ? (absV / step).floor() * step : -(absV / step).ceil() * step);
+    for (final text in [
+      bumped == 0 ? '0' : bumped.toStringAsPrecision(digits),
+      bumped == 0 ? '0' : bumped.toStringAsExponential(digits - 1),
+    ]) {
+      final parsed = double.tryParse(text);
+      if (parsed != null &&
+          parsed.isFinite &&
+          text.length <= 8 &&
+          text.replaceFirst('-', '').length <= maxChars &&
+          (isMax ? parsed >= v : parsed <= v)) {
+        return text;
+      }
+    }
+  }
+  return v.toStringAsExponential(1);
+}
+
 Future<Map<String, dynamic>> _writeEdf(EegRecording r, File file) async {
   var samples = r.sampleRate.round(), duration = 1;
   if ((samples - r.sampleRate).abs() > 1e-9) {
@@ -224,34 +253,34 @@ Future<Map<String, dynamic>> _writeEdf(EegRecording r, File file) async {
       );
   }
   final records = (r.sampleCount / samples).ceil(), n = r.labels.length + 1;
-  final limits = <double>[], physicalText = <String>[];
+  final physMinVals = <double>[], physMaxVals = <double>[];
+  final physMinText = <String>[], physMaxText = <String>[];
   for (final ch in r.preview) {
-    final peak = ch.fold(0.0, (a, b) => math.max(a, b.abs()));
-    var fitted = false;
-    for (var digits = 6; digits >= 1 && !fitted; digits--) {
-      final power = peak == 0 ? 0 : (math.log(peak) / math.ln10).floor();
-      final step = math.pow(10, power - digits + 1).toDouble();
-      final rounded = peak == 0 ? 1.0 : ((peak / step).ceil() + 1) * step;
-      for (final text in [
-        rounded.toStringAsPrecision(digits),
-        rounded.toStringAsExponential(digits - 1),
-      ]) {
-        final value = double.parse(text);
-        if (text.length + 1 <= 8 &&
-            value >= peak &&
-            value > 0 &&
-            value.isFinite) {
-          limits.add(value);
-          physicalText.add(text);
-          fitted = true;
-          break;
-        }
-      }
+    var mn = double.infinity, mx = double.negativeInfinity;
+    for (final v in ch) {
+      if (!v.isFinite) continue;
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
     }
-    if (!fitted)
+    if (!mn.isFinite || !mx.isFinite) {
+      mn = -1.0;
+      mx = 1.0;
+    }
+    final span = (mx - mn).abs();
+    final pad = span < 1e-6 ? 1.0 : span * 0.01;
+    final loTxt = _formatEdfBound(mn - pad, isMax: false);
+    final hiTxt = _formatEdfBound(mx + pad, isMax: true);
+    final loVal = double.parse(loTxt);
+    final hiVal = double.parse(hiTxt);
+    if (!loVal.isFinite || !hiVal.isFinite || hiVal <= loVal) {
       throw const FormatException(
         'Signal range cannot be represented in EDF physical scaling. Choose FIF or CCSEEG.',
       );
+    }
+    physMinVals.add(loVal);
+    physMaxVals.add(hiVal);
+    physMinText.add(loTxt);
+    physMaxText.add(hiTxt);
   }
   final events = <List<String>>[
     for (var i = 0; i < records; i++)
@@ -310,8 +339,8 @@ Future<Map<String, dynamic>> _writeEdf(EegRecording r, File file) async {
   fields(names, 16);
   fields(List.filled(n, ''), 80);
   fields([...List.filled(r.labels.length, 'uV'), ''], 8);
-  fields([for (final v in physicalText) '-$v', '-1'], 8);
-  fields([...physicalText, '1'], 8);
+  fields([...physMinText, '-1'], 8);
+  fields([...physMaxText, '1'], 8);
   fields(List.filled(n, -32768), 8);
   fields(List.filled(n, 32767), 8);
   fields(List.filled(n, ''), 80);
@@ -323,11 +352,13 @@ Future<Map<String, dynamic>> _writeEdf(EegRecording r, File file) async {
     final buffer = ByteData(samples * 2);
     for (var record = 0; record < records; record++) {
       for (var c = 0; c < r.labels.length; c++) {
-        final limit = limits[c];
+        final lo = physMinVals[c];
+        final span = physMaxVals[c] - lo;
+        final padVal = r.preview[c].isNotEmpty ? r.preview[c].last : 0.0;
         for (var s = 0; s < samples; s++) {
           final index = record * samples + s;
-          final value = index < r.sampleCount ? r.preview[c][index] : 0.0;
-          final q = ((value + limit) / (2 * limit) * 65535 - 32768)
+          final value = index < r.sampleCount ? r.preview[c][index] : padVal;
+          final q = ((value - lo) / span * 65535 - 32768)
               .round()
               .clamp(-32768, 32767);
           buffer.setInt16(s * 2, q, Endian.little);
@@ -343,7 +374,10 @@ Future<Map<String, dynamic>> _writeEdf(EegRecording r, File file) async {
   }
   return {
     'format': 'edf+',
-    'quantization_step_uv': [for (final v in limits) 2 * v / 65535],
+    'quantization_step_uv': [
+      for (var c = 0; c < physMinVals.length; c++)
+        (physMaxVals[c] - physMinVals[c]) / 65535,
+    ],
     'padded_samples': records * samples - r.sampleCount,
     'record_duration_seconds': duration,
   };

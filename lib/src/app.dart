@@ -23,6 +23,9 @@ import 'channel_types.dart';
 import 'topostats/mne_constants.dart';
 import 'eeg_viewer.dart';
 import 'extraction_service.dart';
+import 'media/media_sync_service.dart';
+import 'media/synced_media_panel.dart';
+import 'report/methodology_report.dart';
 import 'models.dart';
 import 'topostats/topostats_batch.dart';
 import 'report/feature_report.dart';
@@ -1135,6 +1138,7 @@ class _FeatureHomeState extends State<FeatureHome>
 
   @override
   void dispose() {
+    _mediaController?.dispose();
     _resetInteractivePreview();
     for (final c in [
       _start,
@@ -2088,6 +2092,49 @@ class _FeatureHomeState extends State<FeatureHome>
   //  Build
   // ══════════════════════════════════════════════════════════════════════
 
+  MediaSyncController? _mediaController;
+  bool _showMediaPanel = false;
+  double? _mediaCursorSec;
+  Rect _mediaPanelRect = const Rect.fromLTWH(24, 24, 420, 340);
+
+  Future<void> _toggleMediaPanel() async {
+    final rec = _activeRecording ?? _raw;
+    if (rec == null) {
+      _log('Open an EEG recording first to sync video or audio.');
+      return;
+    }
+    if (_mediaController == null || _mediaController!.eegPath != rec.path) {
+      _mediaController?.dispose();
+      final startTime = await MediaSyncService.resolveEegStartTime(rec);
+      _mediaController = MediaSyncController(
+        eegPath: rec.path,
+        eegDurationSec: rec.durationSeconds,
+        eegStartTime: startTime,
+        onTimeChanged: (sec) {
+          if (mounted) setState(() => _mediaCursorSec = sec);
+        },
+      );
+    }
+    if (mounted) {
+      setState(() => _showMediaPanel = !_showMediaPanel);
+    }
+  }
+
+  Future<void> _pickAndAddMediaFiles() async {
+    final res = await FilePicker.pickFiles(
+      allowMultiple: true,
+      type: FileType.custom,
+      allowedExtensions: [
+        ...MediaSyncService.videoExtensions,
+        ...MediaSyncService.audioExtensions,
+      ],
+    );
+    if (res == null || res.files.isEmpty) return;
+    final paths = res.files.map((f) => f.path).whereType<String>().toList();
+    if (paths.isEmpty || _mediaController == null) return;
+    await _mediaController!.addMediaFiles(paths);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2101,9 +2148,48 @@ class _FeatureHomeState extends State<FeatureHome>
               !_waveformMaximized)
             _buildPipelineSidebar(),
           Expanded(
-            child: _batchMaximized
-                ? _buildBatchBar(fillAvailable: true)
-                : _buildModuleContent(),
+            child: LayoutBuilder(
+              builder: (context, area) {
+                return Stack(
+                  children: [
+                    Positioned.fill(
+                      child: _batchMaximized
+                          ? _buildBatchBar(fillAvailable: true)
+                          : _buildModuleContent(),
+                    ),
+                    if (_showMediaPanel && _mediaController != null)
+                      Positioned(
+                        left: _mediaPanelRect.left.clamp(
+                          0.0,
+                          (area.maxWidth - 280).clamp(0.0, area.maxWidth),
+                        ),
+                        top: _mediaPanelRect.top.clamp(
+                          0.0,
+                          (area.maxHeight - 220).clamp(0.0, area.maxHeight),
+                        ),
+                        width: _mediaPanelRect.width.clamp(280.0, area.maxWidth),
+                        height: _mediaPanelRect.height.clamp(220.0, area.maxHeight),
+                        child: SyncedMediaPanel(
+                          controller: _mediaController!,
+                          onAddFiles: _pickAndAddMediaFiles,
+                          onClose: () => setState(() => _showMediaPanel = false),
+                          onMove: (d) => setState(
+                            () => _mediaPanelRect = _mediaPanelRect.shift(d),
+                          ),
+                          onResize: (d) => setState(
+                            () => _mediaPanelRect = Rect.fromLTWH(
+                              _mediaPanelRect.left,
+                              _mediaPanelRect.top,
+                              (_mediaPanelRect.width + d.dx).clamp(280.0, area.maxWidth),
+                              (_mediaPanelRect.height + d.dy).clamp(220.0, area.maxHeight),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
           ),
           if (!_batchMaximized && !_workspaceMaximized && !_waveformMaximized)
             _buildLogPanel(),
@@ -2279,6 +2365,13 @@ class _FeatureHomeState extends State<FeatureHome>
             ),
           ],
           const SizedBox(width: 8),
+          _topBarButton(
+            icon: Icons.ondemand_video,
+            label: 'Video / Audio',
+            active: _showMediaPanel,
+            onTap: _toggleMediaPanel,
+          ),
+          const SizedBox(width: 6),
           _topBarButton(
             icon: _checkingForUpdates
                 ? Icons.hourglass_top
@@ -3466,6 +3559,7 @@ class _FeatureHomeState extends State<FeatureHome>
               ? EegViewer(
                   recording: _activeRecording,
                   rawRecording: _raw,
+                  cursorSeconds: _mediaCursorSec,
                   allRecordings: _stageRecordings,
                   onSelectRecording: (rec) {
                     if (_running || identical(rec, _interactivePreview)) return;
@@ -3756,10 +3850,30 @@ class _FeatureHomeState extends State<FeatureHome>
       builder: (_) => RecordingPreparationDialog(recording: recording),
     );
     if (prepared == null || !mounted) return;
+    final manualBad = (prepared.provenance['manual_bad_segments'] as List? ?? const [])
+        .whereType<List>()
+        .where((e) => e.length >= 2)
+        .map((e) => [(e[0] as num).toDouble(), (e[1] as num).toDouble()])
+        .toList();
     setState(() {
       _openedRecordings.add(prepared);
+      _preprocessed = null;
+      _interactivePreview = null;
+      _previewSession = null;
+      _appliedPreviewSteps.clear();
+      _source = null;
+      _sourceInput = null;
     });
     _selectOpenedRecording(prepared);
+    if (manualBad.isNotEmpty) {
+      setState(() {
+        _selection = ViewerSelection(
+          selectedChannels: _selection.selectedChannels,
+          acceptedIntervals: const [],
+          rejectedIntervals: manualBad,
+        );
+      });
+    }
   }
 
   Widget _buildLoadRawContent() {
@@ -4133,6 +4247,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   ('dspm', 'dSPM'),
                   ('sloreta', 'sLORETA'),
                   ('lcmv', 'LCMV'),
+                  ('xpikan', 'XPIKAN (Physics-Informed NN)'),
                 ],
                 (v) => _cfg.sourceMethod = v,
                 'Fixed-orientation source projection. Apply to compute or reuse the selected model.',
@@ -4720,12 +4835,15 @@ class _FeatureHomeState extends State<FeatureHome>
         _previewStep(
           'badchannels',
           'Detect bad channels',
-          'Flatline, correlation and line noise',
+          _cfg.manualBadChannels.isEmpty
+              ? 'Flatline, correlation and line noise'
+              : 'Auto + ${_cfg.manualBadChannels.length} manual (${_cfg.manualBadChannels.join(", ")})',
           {
             'badchannel': true,
             'bad_variance_ratio': _cfg
                 .toPreprocessingOptions()
                 .badVarianceRatio,
+            'manual_bad_channels': List<String>.from(_cfg.manualBadChannels),
           },
           [
             _check(
@@ -4734,7 +4852,103 @@ class _FeatureHomeState extends State<FeatureHome>
               (v) => _cfg.badChannels = v,
             ),
             const Text(
-              'Detection identifies exclusions. Enable interpolation to reconstruct excluded channels.',
+              'Detection identifies exclusions (auto + manual). Enable interpolation to reconstruct excluded channels.',
+              style: TextStyle(fontSize: 11),
+            ),
+            const SizedBox(height: 6),
+            Builder(
+              builder: (ctx) {
+                final autoBad = ((_activeRecording?.provenance['summary']
+                            as Map?)?['bad_channels'] as List?)
+                        ?.cast<String>() ??
+                    const <String>[];
+                final avail = _activeRecording?.labels ??
+                    (_batchPrepFiles.isNotEmpty
+                        ? _channels.labels
+                        : const <String>[]);
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.04),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Bad Channel Table (Auto & Manual)',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Auto detected: ${autoBad.isEmpty ? "None" : autoBad.join(", ")}',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.amberAccent,
+                            ),
+                          ),
+                          Text(
+                            'Manual rejected: ${_cfg.manualBadChannels.isEmpty ? "None" : _cfg.manualBadChannels.join(", ")}',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.redAccent,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    if (avail.isNotEmpty)
+                      Wrap(
+                        spacing: 4,
+                        runSpacing: 4,
+                        children: [
+                          for (final ch in avail)
+                            FilterChip(
+                              label: Text(ch, style: const TextStyle(fontSize: 10)),
+                              selected: _cfg.manualBadChannels.any(
+                                (b) => b.toUpperCase() == ch.toUpperCase(),
+                              ),
+                              selectedColor: Colors.redAccent.withValues(alpha: 0.35),
+                              visualDensity: VisualDensity.compact,
+                              onSelected: (sel) => setState(() {
+                                _cfg.manualBadChannels.removeWhere(
+                                  (b) => b.toUpperCase() == ch.toUpperCase(),
+                                );
+                                if (sel) _cfg.manualBadChannels.add(ch);
+                              }),
+                            ),
+                        ],
+                      ),
+                    const SizedBox(height: 6),
+                    TextFormField(
+                      key: ValueKey('manual-bad-${_cfg.manualBadChannels.join(",")}'),
+                      initialValue: _cfg.manualBadChannels.join(', '),
+                      decoration: const InputDecoration(
+                        labelText: 'Manual reject channels (batch/comma-separated)',
+                        hintText: 'e.g. T7, P8, Cz',
+                        isDense: true,
+                      ),
+                      style: const TextStyle(fontSize: 11),
+                      onFieldSubmitted: (v) => setState(() {
+                        _cfg.manualBadChannels = v
+                            .split(',')
+                            .map((s) => s.trim())
+                            .where((s) => s.isNotEmpty)
+                            .toList();
+                      }),
+                    ),
+                  ],
+                );
+              },
             ),
           ],
         ),
@@ -7576,6 +7790,18 @@ class _FeatureHomeState extends State<FeatureHome>
         '── EXTRACTION DONE — $succeeded/${kept.length} files, '
         '${written.length} CSV output(s) ──',
       );
+      if (written.isNotEmpty) {
+        final reportDir = Directory(File(written.first).parent.path);
+        final reportFile =
+            await MethodologyReport.writeBatchMethodologyAndResultsReport(
+          outputDir: reportDir,
+          config: _cfg,
+          inputFiles: kept,
+          outputFiles: written,
+          fileStatuses: Map<String, String>.from(_batchFileStatus),
+        );
+        _log('✓ Methodology & Results report: ${reportFile.path}');
+      }
       return written;
     } finally {
       await combinedSink?.close();
