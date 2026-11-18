@@ -58,15 +58,14 @@ class ErpWorkbenchService {
         throw StateError(
           errors.isEmpty ? 'ERP engine stopped' : errors.join('\n'),
         );
+      final isPreview = options['grand_average_preview'] == true;
+      final outPath = isPreview
+          ? '$output/grand_average_preview.json'
+          : (await File('$output/erp_results.ccserp').exists()
+              ? '$output/erp_results.ccserp'
+              : '$output/erp_results.json');
       return Map<String, dynamic>.from(
-        jsonDecode(
-              await File(
-                await File('$output/erp_results.ccserp').exists()
-                    ? '$output/erp_results.ccserp'
-                    : '$output/erp_results.json',
-              ).readAsString(),
-            )
-            as Map,
+        jsonDecode(await File(outPath).readAsString()) as Map,
       );
     } finally {
       if (await temp.exists()) await temp.delete(recursive: true);

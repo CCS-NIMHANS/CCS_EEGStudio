@@ -646,6 +646,8 @@ pub struct Options {
     pub lsqr_iterations: usize,
     pub trial_metadata_path: String,
     pub decode_shrinkage: f64,
+    #[serde(default)]
+    pub grand_average_preview: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -672,6 +674,7 @@ impl Default for Options {
             lsqr_iterations: 1000,
             trial_metadata_path: String::new(),
             decode_shrinkage: 0.1,
+            grand_average_preview: false,
         }
     }
 }
@@ -2312,10 +2315,31 @@ where
     let mut failures = Vec::new();
     for (i, input) in job.inputs.iter().enumerate() {
         eprintln!("PROGRESS {} ERP {}", i * 85 / job.inputs.len(), input.path);
-        match load(&input.path).and_then(|rec| analyse_file(input, rec, &job.options)) {
+        let mut effective_opts = job.options.clone();
+        if effective_opts.grand_average_preview {
+            effective_opts.regression = false;
+            effective_opts.deconvolution = false;
+            effective_opts.decoding = false;
+            effective_opts.temporal_generalization = false;
+            effective_opts.export_trial_measurements = false;
+        }
+        match load(&input.path).and_then(|rec| analyse_file(input, rec, &effective_opts)) {
             Ok(f) => files.push(f),
             Err(error) => failures.push(json!({"path":input.path,"error":error})),
         }
+    }
+    if job.options.grand_average_preview {
+        let preview = json!({
+            "files": files,
+            "failures": failures,
+        });
+        fs::write(
+            Path::new(&job.output).join("grand_average_preview.json"),
+            serde_json::to_string(&preview).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        eprintln!("PROGRESS 100 Grand average preview ready");
+        return Ok(preview);
     }
     let tasks: Vec<_> = files
         .iter()

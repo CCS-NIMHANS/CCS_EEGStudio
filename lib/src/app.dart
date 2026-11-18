@@ -1,4 +1,5 @@
 import 'erp/interactive_erp_workspace.dart';
+import 'erp/batch_file_selector.dart';
 import 'source_review_workspace.dart';
 import 'package:crypto/crypto.dart';
 import 'reference_channel_picker.dart';
@@ -5741,66 +5742,47 @@ class _FeatureHomeState extends State<FeatureHome>
     List<String> extensions,
     String title,
   ) async {
-    final controller = TextEditingController(text: '*');
-    final pattern = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Filter folder files'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            labelText: 'Filename wildcard',
-            hintText: '*Rest*.edf;*Task*.edf',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Choose folder'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (pattern == null) return;
     final path = await FilePicker.getDirectoryPath(dialogTitle: title);
-    if (path == null) return;
+    if (path == null || !mounted) return;
     final allowed = extensions.map((value) => '.$value').toSet();
     final discovered = await Directory(path)
         .list(recursive: true, followLinks: false)
         .where((entity) => entity is File)
         .map((entity) => entity.path)
         .where((file) => allowed.any((ext) => file.toLowerCase().endsWith(ext)))
-        .where((file) => matchesFilename(file, pattern))
         .where(
           (file) => !extensions.contains('json') || isEegRecordingFile(file),
         )
         .toList();
     discovered.sort();
-    final maxSubjects = int.tryParse(_batchSubjectLimit.text) ?? 0;
-    if (maxSubjects > 0) {
-      final subjects = <String>{};
-      discovered.removeWhere((file) {
-        final name = _shortName(file);
-        final id =
-            RegExp(r'sub-([^_]+)').firstMatch(name)?.group(1) ??
-            name.split('_').first;
-        if (subjects.contains(id)) return false;
-        if (subjects.length >= maxSubjects) return true;
-        subjects.add(id);
-        return false;
-      });
+    if (discovered.isEmpty) {
+      _log('No supported files found in $path.');
+      return;
     }
+    if (!mounted) return;
+    final maxSubjects = int.tryParse(_batchSubjectLimit.text) ?? 0;
+    final selection = await BatchFileSelectionDialog.show(
+      context,
+      initialFiles: discovered,
+      rootDirectory: path,
+      existingPaths: destination,
+      initialSubjectLimit: maxSubjects,
+      allowedExtensions: extensions,
+      title: title,
+    );
+    if (selection == null || !mounted) return;
     setState(() {
-      for (final file in discovered) {
-        if (!destination.contains(file)) destination.add(file);
+      if (selection.replaceExisting) {
+        destination
+          ..clear()
+          ..addAll(selection.selectedFiles);
+      } else {
+        for (final file in selection.selectedFiles) {
+          if (!destination.contains(file)) destination.add(file);
+        }
       }
     });
-    _log('Added ${discovered.length} supported file(s) from $path.');
+    _log('Added ${selection.selectedFiles.length} supported file(s) from $path.');
   }
 
   Future<void> _openBatchGroupStatistics() async {

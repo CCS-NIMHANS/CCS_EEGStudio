@@ -38,6 +38,8 @@ class ErpPublicationPlotsView extends StatefulWidget {
     required this.profile,
     required this.participantGroups,
     required this.onGroupsChanged,
+    this.fileFactors = const {},
+    this.excludedFiles = const {},
     this.outputDir,
   });
 
@@ -46,6 +48,8 @@ class ErpPublicationPlotsView extends StatefulWidget {
   final Map<String, dynamic> profile;
   final Map<String, String> participantGroups;
   final ValueChanged<Map<String, String>> onGroupsChanged;
+  final Map<String, Map<String, String>> fileFactors;
+  final Set<String> excludedFiles;
   final String? outputDir;
 
   @override
@@ -665,15 +669,38 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
     final outDir = widget.outputDir ?? Directory.systemTemp.path;
     final csvPath = '$outDir/ERP_${comp.name}_lmm_input.csv';
 
+    final extraCols = <String>{};
+    for (final m in widget.fileFactors.values) {
+      for (final k in m.keys) {
+        if (k != 'Subject' && k != 'Group' && k != 'group' && k != 'subjid') {
+          extraCols.add(k);
+        }
+      }
+    }
+    final extraColList = extraCols.toList()..sort();
+
     final buf = StringBuffer();
-    buf.writeln(
-      'subjid,group,condition,electrode,mean_amplitude_ERP,peak_amplitude_ERP,peak_latency_ms_ERP',
-    );
+    final headerParts = [
+      'subjid',
+      'group',
+      ...extraColList,
+      'condition',
+      'electrode',
+      'mean_amplitude_ERP',
+      'peak_amplitude_ERP',
+      'peak_latency_ms_ERP',
+    ];
+    buf.writeln(headerParts.join(','));
 
     final times = erpNumbers(widget.files.first['times']);
     for (final f in widget.files) {
+      final path = '${f['path'] ?? ''}';
+      if (path.isNotEmpty && widget.excludedFiles.contains(path)) continue;
       final subjid = f['subject'] as String? ?? 'unknown';
-      final group = widget.participantGroups[subjid] ?? 'Unknown';
+      final fFactors = widget.fileFactors[path] ?? const <String, String>{};
+      final group = fFactors['Group'] ??
+          widget.participantGroups[subjid] ??
+          'Unknown';
       final labels = (f['labels'] as List? ?? []).cast<String>();
       final chans = f['channel_conditions'] as Map?;
 
@@ -699,8 +726,12 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
               comp.endMs / 1000,
               comp.polarity,
             );
+            final extraVals = [
+              for (final col in extraColList)
+                '"${(fFactors[col] ?? 'Unknown').replaceAll('"', '""')}"',
+            ];
             buf.writeln(
-              '"$subjid","$group","$cond","$el",${m['mean']?.toStringAsFixed(4) ?? 0},${m['peak_amplitude']?.toStringAsFixed(4) ?? 0},${((m['peak_latency'] ?? 0) * 1000).toStringAsFixed(1)}',
+              '"$subjid","$group",${extraVals.isEmpty ? '' : '${extraVals.join(',')},'}"$cond","$el",${m['mean']?.toStringAsFixed(4) ?? 0},${m['peak_amplitude']?.toStringAsFixed(4) ?? 0},${((m['peak_latency'] ?? 0) * 1000).toStringAsFixed(1)}',
             );
           }
         }

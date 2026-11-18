@@ -4,11 +4,14 @@ import 'filename_metadata.dart';
 import 'topostats/topostats_engine.dart' show splitFeatureCsvLine;
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'filtered_file_picker.dart';
+import 'group_statistics_engine.dart';
+import 'group_statistics_plots.dart';
 
 class GroupStatisticsWorkbench extends StatefulWidget {
   const GroupStatisticsWorkbench({
@@ -62,6 +65,18 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       0; // 0: Plot, 1: Model Effects, 2: Post-Hoc, 3: Descriptives
   int _activePlotView = 0; // 0: Box & Post-Hoc Plot, 1: Scalp Topoplot
 
+  // Pure-Dart Permutation GLM/LMM & Configurable Plot State
+  Map<String, dynamic>? _dartInspection;
+  final List<String> _dartFactors = [];
+  final Map<String, Set<String>> _dartExcludedLevels = {};
+  final Map<String, List<String>> _dartLevelOrder = {};
+  final TextEditingController _permCountCtrl = TextEditingController(text: '1000');
+  bool _includeInteractions = true;
+  StatsPlotLayoutConfig _plotConfig = const StatsPlotLayoutConfig();
+  Map<String, dynamic>? _dartAnalysisResults;
+  String? _selectedDartMetric;
+  int _dartResultTab = 0;
+
   @override
   void initState() {
     super.initState();
@@ -81,6 +96,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     _metadataKeyController.dispose();
     _excludeChannelsController.dispose();
     _includeChannelsController.dispose();
+    _permCountCtrl.dispose();
     super.dispose();
   }
 
@@ -363,11 +379,20 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     });
 
     try {
+      final dartInsp = await ErpGroupStatsEngine.inspectDataset(
+        csvPath: csvPath,
+        metadataPath: _metadataPathController.text.trim(),
+        metadataKey: _metadataKeyController.text.trim(),
+      );
+      _applyDartInspection(dartInsp);
+
       final python = await _findPythonExecutable();
       if (python == null) {
-        throw StateError(
-          'Python 3 environment not found. Please install Python with pandas and statsmodels.',
-        );
+        setState(() {
+          _statusMessage =
+              'Dataset loaded (Pure-Dart engine): ${dartInsp['row_count']} rows, ${(dartInsp['factor_columns'] as List).length} factor(s).';
+        });
+        return;
       }
       final script = await _resolveGroupStatsScript();
 
@@ -423,6 +448,133 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       setState(() {
         _isInspecting = false;
       });
+    }
+  }
+
+  void _applyDartInspection(Map<String, dynamic> insp) {
+    final factorCols = (insp['factor_columns'] as List? ?? []).cast<String>();
+    final metricCols = (insp['metric_columns'] as List? ?? []).cast<String>();
+    final subjCol = insp['detected_subject_col'] as String?;
+
+    final nonSubjFactors = factorCols
+        .where((f) => f != subjCol)
+        .toList();
+
+    setState(() {
+      _dartInspection = insp;
+      _dartFactors
+        ..clear()
+        ..addAll(nonSubjFactors.take(4));
+      _dartExcludedLevels.clear();
+      _dartLevelOrder.clear();
+      _selectedSubjectIdCol ??= subjCol;
+      if (_selectedGroupCol == null && nonSubjFactors.isNotEmpty) {
+        _selectedGroupCol = nonSubjFactors.first;
+      }
+      if (_selectedMetrics.isEmpty && metricCols.isNotEmpty) {
+        _selectedMetrics.add(metricCols.first);
+      }
+      _inspectionData ??= {
+        'total_rows': insp['row_count'],
+        'unique_subjects': ((insp['factor_levels'] as Map?)?[subjCol] as List?)?.length ?? 0,
+        'categorical_columns': nonSubjFactors,
+        'subject_candidates': factorCols,
+        'metric_columns': metricCols,
+        'covariates': <String>[],
+      };
+
+      // Smart default plot role assignment:
+      // e.g. X: condition/electrode, Lines: group, Facet Col: condition/event
+      String? pick(List<String> candidates) => nonSubjFactors
+          .where((f) => candidates.any((c) => f.toLowerCase().contains(c)))
+          .firstOrNull;
+      final seriesF = pick(['group', 'arm']) ?? nonSubjFactors.firstOrNull;
+      final xF = pick(['electrode', 'channel', 'roi', 'condition', 'session']) ??
+          (nonSubjFactors.length > 1 ? nonSubjFactors[1] : seriesF);
+      final colF = nonSubjFactors
+          .where((f) => f != seriesF && f != xF)
+          .firstOrNull;
+      _plotConfig = StatsPlotLayoutConfig(
+        xFactor: xF,
+        seriesFactor: seriesF,
+        facetColFactor: colF,
+        plotType: StatsPlotType.line,
+      );
+    });
+  }
+
+  Future<void> _runDartPermutationAnalysis() async {
+    final insp = _dartInspection;
+    if (insp == null) {
+      _showSnack('Inspect a CSV dataset first.');
+      return;
+    }
+    if (_dartFactors.isEmpty) {
+      _showSnack('Select at least one statistical factor.');
+      return;
+    }
+    if (_selectedMetrics.isEmpty) {
+      _showSnack('Select at least one metric to analyze.');
+      return;
+    }
+    setState(() {
+      _isAnalyzing = true;
+      _progressStatus = 'Running Permutation GLM / LMM…';
+      _statusMessage = 'Running N-way permutation models in isolate…';
+    });
+    try {
+      final headers = (insp['headers'] as List).cast<String>();
+      final rows = (insp['rows'] as List)
+          .map((r) => (r as List).map((e) => '$e').toList())
+          .toList();
+      final factors = List<String>.from(_dartFactors);
+      final metrics = _selectedMetrics.toList();
+      final subjCol = _selectedSubjectIdCol;
+      final modelPref = _preferredModel;
+      final posthoc = _posthocMethod;
+      final interactions = _includeInteractions;
+      final nPerm = int.tryParse(_permCountCtrl.text.trim()) ?? 1000;
+      final excluded = {
+        for (final e in _dartExcludedLevels.entries) e.key: Set<String>.from(e.value),
+      };
+      final order = {
+        for (final e in _dartLevelOrder.entries) e.key: List<String>.from(e.value),
+      };
+
+      final res = await Isolate.run(
+        () => ErpGroupStatsEngine.runAnalysis(
+          headers: headers,
+          rows: rows,
+          factors: factors,
+          metrics: metrics,
+          subjectCol: subjCol,
+          preferredModel: modelPref,
+          posthocMethod: posthoc,
+          includeInteractions: interactions,
+          nPermutations: nPerm,
+          excludedLevels: excluded,
+          customLevelOrder: order,
+        ),
+      );
+      if (!mounted) return;
+      if (res.containsKey('error')) {
+        _showSnack('${res['error']}');
+        return;
+      }
+      final resultsList = (res['results'] as List? ?? []).cast<Map<String, dynamic>>();
+      setState(() {
+        _dartAnalysisResults = res;
+        _selectedDartMetric = resultsList.isNotEmpty
+            ? resultsList.first['metric'] as String?
+            : null;
+        _dartResultTab = 0;
+        _statusMessage =
+            'Permutation GLM / LMM complete (${resultsList.length} metric(s), $nPerm permutations).';
+      });
+    } catch (e) {
+      _showSnack('Permutation analysis failed: $e');
+    } finally {
+      if (mounted) setState(() => _isAnalyzing = false);
     }
   }
 
@@ -669,7 +821,15 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             const SizedBox(height: 12),
             _buildMetricsSelectionCard(),
             const SizedBox(height: 12),
+            if (_dartInspection != null) ...[
+              _buildConfigurablePlotAndPreviewCard(),
+              const SizedBox(height: 12),
+            ],
             _buildActionRunCard(),
+            const SizedBox(height: 12),
+          ],
+          if (_dartAnalysisResults != null) ...[
+            _buildDartResultsCard(),
             const SizedBox(height: 12),
           ],
           if (_analysisResults != null) ...[
@@ -1264,6 +1424,498 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     );
   }
 
+  Widget _buildConfigurablePlotAndPreviewCard() {
+    final insp = _dartInspection!;
+    final allFactorCols = (insp['factor_columns'] as List? ?? []).cast<String>();
+    final rawLevels =
+        (insp['factor_levels'] as Map<String, dynamic>? ?? {});
+
+    Map<String, List<String>> effectiveLevels() {
+      final out = <String, List<String>>{};
+      for (final f in allFactorCols) {
+        final raw = (rawLevels[f] as List? ?? []).map((e) => '$e').toList();
+        final custom = _dartLevelOrder[f];
+        final ordered = custom != null && custom.isNotEmpty
+            ? [
+                for (final l in custom)
+                  if (raw.contains(l)) l,
+                for (final l in raw)
+                  if (!custom.contains(l)) l,
+              ]
+            : raw;
+        final excl = _dartExcludedLevels[f] ?? const <String>{};
+        out[f] = ordered.where((l) => !excl.contains(l)).toList();
+      }
+      return out;
+    }
+
+    final levelsMap = effectiveLevels();
+    final factorChoices = ['None', ..._dartFactors];
+
+    Widget roleDropdown(
+      String label,
+      String? value,
+      ValueChanged<String?> onChanged,
+    ) {
+      final cur = (value != null && factorChoices.contains(value))
+          ? value
+          : 'None';
+      return Expanded(
+        child: DropdownButtonFormField<String>(
+          initialValue: cur,
+          isExpanded: true,
+          decoration: InputDecoration(
+            labelText: label,
+            border: const OutlineInputBorder(),
+            isDense: true,
+          ),
+          items: [
+            for (final f in factorChoices)
+              DropdownMenuItem(
+                value: f,
+                child: Text(f, overflow: TextOverflow.ellipsis),
+              ),
+          ],
+          onChanged: onChanged,
+        ),
+      );
+    }
+
+    return Card(
+      elevation: 0,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade300),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.tune, size: 20, color: Color(0xFF0D9488)),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Multi-Factor Design, Permutation Settings & Plot Configuration Preview',
+                    style: TextStyle(
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _permCountCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Permutations',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilterChip(
+                  label: const Text('Interactions', style: TextStyle(fontSize: 11.5)),
+                  selected: _includeInteractions,
+                  onSelected: (v) => setState(() => _includeInteractions = v),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Active Statistical Factors (select factors for N-way Permutation GLM/LMM):',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final f in allFactorCols)
+                  if (f != _selectedSubjectIdCol)
+                    FilterChip(
+                      label: Text(
+                        '$f (${(rawLevels[f] as List? ?? []).length})',
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                      selected: _dartFactors.contains(f),
+                      onSelected: (sel) => setState(() {
+                        if (sel) {
+                          _dartFactors.add(f);
+                        } else {
+                          _dartFactors.remove(f);
+                        }
+                      }),
+                    ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Plot Role Configuration (Lines, X-Axis Points, Subplot Columns/Rows):',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                roleDropdown(
+                  'X-Axis (Points)',
+                  _plotConfig.xFactor,
+                  (v) => setState(
+                    () => _plotConfig = v == null || v == 'None'
+                        ? _plotConfig.copyWith(clearX: true)
+                        : _plotConfig.copyWith(xFactor: v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                roleDropdown(
+                  'Lines / Hue (Series)',
+                  _plotConfig.seriesFactor,
+                  (v) => setState(
+                    () => _plotConfig = v == null || v == 'None'
+                        ? _plotConfig.copyWith(clearSeries: true)
+                        : _plotConfig.copyWith(seriesFactor: v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                roleDropdown(
+                  'Subplot Columns',
+                  _plotConfig.facetColFactor,
+                  (v) => setState(
+                    () => _plotConfig = v == null || v == 'None'
+                        ? _plotConfig.copyWith(clearFacetCol: true)
+                        : _plotConfig.copyWith(facetColFactor: v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                roleDropdown(
+                  'Subplot Rows',
+                  _plotConfig.facetRowFactor,
+                  (v) => setState(
+                    () => _plotConfig = v == null || v == 'None'
+                        ? _plotConfig.copyWith(clearFacetRow: true)
+                        : _plotConfig.copyWith(facetRowFactor: v),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 10,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SegmentedButton<StatsPlotType>(
+                  segments: const [
+                    ButtonSegment(
+                      value: StatsPlotType.line,
+                      label: Text('Line + Error', style: TextStyle(fontSize: 11)),
+                    ),
+                    ButtonSegment(
+                      value: StatsPlotType.bar,
+                      label: Text('Bar + Error', style: TextStyle(fontSize: 11)),
+                    ),
+                    ButtonSegment(
+                      value: StatsPlotType.boxplot,
+                      label: Text('Box Plot', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                  selected: {_plotConfig.plotType},
+                  onSelectionChanged: (s) => setState(
+                    () => _plotConfig = _plotConfig.copyWith(plotType: s.first),
+                  ),
+                ),
+                FilterChip(
+                  label: Text(
+                    _plotConfig.useSem ? 'Error: SEM' : 'Error: SD',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  selected: _plotConfig.useSem,
+                  onSelected: (v) => setState(
+                    () => _plotConfig = _plotConfig.copyWith(useSem: v),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // Level Order & Exclusion Chips for active factors
+            for (final f in _dartFactors) ...[
+              Builder(
+                builder: (context) {
+                  final raw = (rawLevels[f] as List? ?? []).map((e) => '$e').toList();
+                  final custom = _dartLevelOrder[f];
+                  final ordered = custom != null && custom.isNotEmpty
+                      ? [
+                          for (final l in custom)
+                            if (raw.contains(l)) l,
+                          for (final l in raw)
+                            if (!custom.contains(l)) l,
+                        ]
+                      : raw;
+                  final excl = _dartExcludedLevels[f] ?? <String>{};
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          '$f order/filter:',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        for (var i = 0; i < ordered.length; i++)
+                          InputChip(
+                            label: Text(
+                              ordered[i],
+                              style: TextStyle(
+                                fontSize: 11,
+                                decoration: excl.contains(ordered[i])
+                                    ? TextDecoration.lineThrough
+                                    : null,
+                              ),
+                            ),
+                            selected: !excl.contains(ordered[i]),
+                            onSelected: (sel) => setState(() {
+                              final set = _dartExcludedLevels.putIfAbsent(
+                                f,
+                                () => <String>{},
+                              );
+                              if (sel) {
+                                set.remove(ordered[i]);
+                              } else {
+                                set.add(ordered[i]);
+                              }
+                            }),
+                            onDeleted: i == ordered.length - 1
+                                ? null
+                                : () => setState(() {
+                                    final list = List<String>.from(ordered);
+                                    final item = list.removeAt(i);
+                                    list.insert(i + 1, item);
+                                    _dartLevelOrder[f] = list;
+                                  }),
+                            deleteIcon: const Icon(Icons.arrow_forward, size: 13),
+                            deleteButtonTooltipMessage: 'Move level right',
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ],
+            const SizedBox(height: 8),
+            ConfigurableStatsPlotWidget(
+              config: _plotConfig,
+              factorLevels: levelsMap,
+              metricName: _selectedMetrics.isNotEmpty
+                  ? _selectedMetrics.first
+                  : 'ERP Metric',
+              activeFactors: _dartFactors,
+              isDummyPreview: true,
+              height: 300,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDartResultsCard() {
+    final resList = (_dartAnalysisResults?['results'] as List? ?? [])
+        .cast<Map<String, dynamic>>();
+    if (resList.isEmpty) return const SizedBox.shrink();
+    final active = resList.firstWhere(
+      (r) => r['metric'] == _selectedDartMetric,
+      orElse: () => resList.first,
+    );
+    final levelsMap = <String, List<String>>{};
+    final rawLevels =
+        (active['factor_levels'] as Map<String, dynamic>? ?? {});
+    for (final e in rawLevels.entries) {
+      levelsMap[e.key] = (e.value as List).map((x) => '$x').toList();
+    }
+    final effects = (active['model_effects'] as List? ?? [])
+        .cast<Map<String, dynamic>>();
+    final posthocs = (active['posthoc'] as List? ?? [])
+        .cast<Map<String, dynamic>>();
+
+    return Card(
+      elevation: 0,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.teal.shade300),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.auto_graph, size: 20, color: Color(0xFF0D9488)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Permutation GLM / LMM Results · ${active['model_type']} (N=${active['n_obs']}, Subjects=${active['n_subjects']})',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 220,
+                  child: DropdownButtonFormField<String>(
+                    initialValue: active['metric'] as String?,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Metric',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      for (final r in resList)
+                        DropdownMenuItem(
+                          value: r['metric'] as String,
+                          child: Text(r['metric'] as String),
+                        ),
+                    ],
+                    onChanged: (v) => setState(() => _selectedDartMetric = v),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(value: 0, label: Text('Configurable Plot')),
+                ButtonSegment(value: 1, label: Text('Permutation Effects')),
+                ButtonSegment(value: 2, label: Text('Post-Hoc Contrasts')),
+              ],
+              selected: {_dartResultTab},
+              onSelectionChanged: (s) =>
+                  setState(() => _dartResultTab = s.first),
+            ),
+            const SizedBox(height: 12),
+            if (_dartResultTab == 0)
+              ConfigurableStatsPlotWidget(
+                config: _plotConfig,
+                factorLevels: levelsMap,
+                metricName: '${active['metric']}',
+                cellDescriptives:
+                    (active['cell_descriptives'] as Map<String, dynamic>? ??
+                        {}),
+                activeFactors: (active['factors'] as List? ?? []).cast<String>(),
+                isDummyPreview: false,
+                height: 380,
+              )
+            else if (_dartResultTab == 1)
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  columns: const [
+                    DataColumn(label: Text('Term')),
+                    DataColumn(label: Text('F')),
+                    DataColumn(label: Text('df')),
+                    DataColumn(label: Text('p (param)')),
+                    DataColumn(label: Text('p (perm)')),
+                    DataColumn(label: Text('η²')),
+                  ],
+                  rows: [
+                    for (final eff in effects)
+                      DataRow(
+                        cells: [
+                          DataCell(Text('${eff['term']}')),
+                          DataCell(
+                            Text(
+                              (eff['f_stat'] as num).toStringAsFixed(3),
+                            ),
+                          ),
+                          DataCell(
+                            Text('${eff['df_num']}, ${eff['df_denom']}'),
+                          ),
+                          DataCell(Text(_formatP(eff['p_value'] as num?))),
+                          DataCell(
+                            Text(
+                              _formatP(eff['p_perm'] as num?),
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: ((eff['p_perm'] as num?) ?? 1.0) < 0.05
+                                    ? Colors.teal.shade700
+                                    : null,
+                              ),
+                            ),
+                          ),
+                          DataCell(
+                            Text(
+                              (eff['eta_sq'] as num).toStringAsFixed(3),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              )
+            else
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  columns: const [
+                    DataColumn(label: Text('Factor')),
+                    DataColumn(label: Text('Comparison')),
+                    DataColumn(label: Text('Diff')),
+                    DataColumn(label: Text('t')),
+                    DataColumn(label: Text('p (raw)')),
+                    DataColumn(label: Text('p (adj)')),
+                  ],
+                  rows: [
+                    for (final c in posthocs)
+                      DataRow(
+                        cells: [
+                          DataCell(Text('${c['factor']}')),
+                          DataCell(
+                            Text('${c['group_a']} vs ${c['group_b']}'),
+                          ),
+                          DataCell(
+                            Text((c['mean_diff'] as num).toStringAsFixed(3)),
+                          ),
+                          DataCell(
+                            Text((c['t_stat'] as num).toStringAsFixed(3)),
+                          ),
+                          DataCell(Text(_formatP(c['p_raw'] as num?))),
+                          DataCell(
+                            Text(
+                              _formatP(c['p_adj'] as num?),
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: c['significant'] == true
+                                    ? Colors.teal.shade700
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildActionRunCard() {
     return Card(
       elevation: 0,
@@ -1280,7 +1932,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: _isAnalyzing ? null : _runAnalysis,
+                    onPressed: _isAnalyzing || _dartInspection == null
+                        ? null
+                        : _runDartPermutationAnalysis,
                     icon: _isAnalyzing
                         ? const SizedBox(
                             width: 18,
@@ -1290,19 +1944,34 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                               color: Colors.white,
                             ),
                           )
-                        : const Icon(Icons.play_arrow),
+                        : const Icon(Icons.auto_graph),
+                    label: Text(
+                      _isAnalyzing
+                          ? 'Running Permutation GLM/LMM…'
+                          : 'Run Permutation GLM / LMM (${_permCountCtrl.text} perms)',
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF0D9488),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      textStyle: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _isAnalyzing ? null : _runAnalysis,
+                    icon: const Icon(Icons.play_arrow),
                     label: Text(
                       _isAnalyzing
                           ? 'Running Models & Generating Report…'
-                          : 'Run Group Statistical Analysis (${_selectedMetrics.length} Metrics)',
+                          : 'Run Python Report (${_selectedMetrics.length} Metrics)',
                     ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF1F4E79),
+                    style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
-                      textStyle: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                      ),
                     ),
                   ),
                 ),

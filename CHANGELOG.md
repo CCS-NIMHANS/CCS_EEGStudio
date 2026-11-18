@@ -4,6 +4,15 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.50]
+
+### Interactive Batch File Selector, Unbiased Grand Average Localizer, Factor Grouping Designer & Permutation GLM/LMM Plots
+
+- **Integrated Folder & File Selection UI:** Defaulted `First N participants on folder import` to `0` (all files) and added `BatchFileSelectionDialog` across ERP Batch Stage 1/Stage 2 and EEG Batch folder imports. Users can inspect all discovered files, filter by filename/subfolder/wildcard, select/deselect/invert individual files, apply a First-N-subject subset, or merge additional `+ Files` / `+ Folder` sources from one dialog. Also added checkboxes and `+ Files` / `+ Folder` actions to `Review files and participant IDs…`.
+- **Unbiased Grand Average Localizer (ROI & Time Window):** Added `grand_average_preview` in the Rust engine (`erp_workbench.rs`) and `GrandAverageLocalizerDialog` in ERP Stage 3 (`Grand Average Localizer (ROI & Window)…`). View Grand Averages **Collapsed** across all groups & conditions (unbiased localizer), **By Condition**, **By Group**, or **Group × Condition** in either **ROI Mean** or **Butterfly + GFP** mode; drag or slide to adjust the measurement window with a live-updating **Scalp Topography**, click electrodes or pick the top peak channels, and apply the ROI, time window, and polarity directly to Stage 3.
+- **Factor & Grouping Designer (Folder/BIDS, CSV/Excel `.xlsx`, Interactive Filename Cropper & Grouping Tree):** Added `FactorGroupingDesignerDialog` (`TabularSheetReader` supporting `.xlsx`, `.csv`, and `.tsv` sheets like `Groups.xlsx` in pure Dart) with BIDS/folder auto-detection, an interactive **Filename Factor Cropper** that automatically infers extraction rules (keyword+digits, delimiter tokens, context anchors, or fixed slices) with live preview across all files, user-defined multi-factor management, and an interactive **Grouping Tree** to include or reject factor levels, branches, or individual files.
+- **N-Way Permutation GLM / LMM & Configurable Statistical Plots with Dummy Preview:** Added pure-Dart `ErpGroupStatsEngine` supporting N-way Factorial GLM and Linear Mixed Models (LMM with subject random intercepts) with exchangeable permutation testing (`p_perm`) and FDR/Bonferroni post-hoc contrasts. Added `ConfigurableStatsPlotWidget` allowing users to assign any factor to **X-Axis (Points)**, **Lines/Hue (Series)**, **Subplot Columns**, and **Subplot Rows**, reorder/exclude factor levels, and inspect a live **Sample Dummy Preview** before running analysis.
+
 ## [1.2.49]
 
 ### Synced Video/Audio, Neural Speech Tracking, XPIKAN Source Localization & Core Reliability Fixes

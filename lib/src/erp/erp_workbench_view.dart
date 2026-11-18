@@ -23,6 +23,9 @@ import 'review_math.dart';
 import 'channel_grid.dart';
 import 'topo_channel_selector.dart';
 import 'publication_plots.dart';
+import 'batch_file_selector.dart';
+import 'grand_average_dialog.dart';
+import 'factor_grouping_designer.dart';
 
 class ErpConditionConfig {
   ErpConditionConfig({
@@ -105,7 +108,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   final _paths = <String>[];
   final _subjects = <String, String>{};
   final _profiles = <String, Map<String, dynamic>>{};
-  final _limit = TextEditingController(text: '2'),
+  final _fileFactors = <String, Map<String, String>>{};
+  final _excludedFactorFiles = <String>{};
+  final _factorNames = <String>[];
+  final _limit = TextEditingController(text: '0'),
       _output = TextEditingController(),
       _bin = TextEditingController(text: '20'),
       _reject = TextEditingController(text: '0'),
@@ -1360,14 +1366,33 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     final directory = await FilePicker.getDirectoryPath();
     if (directory == null || !mounted) return;
     try {
-      final files = discoverErpRecordings(
-        directory,
-        firstSubjects: int.tryParse(_limit.text) ?? 2,
+      final allFiles = discoverErpRecordings(directory, firstSubjects: 0);
+      if (allFiles.isEmpty) {
+        if (mounted) {
+          setState(() => _status = 'No supported recordings found in $directory');
+        }
+        return;
+      }
+      final limit = int.tryParse(_limit.text) ?? 0;
+      final selection = await BatchFileSelectionDialog.show(
+        context,
+        initialFiles: allFiles,
+        rootDirectory: directory,
+        existingPaths: _paths,
+        initialSubjectLimit: limit,
+        title: 'Select Recordings from Folder',
       );
+      if (selection == null || !mounted) return;
       setState(() {
-        _paths
-          ..clear()
-          ..addAll(files);
+        if (selection.replaceExisting) {
+          _paths
+            ..clear()
+            ..addAll(selection.selectedFiles);
+        } else {
+          for (final p in selection.selectedFiles) {
+            if (!_paths.contains(p)) _paths.add(p);
+          }
+        }
         _result = null;
       });
       await _inspect();
@@ -1392,6 +1417,102 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       _result = null;
     });
     await _inspect();
+  }
+
+  Future<void> _openFactorGroupingDesigner(List<String> candidatePaths) async {
+    if (candidatePaths.isEmpty) return;
+    final res = await FactorGroupingDesignerDialog.show(
+      context,
+      filePaths: candidatePaths,
+      initialFileFactors: _fileFactors,
+      initialParticipantGroups: _participantGroups,
+      initialExcludedFiles: _excludedFactorFiles,
+    );
+    if (res == null || !mounted) return;
+    setState(() {
+      _fileFactors
+        ..clear()
+        ..addAll(res.fileFactors);
+      _excludedFactorFiles
+        ..clear()
+        ..addAll(res.excludedFiles);
+      _factorNames
+        ..clear()
+        ..addAll(res.factorNames);
+      _participantGroups
+        ..clear()
+        ..addAll(res.participantGroups);
+      _status =
+          'Configured ${res.factorNames.length} factor(s) across ${candidatePaths.length - res.excludedFiles.length} active file(s).';
+    });
+  }
+
+  Future<void> _openGrandAverageLocalizer() async {
+    List<Map<String, dynamic>> previewFiles = _results;
+    if (previewFiles.isEmpty) {
+      if (_selectedPaths.isEmpty) {
+        if (mounted) {
+          setState(
+            () => _status =
+                'Select recordings in Stage 2 before computing Grand Average.',
+          );
+        }
+        return;
+      }
+      setState(() {
+        _busy = true;
+        _progress = 0;
+        _status = 'Computing unbiased Grand Average preview…';
+      });
+      final tempDir = await Directory.systemTemp.createTemp('ccs_erp_ga_');
+      try {
+        final opts = _options()..['grand_average_preview'] = true;
+        final res = await _service.execute(
+          _inputs,
+          opts,
+          tempDir.path,
+          progress: (p, m) {
+            if (mounted) {
+              setState(() {
+                _progress = p;
+                _status = m;
+              });
+            }
+          },
+        );
+        previewFiles = (res['files'] as List? ?? [])
+            .map((e) => erpMap(e))
+            .toList();
+      } catch (e) {
+        if (mounted) setState(() => _status = 'Grand Average failed: $e');
+        return;
+      } finally {
+        if (await tempDir.exists()) await tempDir.delete(recursive: true);
+        if (mounted) setState(() => _busy = false);
+      }
+    }
+    if (previewFiles.isEmpty || !mounted) return;
+    final sel = await GrandAverageLocalizerDialog.show(
+      context,
+      files: previewFiles,
+      participantGroups: _participantGroups,
+      initialRoi: _roi.text,
+      initialStartMs: double.tryParse(_window0.text) ?? 200,
+      initialEndMs: double.tryParse(_window1.text) ?? 500,
+      initialPolarity: (_profile?['polarity'] as num?)?.toDouble() ?? 1.0,
+      negativeUp: _negativeUp,
+    );
+    if (sel == null || !mounted) return;
+    setState(() {
+      _roi.text = sel.roi;
+      _window0.text = sel.startMs.round().toString();
+      _window1.text = sel.endMs.round().toString();
+      if (_profile != null) {
+        _profile!['polarity'] = sel.polarity;
+      }
+      _status =
+          'Applied Grand Average ROI (${sel.roi}) and window (${sel.startMs.round()}–${sel.endMs.round()} ms).';
+    });
   }
 
   Future<void> _exportLinkedResults() async {
@@ -3575,14 +3696,33 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       : () async {
                           final directory = await FilePicker.getDirectoryPath();
                           if (directory == null || !mounted) return;
-                          final files = discoverErpRecordings(
+                          final allFiles = discoverErpRecordings(
                             directory,
-                            firstSubjects: int.tryParse(_limit.text) ?? 2,
+                            firstSubjects: 0,
                           );
+                          if (allFiles.isEmpty || !mounted) return;
+                          final limit = int.tryParse(_limit.text) ?? 0;
+                          final selection = await BatchFileSelectionDialog.show(
+                            context,
+                            initialFiles: allFiles,
+                            rootDirectory: directory,
+                            existingPaths: _prepFiles,
+                            initialSubjectLimit: limit,
+                            title: 'Select Preprocessing Files',
+                          );
+                          if (selection == null || !mounted) return;
                           setState(() {
-                            _prepFiles
-                              ..clear()
-                              ..addAll(files);
+                            if (selection.replaceExisting) {
+                              _prepFiles
+                                ..clear()
+                                ..addAll(selection.selectedFiles);
+                            } else {
+                              for (final f in selection.selectedFiles) {
+                                if (!_prepFiles.contains(f)) {
+                                  _prepFiles.add(f);
+                                }
+                              }
+                            }
                           });
                         },
                   style: TextButton.styleFrom(
@@ -3798,9 +3938,21 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           const SizedBox(height: 4),
           Text('${_selectedPaths.length} recordings selected'),
           if (_paths.isNotEmpty)
-            TextButton(
-              onPressed: _busy ? null : _reviewInputs,
-              child: const Text('Review files and participant IDs…'),
+            Wrap(
+              spacing: 8,
+              children: [
+                TextButton(
+                  onPressed: _busy ? null : _reviewInputs,
+                  child: const Text('Review files and participant IDs…'),
+                ),
+                TextButton.icon(
+                  onPressed: _busy
+                      ? null
+                      : () => _openFactorGroupingDesigner(_paths),
+                  icon: const Icon(Icons.account_tree_outlined, size: 15),
+                  label: const Text('Factor & Grouping Designer…'),
+                ),
+              ],
             ),
         ]),
         _card('2  Task and event markers', [
@@ -3975,6 +4127,17 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               onChanged: _busy
                   ? null
                   : (v) => setState(() => _profile!['polarity'] = v!),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _busy || (_selectedPaths.isEmpty && _results.isEmpty)
+                    ? null
+                    : _openGrandAverageLocalizer,
+                icon: const Icon(Icons.insights, size: 16),
+                label: const Text('Grand Average Localizer (ROI & Window)…'),
+              ),
             ),
           ]),
         _card('3  Analyses', [
@@ -4165,48 +4328,135 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     );
   }
   Future<void> _reviewInputs() async {
+    final kept = Set<String>.from(_paths);
+    final filterCtrl = TextEditingController();
     await showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Recordings and participant IDs'),
-        content: SizedBox(
-          width: 780,
-          height: 450,
-          child: ListView.builder(
-            itemCount: _paths.length,
-            itemBuilder: (context, i) {
-              final path = _paths[i];
-              final scan = _scanFiles
-                  .where((f) => f['path'] == path)
-                  .firstOrNull;
-              return ListTile(
-                title: Text(path.split(Platform.pathSeparator).last),
-                subtitle: Text(
-                  scan?['error']?.toString() ??
-                      '${scan?['marker_source'] ?? 'Inspect to read markers'} · ${scan?['event_count'] ?? 0} events\nTiming comparison: ${_timingSummary(scan?['timing_audit'])}',
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) {
+          final q = filterCtrl.text.trim().toLowerCase();
+          final visible = _paths
+              .where(
+                (p) =>
+                    q.isEmpty ||
+                    p.toLowerCase().contains(q) ||
+                    (_subjects[p] ?? '').toLowerCase().contains(q),
+              )
+              .toList();
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Expanded(
+                  child: Text('Recordings and participant IDs'),
                 ),
-                trailing: SizedBox(
-                  width: 150,
-                  child: TextFormField(
-                    initialValue: _subjects[path] ?? '',
-                    decoration: const InputDecoration(
-                      labelText: 'Participant ID',
-                    ),
-                    onChanged: (v) => _subjects[path] = v.trim(),
+                Text(
+                  '${kept.length} / ${_paths.length} selected',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 820,
+              height: 480,
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: filterCtrl,
+                          decoration: const InputDecoration(
+                            prefixIcon: Icon(Icons.search, size: 18),
+                            labelText: 'Filter recordings or participant IDs',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (_) => update(() {}),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: () => update(() => kept.addAll(visible)),
+                        child: const Text('Select all'),
+                      ),
+                      TextButton(
+                        onPressed: () => update(() => kept.removeAll(visible)),
+                        child: const Text('Deselect all'),
+                      ),
+                    ],
                   ),
-                ),
-              );
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-        ],
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: visible.length,
+                      itemBuilder: (context, i) {
+                        final path = visible[i];
+                        final scan = _scanFiles
+                            .where((f) => f['path'] == path)
+                            .firstOrNull;
+                        return CheckboxListTile(
+                          value: kept.contains(path),
+                          controlAffinity: ListTileControlAffinity.leading,
+                          onChanged: (v) => update(() {
+                            if (v == true) {
+                              kept.add(path);
+                            } else {
+                              kept.remove(path);
+                            }
+                          }),
+                          title: Text(path.split(Platform.pathSeparator).last),
+                          subtitle: Text(
+                            scan?['error']?.toString() ??
+                                '${scan?['marker_source'] ?? 'Inspect to read markers'} · ${scan?['event_count'] ?? 0} events\nTiming comparison: ${_timingSummary(scan?['timing_audit'])}',
+                          ),
+                          secondary: SizedBox(
+                            width: 150,
+                            child: TextFormField(
+                              initialValue: _subjects[path] ?? '',
+                              decoration: const InputDecoration(
+                                labelText: 'Participant ID',
+                                isDense: true,
+                              ),
+                              onChanged: (v) => _subjects[path] = v.trim(),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await _addFiles();
+                },
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('+ Files'),
+              ),
+              TextButton.icon(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await _addFolder();
+                },
+                icon: const Icon(Icons.folder_open, size: 16),
+                label: const Text('+ Folder'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  _paths.removeWhere((p) => !kept.contains(p));
+                  Navigator.pop(context);
+                },
+                child: Text('Done (${kept.length})'),
+              ),
+            ],
+          );
+        },
       ),
     );
+    filterCtrl.dispose();
     if (mounted) setState(() {});
   }
 
@@ -5201,7 +5451,15 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               PopupMenuButton<String>(
                 tooltip: 'Group statistics, participant labels & LMM/GLM models',
                 onSelected: (action) {
-                  if (action == 'label_groups') {
+                  if (action == 'factor_designer') {
+                    final paths = current
+                        .map((f) => '${f['path'] ?? ''}')
+                        .where((p) => p.isNotEmpty)
+                        .toList();
+                    _openFactorGroupingDesigner(
+                      paths.isNotEmpty ? paths : _paths,
+                    );
+                  } else if (action == 'label_groups') {
                     showDialog(
                       context: context,
                       builder: (ctx) => ErpGroupLabelDialog(
@@ -5222,6 +5480,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   }
                 },
                 itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'factor_designer',
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.account_tree_outlined, size: 18),
+                      title: Text('Factor & Grouping Designer…'),
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'label_groups',
                     child: ListTile(
@@ -6400,6 +6666,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                             groupData: d,
                             profile: erpMap(d['profile']),
                             participantGroups: _participantGroups,
+                            fileFactors: _fileFactors,
+                            excludedFiles: _excludedFactorFiles,
                             onGroupsChanged: (newGroups) {
                               setState(() {
                                 _participantGroups.clear();
