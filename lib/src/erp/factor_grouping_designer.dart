@@ -276,18 +276,22 @@ class FactorGroupingResult {
     required this.participantGroups,
     required this.excludedFiles,
     required this.factorNames,
+    this.primaryGroupFactor,
+    this.excludedLevelsByFactor = const {},
   });
 
   final Map<String, Map<String, String>> fileFactors;
   final Map<String, String> participantGroups;
   final Set<String> excludedFiles;
   final List<String> factorNames;
+  final String? primaryGroupFactor;
+  final Map<String, Set<String>> excludedLevelsByFactor;
 }
 
 /// Interactive Factor & Grouping Designer:
 /// - Auto-detects factors from folder/BIDS structure, CSV/Excel sheets, and filenames.
 /// - Interactive filename cropper to infer factor extraction rules automatically.
-/// - Interactive grouping tree to include/reject factor levels or branches.
+/// - Interactive grouping tree and per-factor level chips to include/reject levels or files.
 class FactorGroupingDesignerDialog extends StatefulWidget {
   const FactorGroupingDesignerDialog({
     super.key,
@@ -295,12 +299,14 @@ class FactorGroupingDesignerDialog extends StatefulWidget {
     this.initialFileFactors = const {},
     this.initialParticipantGroups = const {},
     this.initialExcludedFiles = const {},
+    this.initialPrimaryGroupFactor,
   });
 
   final List<String> filePaths;
   final Map<String, Map<String, String>> initialFileFactors;
   final Map<String, String> initialParticipantGroups;
   final Set<String> initialExcludedFiles;
+  final String? initialPrimaryGroupFactor;
 
   static Future<FactorGroupingResult?> show(
     BuildContext context, {
@@ -308,6 +314,7 @@ class FactorGroupingDesignerDialog extends StatefulWidget {
     Map<String, Map<String, String>> initialFileFactors = const {},
     Map<String, String> initialParticipantGroups = const {},
     Set<String> initialExcludedFiles = const {},
+    String? initialPrimaryGroupFactor,
   }) {
     return showDialog<FactorGroupingResult>(
       context: context,
@@ -316,8 +323,67 @@ class FactorGroupingDesignerDialog extends StatefulWidget {
         initialFileFactors: initialFileFactors,
         initialParticipantGroups: initialParticipantGroups,
         initialExcludedFiles: initialExcludedFiles,
+        initialPrimaryGroupFactor: initialPrimaryGroupFactor,
       ),
     );
+  }
+
+  /// Extracts a session token from BIDS (`ses-02`) or concatenated IDs (`SKYMED013SESSION03`).
+  static String? extractSessionToken(String stem) {
+    final bids = RegExp(
+      r'(?:^|_)ses-([A-Za-z0-9]+)',
+      caseSensitive: false,
+    ).firstMatch(stem);
+    if (bids != null) return bids.group(1);
+
+    final concat = RegExp(
+      r'(?:^|_|(?<=\d))(?:(session[-_]?\d+)|(visit[-_]?\d+))',
+      caseSensitive: false,
+    ).firstMatch(stem);
+    if (concat != null) {
+      return (concat.group(1) ?? concat.group(2))?.toUpperCase();
+    }
+    return null;
+  }
+
+  /// Boundary-safe longest-key match between a metadata lookup and a recording file.
+  static Map<String, String>? matchSheetRow(
+    String filePath,
+    String extractedSubject,
+    Map<String, Map<String, String>> lookup,
+  ) {
+    final subj = extractedSubject.trim().toLowerCase();
+    final subjNoPrefix = subj.replaceFirst(RegExp(r'^sub-'), '');
+    final base = filePath.split(RegExp(r'[/\\]')).last;
+    final stem = base.replaceFirst(RegExp(r'\.[^.]+$'), '').toLowerCase();
+
+    final exact = lookup[subj] ?? lookup[subjNoPrefix] ?? lookup[stem];
+    if (exact != null) return exact;
+
+    final sortedEntries = lookup.entries.toList()
+      ..sort((a, b) => b.key.length.compareTo(a.key.length));
+    for (final entry in sortedEntries) {
+      final key = entry.key.trim().toLowerCase();
+      if (key.length < 3) continue;
+      final candidateTargets = [subj, stem];
+      for (final target in candidateTargets) {
+        final idx = target.indexOf(key);
+        if (idx < 0) continue;
+        final afterIdx = idx + key.length;
+        final keyEndsDigit = RegExp(r'\d$').hasMatch(key);
+        final nextCharIsDigit =
+            afterIdx < target.length &&
+            RegExp(r'^\d').hasMatch(target.substring(afterIdx, afterIdx + 1));
+        if (keyEndsDigit && nextCharIsDigit) continue;
+        final prevOk =
+            idx == 0 ||
+            !RegExp(r'[A-Za-z0-9]$').hasMatch(target.substring(idx - 1, idx));
+        if (prevOk || target == subj) {
+          return entry.value;
+        }
+      }
+    }
+    return null;
   }
 
   @override
@@ -388,15 +454,28 @@ class _FactorGroupingDesignerDialogState
     // 1. Subject ID
     _ensureFactor('Subject');
     for (final p in widget.filePaths) {
-      _fileFactors[p]!['Subject'] ??= extractRecordingSubject(p);
-      if (_fileFactors[p]!['Subject']!.isEmpty) {
-        _fileFactors[p]!['Subject'] = extractRecordingSubject(p);
+      final parsedSubj = extractRecordingSubject(p);
+      if (!initial || (_fileFactors[p]!['Subject'] ?? '').isEmpty) {
+        _fileFactors[p]!['Subject'] = parsedSubj;
       }
     }
 
-    // 2. BIDS entities from filename / path
+    // 2. Session & BIDS entities from filename / path
+    final sessionVals = <String, String>{};
+    for (final p in widget.filePaths) {
+      final ses = FactorGroupingDesignerDialog.extractSessionToken(_stem(p));
+      if (ses != null && ses.isNotEmpty) {
+        sessionVals[p] = ses;
+      }
+    }
+    if (sessionVals.values.toSet().length >= 2) {
+      _ensureFactor('Session');
+      for (final p in widget.filePaths) {
+        _fileFactors[p]!['Session'] = sessionVals[p] ?? 'Unknown';
+      }
+    }
+
     final bidsEntities = <String, RegExp>{
-      'Session': RegExp(r'(?:^|_)(?:ses-|SESSION)(\w+)', caseSensitive: false),
       'Task': RegExp(r'(?:^|_)task-([^_]+)', caseSensitive: false),
       'Run': RegExp(r'(?:^|_)run-([^_]+)', caseSensitive: false),
     };
@@ -450,6 +529,8 @@ class _FactorGroupingDesignerDialogState
         final g = widget.initialParticipantGroups[subj];
         if (g != null && g.isNotEmpty) {
           _fileFactors[p]!['Group'] = g;
+        } else {
+          _fileFactors[p]!['Group'] ??= 'Unknown';
         }
       }
     }
@@ -460,7 +541,10 @@ class _FactorGroupingDesignerDialogState
         _ensureFactor(k);
       }
     }
-    if (_factorNames.contains('Group')) {
+    final preferred = widget.initialPrimaryGroupFactor;
+    if (preferred != null && _factorNames.contains(preferred)) {
+      _primaryGroupFactor = preferred;
+    } else if (_factorNames.contains('Group')) {
       _primaryGroupFactor = 'Group';
     } else if (_factorNames.isNotEmpty) {
       _primaryGroupFactor = _factorNames.first;
@@ -539,28 +623,18 @@ class _FactorGroupingDesignerDialogState
       _ensureFactor(col);
     }
     for (final p in widget.filePaths) {
-      final subj = (_fileFactors[p]?['Subject'] ?? extractRecordingSubject(p))
-          .toLowerCase();
-      final fname = _stem(p).toLowerCase();
-      Map<String, String>? hit = lookup[subj] ?? lookup[fname];
-      if (hit == null) {
-        // Prefix / substring match (e.g., SKYMED013 in SKYMED013SESSION03)
-        for (final entry in lookup.entries) {
-          if (entry.key.length >= 3 &&
-              (fname.startsWith(entry.key) || fname.contains(entry.key))) {
-            hit = entry.value;
-            break;
-          }
-        }
-      }
+      final subj = _fileFactors[p]?['Subject'] ?? extractRecordingSubject(p);
+      final hit = FactorGroupingDesignerDialog.matchSheetRow(p, subj, lookup);
       if (hit != null) {
         matched++;
         for (final col in _sheetImportCols) {
-          _fileFactors[p]![col] = hit[col] ?? 'Unknown';
+          final v = (hit[col] ?? '').trim();
+          _fileFactors[p]![col] = v.isEmpty ? 'Unknown' : v;
         }
       } else {
         for (final col in _sheetImportCols) {
-          _fileFactors[p]![col] ??= 'Unknown';
+          final cur = _fileFactors[p]![col];
+          _fileFactors[p]![col] = (cur == null || cur.isEmpty) ? 'Unknown' : cur;
         }
       }
     }
@@ -683,6 +757,25 @@ class _FactorGroupingDesignerDialogState
         FilledButton.icon(
           onPressed: () {
             final groups = <String, String>{};
+            final excludedLevels = <String, Set<String>>{};
+            for (final factor in _factorNames) {
+              final filesByLevel = <String, List<String>>{};
+              for (final p in widget.filePaths) {
+                final v = (_fileFactors[p]?[factor] ?? '').trim();
+                final val = v.isEmpty ? 'Unknown' : v;
+                filesByLevel.putIfAbsent(val, () => []).add(p);
+              }
+              final excludedForFactor = <String>{};
+              for (final e in filesByLevel.entries) {
+                if (e.value.isNotEmpty &&
+                    e.value.every(_excludedFiles.contains)) {
+                  excludedForFactor.add(e.key);
+                }
+              }
+              if (excludedForFactor.isNotEmpty) {
+                excludedLevels[factor] = excludedForFactor;
+              }
+            }
             for (final p in widget.filePaths) {
               if (_excludedFiles.contains(p)) continue;
               final subj =
@@ -699,6 +792,8 @@ class _FactorGroupingDesignerDialogState
                 participantGroups: groups,
                 excludedFiles: _excludedFiles,
                 factorNames: List<String>.from(_factorNames),
+                primaryGroupFactor: _primaryGroupFactor,
+                excludedLevelsByFactor: excludedLevels,
               ),
             );
           },
@@ -969,30 +1064,73 @@ class _FactorGroupingDesignerDialogState
     );
   }
 
+  Map<String, List<String>> _filesByLevelForFactor(String factor) {
+    final grouped = <String, List<String>>{};
+    for (final p in widget.filePaths) {
+      final raw = (_fileFactors[p]?[factor] ?? '').trim();
+      final val = raw.isEmpty ? 'Unknown' : raw;
+      grouped.putIfAbsent(val, () => []).add(p);
+    }
+    return grouped;
+  }
+
+  List<String> _activeUnknownFiles() {
+    final out = <String>[];
+    for (final p in widget.filePaths) {
+      if (_excludedFiles.contains(p)) continue;
+      final isUnknownPrimary =
+          (_fileFactors[p]?[_primaryGroupFactor] ?? '').trim().toLowerCase() ==
+          'unknown';
+      final isUnknownAny = _factorNames.any(
+        (f) => (_fileFactors[p]?[f] ?? '').trim().toLowerCase() == 'unknown',
+      );
+      if (isUnknownPrimary || isUnknownAny) {
+        out.add(p);
+      }
+    }
+    return out;
+  }
+
+  void _excludeAllUnknown() {
+    final unknownFiles = _activeUnknownFiles();
+    if (unknownFiles.isEmpty) return;
+    setState(() => _excludedFiles.addAll(unknownFiles));
+  }
+
   Widget _buildFactorsTab() {
+    final activeUnknown = _activeUnknownFiles();
     return ListView(
+      padding: const EdgeInsets.only(top: 12, right: 6, bottom: 8),
       children: [
         Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             FilledButton.tonalIcon(
               onPressed: () => _autoDetectFactors(initial: false),
               icon: const Icon(Icons.auto_fix_high, size: 16),
               label: const Text('Auto-Detect BIDS & Folders'),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 10),
             Expanded(
               child: DropdownButtonFormField<String>(
                 initialValue: _factorNames.contains(_primaryGroupFactor)
                     ? _primaryGroupFactor
                     : null,
+                isExpanded: true,
                 decoration: const InputDecoration(
                   labelText: 'Primary Group Factor',
-                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 12,
+                  ),
                   border: OutlineInputBorder(),
                 ),
                 items: [
                   for (final f in _factorNames)
-                    DropdownMenuItem(value: f, child: Text(f)),
+                    DropdownMenuItem(
+                      value: f,
+                      child: Text(f, overflow: TextOverflow.ellipsis),
+                    ),
                 ],
                 onChanged: (v) {
                   if (v != null) setState(() => _primaryGroupFactor = v);
@@ -1001,50 +1139,144 @@ class _FactorGroupingDesignerDialogState
             ),
           ],
         ),
-        const SizedBox(height: 10),
+        if (activeUnknown.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.amber.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.amber.withValues(alpha: 0.35)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.filter_alt_outlined,
+                  size: 16,
+                  color: Colors.amber,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${activeUnknown.length} active recording(s) currently tagged "Unknown".',
+                    style: const TextStyle(fontSize: 11.5),
+                  ),
+                ),
+                FilledButton.tonal(
+                  onPressed: _excludeAllUnknown,
+                  child: const Text(
+                    'Exclude "Unknown"',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
         const Text(
-          'Defined Factors (reorder to change tree hierarchy):',
+          'Defined Factors (click level chips to include / deselect, or reorder hierarchy):',
           style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 6),
         for (var i = 0; i < _factorNames.length; i++)
-          Card(
-            child: ListTile(
-              dense: true,
-              title: Text(_factorNames[i]),
-              subtitle: Text(
-                '${_fileFactors.values.map((m) => m[_factorNames[i]] ?? "").where((v) => v.isNotEmpty).toSet().length} levels: ${_fileFactors.values.map((m) => m[_factorNames[i]] ?? "").where((v) => v.isNotEmpty).toSet().take(6).join(", ")}',
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_upward, size: 16),
-                    onPressed: i == 0
-                        ? null
-                        : () => setState(() {
-                            final item = _factorNames.removeAt(i);
-                            _factorNames.insert(i - 1, item);
-                          }),
+          Builder(
+            builder: (context) {
+              final factor = _factorNames[i];
+              final byLevel = _filesByLevelForFactor(factor);
+              final sortedLevels = byLevel.keys.toList()..sort();
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 8, 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '$factor (${sortedLevels.length} level${sortedLevels.length == 1 ? "" : "s"})',
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.arrow_upward, size: 16),
+                            onPressed: i == 0
+                                ? null
+                                : () => setState(() {
+                                    final item = _factorNames.removeAt(i);
+                                    _factorNames.insert(i - 1, item);
+                                  }),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.arrow_downward, size: 16),
+                            onPressed: i == _factorNames.length - 1
+                                ? null
+                                : () => setState(() {
+                                    final item = _factorNames.removeAt(i);
+                                    _factorNames.insert(i + 1, item);
+                                  }),
+                          ),
+                          if (factor != 'Subject')
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, size: 16),
+                              onPressed: () => _removeFactor(factor),
+                            ),
+                        ],
+                      ),
+                      if (sortedLevels.length <= 40) ...[
+                        const SizedBox(height: 4),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final lvl in sortedLevels)
+                              Builder(
+                                builder: (context) {
+                                  final lvlFiles = byLevel[lvl]!;
+                                  final activeCount = lvlFiles
+                                      .where((p) => !_excludedFiles.contains(p))
+                                      .length;
+                                  final isIncluded = activeCount > 0;
+                                  final isUnknown =
+                                      lvl.toLowerCase() == 'unknown';
+                                  return FilterChip(
+                                    selected: isIncluded,
+                                    visualDensity: VisualDensity.compact,
+                                    label: Text(
+                                      '$lvl ($activeCount/${lvlFiles.length})',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: isUnknown && isIncluded
+                                            ? Colors.amber.shade200
+                                            : null,
+                                      ),
+                                    ),
+                                    onSelected: (selected) => setState(() {
+                                      if (selected) {
+                                        _excludedFiles.removeAll(lvlFiles);
+                                      } else {
+                                        _excludedFiles.addAll(lvlFiles);
+                                      }
+                                    }),
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
+                      ] else
+                        Text(
+                          '${sortedLevels.length} unique values (use Grouping Tree to toggle individually)',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                    ],
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.arrow_downward, size: 16),
-                    onPressed: i == _factorNames.length - 1
-                        ? null
-                        : () => setState(() {
-                            final item = _factorNames.removeAt(i);
-                            _factorNames.insert(i + 1, item);
-                          }),
-                  ),
-                  if (_factorNames[i] != 'Subject')
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline, size: 16),
-                      onPressed: () => _removeFactor(_factorNames[i]),
-                    ),
-                ],
-              ),
-            ),
+                ),
+              );
+            },
           ),
       ],
     );
@@ -1054,21 +1286,35 @@ class _FactorGroupingDesignerDialogState
     // Build hierarchical tree using _factorNames (excluding Subject at top if others exist)
     final treeFactors = _factorNames.where((f) => f != 'Subject').toList();
     if (treeFactors.isEmpty) treeFactors.addAll(_factorNames);
+    final activeUnknown = _activeUnknownFiles();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 6,
+          runSpacing: 2,
           children: [
-            const Expanded(
-              child: Text(
-                'Grouping Tree (Check/Uncheck to Include/Reject)',
-                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
-              ),
+            const Text(
+              'Grouping Tree (Check to Include)',
+              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
             ),
+            if (activeUnknown.isNotEmpty)
+              TextButton(
+                onPressed: _excludeAllUnknown,
+                child: Text(
+                  'Exclude Unknown (${activeUnknown.length})',
+                  style: const TextStyle(fontSize: 11, color: Colors.amber),
+                ),
+              ),
             TextButton(
               onPressed: () => setState(() => _excludedFiles.clear()),
-              child: const Text('Include All', style: TextStyle(fontSize: 11)),
+              child: const Text(
+                'Include All',
+                style: TextStyle(fontSize: 11),
+              ),
             ),
           ],
         ),
@@ -1156,6 +1402,7 @@ class _FactorGroupingDesignerDialogState
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                 ),
+                overflow: TextOverflow.ellipsis,
               ),
               childrenPadding: const EdgeInsets.only(left: 16),
               children: _buildTreeLevel(branchFiles, factors, depth + 1),

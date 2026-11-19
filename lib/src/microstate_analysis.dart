@@ -202,6 +202,16 @@ class MicrostateRecordingResult {
       );
 }
 
+// Top-level worker boundaries prevent Isolate closures from capturing UI State,
+// progress callbacks, or WidgetsFlutterBinding through shared async contexts.
+Future<void> writeMicrostateSignalInWorker(
+  String path,
+  Map<String, dynamic> signal,
+) => Isolate.run(() => File(path).writeAsString(jsonEncode(signal)));
+
+Future<Map<String, dynamic>> decodeMicrostateJsonInWorker(String rawJson) =>
+    Isolate.run(() => jsonDecode(rawJson) as Map<String, dynamic>);
+
 class MicrostateService {
   Process? _process;
   bool _cancelled = false;
@@ -242,7 +252,7 @@ class MicrostateService {
           if (recording.pointsPerEpoch != null)
             'source_epoch_samples': recording.pointsPerEpoch,
         };
-        await Isolate.run(() => file.writeAsString(jsonEncode(signal)));
+        await writeMicrostateSignalInWorker(file.path, signal);
         if (_cancelled) throw StateError('Analysis cancelled');
         inputs.add(file.path);
         names.add(File(recording.path).uri.pathSegments.last);
@@ -294,9 +304,7 @@ class MicrostateService {
         );
       }
       onProgress(.99, 'Reading microstate and syntax results…');
-      final decoded = await Isolate.run(
-        () => jsonDecode(stdout) as Map<String, dynamic>,
-      );
+      final decoded = await decodeMicrostateJsonInWorker(stdout);
       final result = MicrostateResult.fromJson(outputDirectory, decoded);
       onProgress(1, 'Microstate analysis and exports complete');
       return result;
@@ -380,6 +388,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   bool _msPrepRereference = true;
   bool _msPrepGedai = true;
   bool _cancelRequested = false;
+  bool _pickingOutput = false;
   String _message = '';
   String? _outputDirectory;
   MicrostateResult? _result;
@@ -466,12 +475,32 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
 
   String _name(String path) => File(path).uri.pathSegments.last;
 
+  Future<String?> _pickOutputDirectory({String? dialogTitle}) async {
+    if (_pickingOutput) return null;
+    setState(() => _pickingOutput = true);
+    try {
+      final chosen = await pickDirectorySafe(
+        dialogTitle: dialogTitle ?? 'Choose microstates output folder',
+        currentDirectory: _outputDirectory,
+        fallbackFilePath: _batch
+            ? _batchPaths.firstOrNull
+            : _interactiveInput?.path,
+      );
+      if (chosen != null && mounted) {
+        setState(() => _outputDirectory = chosen);
+      }
+      return chosen;
+    } finally {
+      if (mounted) setState(() => _pickingOutput = false);
+    }
+  }
+
   Future<void> _run() async {
     final paths = _batch ? List<String>.of(_batchPaths) : const <String>[];
     if (!_batch && _interactiveInput == null) return;
     if (_batch && paths.isEmpty) return;
     var output = _outputDirectory;
-    output ??= await FilePicker.getDirectoryPath(
+    output ??= await _pickOutputDirectory(
       dialogTitle: 'Microstate analysis output directory',
     );
     if (output == null) return;
@@ -624,6 +653,30 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                     '${_batchPaths.length} files queued',
                     style: const TextStyle(color: textMuted, fontSize: 11),
                   ),
+                  if (_prepFiles.isNotEmpty ||
+                      _batchPaths.isNotEmpty ||
+                      _result != null) ...[
+                    const SizedBox(width: 8),
+                    TextButton.icon(
+                      onPressed: _running
+                          ? null
+                          : () => setState(() {
+                              _prepFiles.clear();
+                              _batchPaths.clear();
+                              _result = null;
+                              _batchShowResults = false;
+                              _recordingIndex = 0;
+                              _analysisInputs = const [];
+                              _message = '';
+                            }),
+                      icon: const Icon(Icons.clear_all, size: 14),
+                      label: const Text('Clear All', style: TextStyle(fontSize: 11)),
+                      style: TextButton.styleFrom(
+                        foregroundColor: textMuted,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      ),
+                    ),
+                  ],
                   const Spacer(),
                   if (_result != null) ...[
                     OutlinedButton.icon(
@@ -772,19 +825,20 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                   ),
                   const SizedBox(width: 12),
                   OutlinedButton.icon(
-                    onPressed: _running
+                    onPressed: _running || _pickingOutput
                         ? null
-                        : () async {
-                            final x = await FilePicker.getDirectoryPath(
-                              dialogTitle:
-                                  'Select Microstates batch output directory',
-                            );
-                            if (x != null && mounted) {
-                              setState(() => _outputDirectory = x);
-                            }
-                          },
-                    icon: const Icon(Icons.folder_open, size: 14),
-                    label: const Text('Browse…'),
+                        : () => _pickOutputDirectory(
+                            dialogTitle:
+                                'Select Microstates batch output directory',
+                          ),
+                    icon: _pickingOutput
+                        ? const SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.folder_open, size: 14),
+                    label: Text(_pickingOutput ? 'Opening…' : 'Browse…'),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -1470,10 +1524,31 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
         ),
         const SizedBox(height: 10),
-        OutlinedButton.icon(
-          onPressed: _running ? null : _addBatch,
-          icon: const Icon(Icons.add),
-          label: const Text('Add recordings'),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _running ? null : _addBatch,
+                icon: const Icon(Icons.add),
+                label: const Text('Add recordings'),
+              ),
+            ),
+            if (_batchPaths.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _running
+                    ? null
+                    : () => setState(() {
+                        _batchPaths.clear();
+                        _result = null;
+                        _batchShowResults = false;
+                        _recordingIndex = 0;
+                      }),
+                icon: const Icon(Icons.clear_all, size: 15),
+                label: const Text('Clear'),
+              ),
+            ],
+          ],
         ),
         const SizedBox(height: 6),
         Text(
@@ -1545,15 +1620,20 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         _sectionTitle('3', 'Run & export'),
         const SizedBox(height: 9),
         OutlinedButton.icon(
-          onPressed: _running
+          onPressed: _running || _pickingOutput
               ? null
-              : () async {
-                  final x = await FilePicker.getDirectoryPath();
-                  if (x != null) setState(() => _outputDirectory = x);
-                },
-          icon: const Icon(Icons.folder),
+              : () => _pickOutputDirectory(),
+          icon: _pickingOutput
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.folder),
           label: Text(
-            _outputDirectory == null
+            _pickingOutput
+                ? 'Opening folder picker…'
+                : _outputDirectory == null
                 ? 'Choose output folder…'
                 : 'Output: ${File(_outputDirectory!).uri.pathSegments.where((x) => x.isNotEmpty).last}',
           ),
@@ -1727,22 +1807,63 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                           : 'Input: ${_name(_interactiveInput!.path)}\n${_interactiveInput!.labels.length} channels · ${_interactiveInput!.sampleRate.toStringAsFixed(1)} Hz',
                     ),
                     const SizedBox(height: 7),
-                    OutlinedButton.icon(
-                      onPressed: _running ? null : _chooseInteractiveRecording,
-                      icon: const Icon(Icons.folder_open, size: 16),
-                      label: Text(
-                        _interactiveInput == null
-                            ? 'Choose recording'
-                            : 'Choose a different recording',
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _running ? null : _chooseInteractiveRecording,
+                            icon: const Icon(Icons.folder_open, size: 16),
+                            label: Text(
+                              _interactiveInput == null
+                                  ? 'Choose recording'
+                                  : 'Choose a different recording',
+                            ),
+                          ),
+                        ),
+                        if (_interactiveRecording != null || _result != null) ...[
+                          const SizedBox(width: 8),
+                          TextButton.icon(
+                            onPressed: _running
+                                ? null
+                                : () => setState(() {
+                                    _interactiveRecording = null;
+                                    _result = null;
+                                    _analysisInputs = const [];
+                                    _message = '';
+                                  }),
+                            icon: const Icon(Icons.clear, size: 15),
+                            label: const Text('Clear'),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 )
               else ...[
-                OutlinedButton.icon(
-                  onPressed: _running ? null : _addBatch,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add recordings'),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _running ? null : _addBatch,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add recordings'),
+                      ),
+                    ),
+                    if (_batchPaths.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      TextButton.icon(
+                        onPressed: _running
+                            ? null
+                            : () => setState(() {
+                                _batchPaths.clear();
+                                _result = null;
+                                _recordingIndex = 0;
+                              }),
+                        icon: const Icon(Icons.clear_all, size: 15),
+                        label: const Text('Clear'),
+                      ),
+                    ],
+                  ],
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -1817,15 +1938,20 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
               _sectionTitle('3', 'Run & export'),
               const SizedBox(height: 9),
               OutlinedButton.icon(
-                onPressed: _running
+                onPressed: _running || _pickingOutput
                     ? null
-                    : () async {
-                        final x = await FilePicker.getDirectoryPath();
-                        if (x != null) setState(() => _outputDirectory = x);
-                      },
-                icon: const Icon(Icons.folder),
+                    : () => _pickOutputDirectory(),
+                icon: _pickingOutput
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.folder),
                 label: Text(
-                  _outputDirectory == null
+                  _pickingOutput
+                      ? 'Opening folder picker…'
+                      : _outputDirectory == null
                       ? 'Choose output folder…'
                       : 'Output: ${File(_outputDirectory!).uri.pathSegments.where((x) => x.isNotEmpty).last}',
                 ),

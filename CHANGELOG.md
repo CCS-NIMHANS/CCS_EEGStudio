@@ -4,6 +4,16 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.52]
+
+### Multi-Component ERP, Group ERSP/ERPimage/rERP, Isolate Worker Fixes & Folder Picker Overhaul
+
+- **Microstates, Group Statistics & Loader Isolate Fix:** Extracted all `Isolate.run` workers (`writeMicrostateSignalInWorker`, `decodeMicrostateJsonInWorker`, `_loadPortableInWorker`, `runDartPermutationsInWorker`) into top-level boundaries so live Flutter `State`/`BuildContext`/`WidgetsFlutterBinding` references are never captured by shared closures.
+- **macOS Folder Picker Freeze Fix (`pickDirectorySafe`):** Added re-entrancy locking, fast reachability checks avoiding slow `/Volumes/` SMB fallback mounts (`NSNavLastRootDirectory` stalls), frame yields, `"Opening…"` UI busy feedback, and async `Directory.list` folder enumeration across Microstates, ERP, and Batch Workspaces.
+- **BrainVision Recovery, Progress/ETA, New Instance & Clear Controls:** Added fuzzy `.eeg`/`.vmrk` companion mapping typo recovery (`vhdr_loader`), monotonic weighted batch progress & adaptive per-substep ETA (`BatchProgressTracker`), top-bar `New Instance` spawning, unified ERP progress banner, Stage 4 toggle/exports, and `Clear`/`Clear All` workspace resets.
+- **Multi-Component ERP, Cached Grand Average & Interlinked Exploration:** Added multi-component definitions (`ErpComponentSpec`) and `erp_component_measurements.csv`, concatenated subject/session parsing (`SKYMED013SESSION03` -> `SKYMED013`), cached in-memory `ErpWaveformCache` / `ErpCacheRecompute` (live epoch cropping, re-baselining, grouping, and components without disk re-I/O), Searchable Subject Picker, Group Filter, Global Channel/ROI Switcher, and interlinked `ErpChannelGrid` enlargement.
+- **Group ERSP/ITC, Group ERPimage, Group rERP/ML, 4+ Group Publication Plots & Group Statistics UX:** Added multi-group Okabe-Ito palettes, fixed Y-scaling & X-ticks, `RdBu_r` topomaps, and Fig 3 swatches (`publication_plots.dart`); added `GroupErpImagePanel`, `group_ersp_itc` with label fallback, subject-averaged rERP/decoding aggregation, and inline `Exclude "Unknown"` + `--exclude-levels` + composite-ROI preservation across Dart & Python Group Statistics.
+
 ## [1.2.51]
 
 ### True Algorithmic Parity Audit, Complete Method References & Permanent Pre-Release CI SOP

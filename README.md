@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.51</b> ·
+  <b>Current version: 1.2.52</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
   <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
@@ -70,13 +70,13 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 
 ---
 
-## ✨ What's New in v1.2.51
+## ✨ What's New in v1.2.52
 
-- **Algorithmic Parity Audit & Upgrades:** Windowed PREP-style robust bad-channel detection on filtered EEG, Welch + Savitzky–Golay `restingIAF` / Klimesch bands + reflection-padded Cohen (2014) 10-order median-filtered frequency sliding, Crosse et al. (2016) mTRF Neural Speech Tracking with streaming Hilbert+power-law (`env^0.3`) envelope & circular-shift null testing, concentric 3-shell domain-decomposed radial B-spline × spherical harmonic **XPIKAN** forward/inverse solver (`r > 0.999` vs analytical Legendre series), and split-plot mixed-design ANOVA within-subject error partitioning.
-- **Synced Media Strip Alongside Features & Parameter Logs:** Live **Audio & Envelope** strip + cursor sync directly inside **Plots & Report (TopoStats)**, plus single-file & batch publication parameter logs (`analysis_parameters_log.md` + JSON).
-- **Linux Packaging & Pre-Release CI SOP:** Added `mpv-libs`/`libmpv` packaging parity, RPM/DEB symlinks, and [Pre-Release Preflight SOP](docs/RELEASE_SOP.md) (`scripts/preflight_release.sh`).
+- **Microstates & Group Statistics Stability + Non-Blocking Folder Picker:** Moved all `Isolate.run` calls to top-level worker boundaries to eliminate unsendable `WidgetsFlutterBinding` closure errors in Microstate Analysis and Permutation GLM/LMM; added `pickDirectorySafe` with fast local `initialDirectory` fallback and re-entrancy locking so macOS folder dialogs open cleanly without stalling.
+- **Multi-Component ERP, Cached Fast Recompute & Group Time-Frequency/Image:** Added simultaneous multi-component ROI specs (`erp_component_measurements.csv`), instant in-memory `ErpWaveformCache` recomputation (live epoch limits, re-baselining, factor filtering & `Exclude "Unknown"`), interlinked channel grid + enlarged plots, Group ERPimage, Group ERSP/ITC (`group_ersp_itc`), subject-averaged rERP/decoding, and 4+ group Okabe-Ito / `RdBu_r` publication figures.
+- **BrainVision Recovery, Unified Batch Progress/ETA, `New Instance` & Clear Controls:** Added automatic companion `.eeg`/`.vmrk` typo recovery, monotonic weighted progress + adaptive ETA across batch stages, `Clear`/`Clear All` resets, and Stage 4 export toggles.
 
-See [CHANGELOG.md](CHANGELOG.md) for full release history (v1.2.49 synced media, v1.2.50 batch localizer & stats plots, and earlier releases).
+See [CHANGELOG.md](CHANGELOG.md) for full release history (v1.2.51 algorithmic parity audit, v1.2.50 batch localizer & stats plots, and earlier releases).
 
 ---
 

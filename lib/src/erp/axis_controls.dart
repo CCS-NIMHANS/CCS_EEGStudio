@@ -49,14 +49,15 @@ class _ErpAxisControlsState extends State<ErpAxisControls> {
   Widget build(BuildContext context) => ExpansionTile(
     title: const Text('Plot axis limits'),
     subtitle: const Text('Display only · time (ms) and amplitude (µV)'),
+    childrenPadding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
     children: [
       Wrap(
-        spacing: 8,
-        runSpacing: 8,
+        spacing: 10,
+        runSpacing: 10,
         children: [
           for (var i = 0; i < 4; i++)
             SizedBox(
-              width: 150,
+              width: 158,
               child: TextField(
                 controller: _fields[i],
                 keyboardType: const TextInputType.numberWithOptions(
@@ -71,6 +72,11 @@ class _ErpAxisControlsState extends State<ErpAxisControls> {
                     'Amplitude max (µV)',
                   ][i],
                   hintText: 'Auto',
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 12,
+                  ),
+                  border: const OutlineInputBorder(),
                 ),
                 onSubmitted: (_) => _apply(),
               ),

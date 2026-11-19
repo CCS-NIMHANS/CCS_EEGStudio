@@ -135,10 +135,32 @@ GROUP_CANDIDATE_NAMES = [
 ]
 
 SUBGROUP_CANDIDATE_NAMES = [
-    "roi", "region", "epoch_condition", "state", "session", "sessn",
-    "chan", "channel", "electrode", "derivation", "eeg channel", "ageid", "age_id",
-    "session", "session_id", "visit", "time_point", "timepoint", "epoch"
+    "roi", "region", "epoch_condition", "condition", "component", "state",
+    "session", "sessn", "chan", "channel", "electrode", "derivation",
+    "eeg channel", "ageid", "age_id", "session_id", "visit", "time_point",
+    "timepoint", "epoch",
 ]
+
+ERP_METRIC_NAMES = {
+    "mean", "mean_uv", "signed_auc", "signed_auc_uv_s",
+    "positive_auc", "positive_auc_uv_s", "negative_auc", "negative_auc_uv_s",
+    "peak_amplitude", "peak_amplitude_uv", "peak_latency", "peak_latency_s",
+    "fractional_area_latency", "fractional_area_latency_s",
+    "fractional_peak_latency", "fractional_peak_latency_s",
+    "gfp_peak", "gfp_peak_latency",
+}
+
+
+def is_feature_metric_column(col: str) -> bool:
+    cl = str(col).lower().strip()
+    return (
+        cl in ERP_METRIC_NAMES
+        or cl.endswith((
+            "_psd", "_fooof", "_irasa", "_nonlinear", "_dfa", "_fei",
+            "_dfa_short", "_fei_short", "_erp", "_uv", "_uv_s",
+        ))
+        or cl.startswith(("conn_", "graph_", "acw"))
+    )
 
 COVARIATE_CANDIDATE_NAMES = [
     "age", "gender", "sex", "education", "practiceyears", "bmi", "trt", "date_of_birth"
@@ -279,6 +301,45 @@ def recording_key(value):
     return re.sub(r"(_clean|_preprocessed|_prepared|_cropped|_subepochs|_epoched)+$", "", value)
 
 
+def _parse_exclude_levels_arg(raw: str | None) -> dict[str, list[str]]:
+    if not raw or not str(raw).strip():
+        return {}
+    text = str(raw).strip()
+    if text.startswith("{"):
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return {
+                str(k): [str(x).strip() for x in (v if isinstance(v, list) else [v]) if str(x).strip()]
+                for k, v in parsed.items()
+            }
+    out: dict[str, list[str]] = {}
+    for part in text.split(";"):
+        if ":" not in part:
+            continue
+        col, vals = part.split(":", 1)
+        items = [v.strip() for v in vals.split(",") if v.strip()]
+        if col.strip() and items:
+            out[col.strip()] = items
+    return out
+
+
+def _apply_exclude_levels(df: pd.DataFrame, exclude_levels: dict[str, list[str]] | None) -> pd.DataFrame:
+    if not exclude_levels:
+        return df
+    col_lookup = {str(c).lower(): c for c in df.columns}
+    out = df
+    for col, vals in exclude_levels.items():
+        actual_col = col if col in out.columns else col_lookup.get(str(col).lower())
+        if not actual_col or not vals:
+            continue
+        excl_lower = {str(v).strip().lower() for v in vals if str(v).strip()}
+        if not excl_lower:
+            continue
+        mask = ~out[actual_col].astype(str).str.strip().str.lower().isin(excl_lower)
+        out = out[mask].copy()
+    return out
+
+
 def prepare_eeg_table(df, metadata_path=None, metadata_key=None, include_non_eeg=False):
     df = df.copy()
     if "Chan" in df.columns and not include_non_eeg:
@@ -286,38 +347,95 @@ def prepare_eeg_table(df, metadata_path=None, metadata_key=None, include_non_eeg
 
     if metadata_path:
         csv_metadata = str(metadata_path).lower().endswith('.csv')
-        metadata_columns = pd.read_csv(metadata_path,nrows=0).columns if csv_metadata else pd.read_excel(metadata_path,nrows=0).columns
+        metadata_columns = pd.read_csv(metadata_path, nrows=0).columns if csv_metadata else pd.read_excel(metadata_path, nrows=0).columns
         join_column = metadata_key or metadata_columns[0]
-        metadata = pd.read_csv(metadata_path,dtype={join_column:str}) if csv_metadata else pd.read_excel(metadata_path,dtype={join_column:str})
+        metadata = pd.read_csv(metadata_path, dtype={join_column: str}) if csv_metadata else pd.read_excel(metadata_path, dtype={join_column: str})
         key = metadata_key or metadata.columns[0]
         if key not in metadata.columns:
             raise ValueError(f"Metadata key {key!r} is not present")
-        source_key = key if key in df.columns else "subjid" if key.lower() in ("subject", "subject_id", "subject code", "subj", "subjid") and "subjid" in df.columns else "Subj" if key.lower() in ("subject", "subject_id", "subject code", "subj") and "Subj" in df.columns else "filename" if "filename" in df.columns else "Subj" if "Subj" in df.columns else None
+        df_cols_lower = {str(c).lower(): c for c in df.columns}
+        subject_aliases = ("subject", "subject_id", "subject code", "subj", "subjid", "participant", "participant_id")
+        if key in df.columns:
+            source_key = key
+        elif key.lower() in df_cols_lower:
+            source_key = df_cols_lower[key.lower()]
+        elif key.lower() in subject_aliases:
+            source_key = next((df_cols_lower[a] for a in subject_aliases if a in df_cols_lower), None)
+        else:
+            source_key = None
+        if source_key is None:
+            source_key = df_cols_lower.get("filename") or df_cols_lower.get("file") or df_cols_lower.get("subj") or df_cols_lower.get("subjid")
         if source_key is None:
             raise ValueError("No filename or subject key in feature CSV")
-        df = df.copy(); metadata = metadata.copy()
-        subject_join = source_key.lower() in ('subject','subject_id','subject code','subj','subjid','participant_id')
+        df = df.copy()
+        metadata = metadata.copy()
+        subject_join = source_key.lower() in ('subject', 'subject_id', 'subject code', 'subj', 'subjid', 'participant', 'participant_id')
+
         def normalize_join(value):
-            result=recording_key(value)
-            return re.sub(r'^sub-', '', result) if subject_join else result
+            result = recording_key(value)
+            if subject_join:
+                result = re.sub(r'^sub-', '', result)
+                result = re.sub(r'(?:[-_]?|(?<=\d))(?:session|ses|visit)[-_]?\d+.*$', '', result, flags=re.IGNORECASE)
+            return result
+
         df["__join_key"] = df[source_key].map(normalize_join)
         metadata["__join_key"] = metadata[key].map(normalize_join)
         if metadata["__join_key"].duplicated().any():
             raise ValueError("Metadata key is ambiguous: each recording/subject must match exactly one row")
-        df = df.merge(metadata, on="__join_key", how="left", validate="many_to_one", indicator=True, suffixes=("", "_metadata"))
-        if (df["_merge"] != "both").any():
-            raise ValueError("Some feature recordings have no metadata match. Resolve missing matches before modeling.")
-        df = df.drop(columns=["__join_key", "_merge"])
+        meta_payload_cols = [c for c in metadata.columns if c not in (key, "__join_key")]
+        df = df.merge(
+            metadata[["__join_key"] + meta_payload_cols],
+            on="__join_key",
+            how="left",
+            validate="many_to_one",
+            indicator=True,
+            suffixes=("", "_metadata"),
+        )
+        unmatched_mask = df["_merge"] != "both"
+        if unmatched_mask.any():
+            unmatched_cnt = int(unmatched_mask.sum())
+            df.attrs["unmatched_metadata_rows"] = unmatched_cnt
+            sys.stderr.write(
+                f"WARNING: {unmatched_cnt} row(s) had no match in {Path(str(metadata_path)).name}; labeled as 'Unknown'.\n"
+            )
+            for mc in meta_payload_cols:
+                target_col = f"{mc}_metadata" if f"{mc}_metadata" in df.columns else mc
+                if target_col in df.columns and df[target_col].dtype == object:
+                    df[target_col] = df[target_col].fillna("Unknown")
+        # If metadata provided a non-empty value for an existing empty/'Unknown' column (e.g., group/Group), fill it
+        drop_meta_dups = []
+        for mc in meta_payload_cols:
+            meta_col = f"{mc}_metadata" if f"{mc}_metadata" in df.columns else (mc if mc in df.columns else None)
+            if not meta_col:
+                continue
+            existing_ci = next((c for c in df.columns if str(c).lower() == str(mc).lower() and c != meta_col and not str(c).endswith("_metadata")), None)
+            if existing_ci is not None:
+                cur_norm = df[existing_ci].astype(str).str.strip().str.lower()
+                missing_cur = df[existing_ci].isna() | cur_norm.isin(("", "unknown", "unassigned", "nan", "none"))
+                has_meta = df[meta_col].notna() & (df[meta_col].astype(str).str.strip() != "")
+                df.loc[missing_cur & has_meta, existing_ci] = df.loc[missing_cur & has_meta, meta_col]
+                if f"{mc}_metadata" in df.columns:
+                    drop_meta_dups.append(f"{mc}_metadata")
+        # Fill missing string values in newly added metadata columns
+        for mc in meta_payload_cols:
+            if mc in df.columns and df[mc].dtype == object:
+                df[mc] = df[mc].fillna("Unknown")
+        df = df.drop(columns=["__join_key", "_merge"] + drop_meta_dups)
     if "filename" in df.columns and "Epoch" in df.columns:
         if "epoch_label" in df.columns:
-            labels=df["epoch_label"].astype(str).str.replace(r"\s+/\s+[-+0-9.]+\s*s$","",regex=True).str.strip()
-            valid=~labels.str.match(r"(?i)^(NA|nan|none|epoch\s*\d+|trial\s*\d+)$")
-            if valid.any(): df["epoch_condition"]=labels.where(valid,"unlabeled")
-        keys = ["filename"] + (["epoch_condition"] if "epoch_condition" in df.columns else []) + (["Chan"] if "Chan" in df.columns else [])
+            labels = df["epoch_label"].astype(str).str.replace(r"\s+/\s+[-+0-9.]+\s*s$", "", regex=True).str.strip()
+            valid = ~labels.str.match(r"(?i)^(NA|nan|none|epoch\s*\d+|trial\s*\d+)$")
+            if valid.any():
+                df["epoch_condition"] = labels.where(valid, "unlabeled")
+        keys = (
+            ["filename"]
+            + [c for c in ("epoch_condition", "condition", "Condition", "component", "Component") if c in df.columns]
+            + (["Chan"] if "Chan" in df.columns else [])
+        )
         ignored = {"Epoch", "Bin", "Start_s", "End_s", "EpochStart_s", "EpochEnd_s", "bin_idx", "bin_start_s", "bin_end_s", "epoch_label", "mode", "epoch_start_s", "epoch_end_s", "dfa_fei_window_s", "dfa_fei_context_start_s", "dfa_fei_context_end_s", "event_markers", "connectivity_settings"}
-        metrics = [c for c in df.columns if c not in ignored and (
-            c.lower().endswith(("_psd", "_fooof", "_irasa", "_nonlinear", "_dfa", "_fei", "_dfa_short", "_fei_short", "_erp")) or c.lower().startswith(("conn_", "graph_", "acw")))]
-        if not metrics: raise ValueError("No EEG feature columns found")
+        metrics = [c for c in df.columns if c not in ignored and is_feature_metric_column(c)]
+        if not metrics:
+            raise ValueError("No EEG feature columns found")
         for column in metrics:
             converted = pd.to_numeric(df[column], errors="coerce")
             invalid = df[column].notna() & converted.isna() & df[column].astype(str).str.strip().ne("")
@@ -326,19 +444,19 @@ def prepare_eeg_table(df, metadata_path=None, metadata_key=None, include_non_eeg
                 raise ValueError(f"Non-numeric feature value in {column}: {example!r}. Check CSV column alignment.")
             df[column] = converted.replace([np.inf, -np.inf], np.nan)
         masked_fei = 0
-        lookup={c.lower():c for c in df}
+        lookup = {c.lower(): c for c in df}
         for column in metrics:
-            lower=column.lower()
-            if lower.endswith(('_fei','_fei_short')):
-                partner=re.sub(r'_fei(_short)?$',r'_dfa\1',lower)
+            lower = column.lower()
+            if lower.endswith(('_fei', '_fei_short')):
+                partner = re.sub(r'_fei(_short)?$', r'_dfa\1', lower)
                 if partner in lookup:
-                    dfa=df[lookup[partner]].to_numpy(dtype=float,na_value=np.nan)
-                    invalid=pd.Series(~np.isfinite(dfa) | (dfa <= .6),index=df.index)
+                    dfa = df[lookup[partner]].to_numpy(dtype=float, na_value=np.nan)
+                    invalid = pd.Series(~np.isfinite(dfa) | (dfa <= .6), index=df.index)
                     masked_fei += int((invalid & df[column].notna()).sum())
-                    df.loc[invalid,column]=np.nan
+                    df.loc[invalid, column] = np.nan
         aggregation = {c: "mean" if c in metrics else "first" for c in df.columns if c not in keys and c not in ignored}
         df = df.groupby(keys, dropna=False, sort=False).agg(aggregation).reset_index()
-        df.attrs['excluded_unqualified_fei']=masked_fei
+        df.attrs['excluded_unqualified_fei'] = masked_fei
     return df
 
 
@@ -353,8 +471,14 @@ def apply_channel_scope(
     if "Chan" not in df.columns:
         return df
 
-    # Filter out non-EEG channels by default
-    df = filter_eeg_channels(df, include_non_eeg=include_non_eeg)
+    # Detect composite ERP ROIs (e.g. 'Cz FC1 FC2', 'Fz+Cz') before filtering individual scalp leads
+    chan_vals = [str(c).strip() for c in df["Chan"].dropna().unique()]
+    has_composite_roi = any(re.search(r'[+,\s]', c) for c in chan_vals) or (
+        len(chan_vals) > 0 and not any(normalize_channel_name(c) in CHANNEL_TO_ROI for c in chan_vals)
+    )
+
+    if not has_composite_roi:
+        df = filter_eeg_channels(df, include_non_eeg=include_non_eeg)
 
     # Exclude user-specified channels
     if exclude_channels:
@@ -367,21 +491,25 @@ def apply_channel_scope(
         df = df[df["Chan"].apply(lambda c: normalize_channel_name(c) in in_set)].copy()
 
     scope_str = str(scope).lower().strip()
-    id_key = "filename" if "filename" in df.columns else ("Subject" if "Subject" in df.columns else ("subjid" if "subjid" in df.columns else None))
-    keys = ([id_key] if id_key else []) + (["epoch_condition"] if "epoch_condition" in df.columns else [])
-    metrics = [
-        c for c in df.columns
-        if c.lower().endswith(("_psd", "_fooof", "_irasa", "_nonlinear", "_dfa", "_fei", "_dfa_short", "_fei_short", "_erp"))
-        or c.lower().startswith(("conn_", "graph_", "acw"))
+    id_key = next((k for k in ("filename", "file", "Subject", "subject", "subjid") if k in df.columns), None)
+    extra_keys = [
+        k for k in ("epoch_condition", "condition", "Condition", "component", "Component", "session", "Session", "task", "Task", "group", "Group")
+        if k in df.columns and k != id_key
     ]
+    keys = ([id_key] if id_key else []) + extra_keys
+    metrics = [c for c in df.columns if is_feature_metric_column(c)]
 
     # Mode A: Regional ROIs (Frontal, Central, Temporal, Parietal, Occipital)
     if scope_str in ("roi", "rois", "regions", "regional"):
+        if has_composite_roi:
+            return df
         if not id_key:
             raise ValueError("ROI grouping requires a filename or Subject column")
         df["_norm_ch"] = df["Chan"].apply(normalize_channel_name)
         df["ROI"] = df["_norm_ch"].map(CHANNEL_TO_ROI)
         df = df.dropna(subset=["ROI"]).copy()
+        if df.empty:
+            return df
 
         agg = {c: "mean" if c in metrics else "first" for c in df.columns if c not in keys and c not in ("Chan", "_norm_ch", "ROI")}
         result = df.groupby(keys + ["ROI"], dropna=False, sort=False).agg(agg).reset_index()
@@ -407,7 +535,7 @@ def apply_channel_scope(
             raise ValueError(f"Channel {scope!r} is not present in scalp EEG derivations")
         return selected
 
-    # Mode D: "all" genuine EEG channels
+    # Mode D: "all" genuine EEG channels / composite ROIs
     return df
 
 
@@ -450,7 +578,12 @@ def detect_columns(df: pd.DataFrame) -> dict[str, Any]:
                 categorical_cols.append(c)
 
     # Require actual varying factors; recording IDs and constant task labels are not group contrasts.
-    factors=[c for c in categorical_cols if c not in (subject_id,"filename","source_file","source_path") and df[c].nunique(dropna=True)>=2]
+    factors = [
+        c for c in categorical_cols
+        if cols_clean[c] not in ("filename", "file", "source_file", "source_path", "path")
+        and c != subject_id
+        and df[c].nunique(dropna=True) >= 2
+    ]
     # Primary group
     group_col = None
     for cand in GROUP_CANDIDATE_NAMES:
@@ -485,14 +618,25 @@ def detect_columns(df: pd.DataFrame) -> dict[str, Any]:
     # Numeric metric columns
     metric_cols = []
     for c in cols:
-        if cols_clean[c] in SUBJECT_CANDIDATE_NAMES: continue
-        if c in (subject_id, group_col, subgroup_col, "source_file", "source_path", "filename", "Chan", "Epoch", "Bin", "Start_s", "End_s", "subjid", "sessn", "condn", "bin_idx", "bin_start_s", "bin_end_s", "epoch_start_s", "epoch_end_s", "dfa_fei_window_s", "dfa_fei_context_start_s", "dfa_fei_context_end_s", "event_markers", "connectivity_settings"):
+        cl = cols_clean[c]
+        if cl in SUBJECT_CANDIDATE_NAMES:
+            continue
+        if c in (subject_id, group_col, subgroup_col, "source_file", "source_path", "filename", "file", "Chan", "Epoch", "Bin", "Start_s", "End_s", "subjid", "sessn", "condn", "bin_idx", "bin_start_s", "bin_end_s", "epoch_start_s", "epoch_end_s", "window_start_ms", "window_end_ms", "polarity", "n_trials", "dfa_fei_window_s", "dfa_fei_context_start_s", "dfa_fei_context_end_s", "event_markers", "connectivity_settings"):
             continue
         if c in covariates:
             continue
         s = pd.to_numeric(df[c], errors="coerce")
         if s.notna().sum() >= 3 and s.nunique() >= 2:
             metric_cols.append(c)
+
+    has_composite_roi = True
+    if "Chan" in df.columns:
+        chan_vals = [str(v).strip() for v in df["Chan"].dropna().unique()]
+        has_composite_roi = (
+            len(chan_vals) == 0
+            or any(re.search(r'[+,\s]', v) for v in chan_vals)
+            or not any(normalize_channel_name(v) in ELECTRODE_COORDS_2D for v in chan_vals)
+        )
 
     return {
         "subject_id": subject_id,
@@ -504,9 +648,11 @@ def detect_columns(df: pd.DataFrame) -> dict[str, Any]:
         "total_rows": len(df),
         "total_columns": len(cols),
         "unique_subjects": int(df[subject_id].nunique(dropna=True)) if subject_id else len(df),
-        "excluded_unqualified_fei": int(df.attrs.get('excluded_unqualified_fei',0)),
-        "recording_count": int(df['filename'].nunique()) if 'filename' in df else len(df),
+        "excluded_unqualified_fei": int(df.attrs.get('excluded_unqualified_fei', 0)),
+        "unmatched_metadata_rows": int(df.attrs.get('unmatched_metadata_rows', 0)),
+        "recording_count": int(df['filename'].nunique()) if 'filename' in df else (int(df['file'].nunique()) if 'file' in df else len(df)),
         "channel_count": int(df['Chan'].nunique()) if 'Chan' in df else 0,
+        "has_composite_roi": bool(has_composite_roi),
     }
 
 
@@ -2212,6 +2358,7 @@ def run_group_analysis(
     channel_scope: str = "roi",
     include_channels: list[str] | None = None,
     exclude_channels: list[str] | None = None,
+    exclude_levels: dict[str, list[str]] | None = None,
     emit_json: bool = True,
 ) -> dict[str, Any]:
     """Runs the complete group-level analysis pipeline."""
@@ -2242,6 +2389,11 @@ def run_group_analysis(
     final_group_col = group_col or detected["group_col"]
     final_subgroup_col = subgroup_col or detected["subgroup_col"]
     final_covariates = covariates or detected["covariates"]
+
+    if exclude_levels:
+        df = _apply_exclude_levels(df, exclude_levels)
+        raw_eeg_df = _apply_exclude_levels(raw_eeg_df, exclude_levels)
+        detected = detect_columns(df)
 
     if not final_group_col or final_group_col not in df.columns:
         raise ValueError(f"Could not determine valid grouping column in {csv_path.name}")
@@ -2455,6 +2607,7 @@ def main() -> None:
     parser.add_argument("--channel", default="all", help="all, mean, roi, or a channel name")
     parser.add_argument("--include-channels", help="Comma-separated channel names to include")
     parser.add_argument("--exclude-channels", help="Comma-separated channel names to exclude")
+    parser.add_argument("--exclude-levels", help="JSON dict or 'Col:Val1,Val2' of factor levels to exclude")
     parser.add_argument("--config", help="Path to JSON configuration file")
 
     args = parser.parse_args()
@@ -2478,6 +2631,8 @@ def main() -> None:
         chan_scope = cfg.get("channel", "all")
         inc_chans = cfg.get("include_channels")
         exc_chans = cfg.get("exclude_channels")
+        raw_excl = cfg.get("exclude_levels")
+        excl_levels = raw_excl if isinstance(raw_excl, dict) else _parse_exclude_levels_arg(raw_excl)
     else:
         if not args.csv:
             parser.print_help()
@@ -2498,6 +2653,7 @@ def main() -> None:
         chan_scope = args.channel
         inc_chans = [c.strip() for c in args.include_channels.split(",") if c.strip()] if getattr(args, "include_channels", None) else None
         exc_chans = [c.strip() for c in args.exclude_channels.split(",") if c.strip()] if getattr(args, "exclude_channels", None) else None
+        excl_levels = _parse_exclude_levels_arg(getattr(args, "exclude_levels", None))
 
     if not csv_file.exists():
         sys.stderr.write(f"Error: CSV file not found: {csv_file}\n")
@@ -2527,6 +2683,7 @@ def main() -> None:
         channel_scope=chan_scope,
         include_channels=inc_chans,
         exclude_channels=exc_chans,
+        exclude_levels=excl_levels,
         emit_json=True,
     )
     print(json.dumps(payload, indent=2))

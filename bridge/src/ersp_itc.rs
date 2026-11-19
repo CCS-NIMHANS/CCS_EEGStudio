@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use rustfft::num_complex::Complex64;
 use rustfft::FftPlanner;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::path::Path;
 
@@ -19,6 +20,10 @@ pub struct ErspItcJob {
     pub condition_a_trials: Vec<usize>,
     #[serde(default)]
     pub condition_b_trials: Vec<usize>,
+    #[serde(default)]
+    pub condition_a_labels: Vec<String>,
+    #[serde(default)]
+    pub condition_b_labels: Vec<String>,
     #[serde(default)]
     pub epoch_tmin_ms: Option<f64>,
     #[serde(default = "default_fmin")]
@@ -209,11 +214,13 @@ fn load_epoched_meta_tmin_ms(path: &str, fallback_ms: Option<f64>) -> f64 {
     if let Some(v) = fallback_ms {
         return v;
     }
-    if let Ok(bytes) = std::fs::read(path) {
-        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if let Some(tmin_s) = val["epoch_tmin"].as_f64() {
-                if tmin_s.is_finite() {
-                    return tmin_s * 1000.0;
+    for cand in [format!("{path}.ccsmeta"), path.to_string()] {
+        if let Ok(bytes) = std::fs::read(&cand) {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(tmin_s) = val["epoch_tmin"].as_f64() {
+                    if tmin_s.is_finite() {
+                        return tmin_s * 1000.0;
+                    }
                 }
             }
         }
@@ -221,8 +228,72 @@ fn load_epoched_meta_tmin_ms(path: &str, fallback_ms: Option<f64>) -> f64 {
     -200.0
 }
 
+fn load_recording_any(path: &str) -> Result<crate::Recording, String> {
+    let p = Path::new(path);
+    let lower = path.to_lowercase();
+    let mut rec = if lower.ends_with(".edf") {
+        crate::load_edf(p)?
+    } else if lower.ends_with(".fif") {
+        crate::mne_fif::load_fif(p)?
+    } else if lower.ends_with(".xdf") {
+        crate::xdf_loader::load_xdf(p)?.recording
+    } else {
+        crate::preprocessing::load_portable(p)?
+    };
+    crate::recording_metadata::apply(&mut rec, p)?;
+    Ok(rec)
+}
+
+fn norm_epoch_label(s: &str) -> String {
+    let base = s.split(" / ").next().unwrap_or(s).trim();
+    base.to_lowercase()
+}
+
+fn resolve_trial_indices(
+    rec: &crate::Recording,
+    explicit_trials: &[usize],
+    label_filters: &[String],
+    epoch_count: usize,
+    fallback_all_if_empty: bool,
+) -> Vec<usize> {
+    if !explicit_trials.is_empty() {
+        return explicit_trials
+            .iter()
+            .copied()
+            .filter(|&i| i < epoch_count)
+            .collect();
+    }
+    if !label_filters.is_empty() {
+        if let Some(ep_labels) = &rec.epoch_labels {
+            let wanted: Vec<String> = label_filters
+                .iter()
+                .map(|l| norm_epoch_label(l))
+                .filter(|l| !l.is_empty())
+                .collect();
+            return ep_labels
+                .iter()
+                .take(epoch_count)
+                .enumerate()
+                .filter_map(|(i, lbl)| {
+                    let nl = norm_epoch_label(lbl);
+                    if wanted.iter().any(|w| w == &nl) {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+    }
+    if fallback_all_if_empty {
+        (0..epoch_count).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 pub fn run(job: &ErspItcJob) -> Result<ErspItcResult, String> {
-    let rec = crate::preprocessing::load_portable(Path::new(&job.recording_path))
+    let rec = load_recording_any(&job.recording_path)
         .map_err(|e| format!("Could not load recording '{}': {e}", job.recording_path))?;
 
     let n_pts = rec.source_epoch_samples.unwrap_or(0);
@@ -292,21 +363,20 @@ pub fn run(job: &ErspItcJob) -> Result<ErspItcResult, String> {
         Some(out)
     };
 
-    let trials_a_idx: Vec<usize> = if job.condition_a_trials.is_empty() {
-        (0..epoch_count).collect()
-    } else {
-        job.condition_a_trials
-            .iter()
-            .copied()
-            .filter(|&i| i < epoch_count)
-            .collect()
-    };
-    let trials_b_idx: Vec<usize> = job
-        .condition_b_trials
-        .iter()
-        .copied()
-        .filter(|&i| i < epoch_count)
-        .collect();
+    let trials_a_idx = resolve_trial_indices(
+        &rec,
+        &job.condition_a_trials,
+        &job.condition_a_labels,
+        epoch_count,
+        job.condition_a_labels.is_empty(),
+    );
+    let trials_b_idx = resolve_trial_indices(
+        &rec,
+        &job.condition_b_trials,
+        &job.condition_b_labels,
+        epoch_count,
+        false,
+    );
 
     let trials_a: Vec<Vec<f64>> = trials_a_idx.iter().filter_map(|&i| extract_trial(i)).collect();
     let trials_b: Vec<Vec<f64>> = trials_b_idx.iter().filter_map(|&i| extract_trial(i)).collect();
@@ -762,6 +832,10 @@ pub struct WithinErpStatsJob {
     #[serde(default)]
     pub condition_b_trials: Vec<usize>,
     #[serde(default)]
+    pub condition_a_labels: Vec<String>,
+    #[serde(default)]
+    pub condition_b_labels: Vec<String>,
+    #[serde(default)]
     pub epoch_tmin_ms: Option<f64>,
     #[serde(default = "default_win_start")]
     pub window_start_ms: f64,
@@ -808,7 +882,7 @@ pub struct WithinErpStatsResult {
 }
 
 pub fn run_within_erp_stats(job: &WithinErpStatsJob) -> Result<WithinErpStatsResult, String> {
-    let rec = crate::preprocessing::load_portable(Path::new(&job.recording_path))
+    let rec = load_recording_any(&job.recording_path)
         .map_err(|e| format!("Could not load recording '{}': {e}", job.recording_path))?;
 
     let n_pts = rec.source_epoch_samples.unwrap_or(0);
@@ -863,21 +937,20 @@ pub fn run_within_erp_stats(job: &WithinErpStatsJob) -> Result<WithinErpStatsRes
         )
     };
 
-    let trials_a_idx: Vec<usize> = if job.condition_a_trials.is_empty() {
-        (0..epoch_count).collect()
-    } else {
-        job.condition_a_trials
-            .iter()
-            .copied()
-            .filter(|&i| i < epoch_count)
-            .collect()
-    };
-    let trials_b_idx: Vec<usize> = job
-        .condition_b_trials
-        .iter()
-        .copied()
-        .filter(|&i| i < epoch_count)
-        .collect();
+    let trials_a_idx = resolve_trial_indices(
+        &rec,
+        &job.condition_a_trials,
+        &job.condition_a_labels,
+        epoch_count,
+        job.condition_a_labels.is_empty(),
+    );
+    let trials_b_idx = resolve_trial_indices(
+        &rec,
+        &job.condition_b_trials,
+        &job.condition_b_labels,
+        epoch_count,
+        false,
+    );
 
     if trials_a_idx.is_empty() {
         return Err("No valid trials selected for Condition A.".into());
@@ -1023,4 +1096,588 @@ pub fn run_within_erp_stats(job: &WithinErpStatsJob) -> Result<WithinErpStatsRes
         channel_t_etfce,
         channel_p_etfce,
     })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupErspItcInput {
+    pub path: String,
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub condition_a_trials: Vec<usize>,
+    #[serde(default)]
+    pub condition_b_trials: Vec<usize>,
+    #[serde(default)]
+    pub condition_a_labels: Vec<String>,
+    #[serde(default)]
+    pub condition_b_labels: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupErspItcJob {
+    pub inputs: Vec<GroupErspItcInput>,
+    #[serde(default)]
+    pub channel_name: String,
+    #[serde(default)]
+    pub roi_channels: Vec<String>,
+    #[serde(default)]
+    pub epoch_tmin_ms: Option<f64>,
+    #[serde(default = "default_fmin")]
+    pub fmin_hz: f64,
+    #[serde(default = "default_fmax")]
+    pub fmax_hz: f64,
+    #[serde(default = "default_nfreqs")]
+    pub n_freqs: usize,
+    #[serde(default = "default_cycles_min")]
+    pub n_cycles_min: f64,
+    #[serde(default = "default_cycles_max")]
+    pub n_cycles_max: f64,
+    #[serde(default = "default_base_start")]
+    pub baseline_start_ms: f64,
+    #[serde(default = "default_base_end")]
+    pub baseline_end_ms: f64,
+    #[serde(default = "default_nperm")]
+    pub n_perm: usize,
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupErspItcResult {
+    pub channel: String,
+    pub n_subjects: usize,
+    pub n_files: usize,
+    pub times_ms: Vec<f64>,
+    pub freqs_hz: Vec<f64>,
+    pub ersp_a_db: Vec<f64>,
+    pub itc_a: Vec<f64>,
+    pub ersp_b_db: Option<Vec<f64>>,
+    pub itc_b: Option<Vec<f64>>,
+    pub ersp_diff_db: Option<Vec<f64>>,
+    pub itc_diff: Option<Vec<f64>>,
+    pub p_values_ersp: Vec<f64>,
+    pub p_values_itc: Vec<f64>,
+    pub groups: Vec<String>,
+    pub group_subject_counts: BTreeMap<String, usize>,
+    pub group_ersp_a_db: BTreeMap<String, Vec<f64>>,
+    pub group_itc_a: BTreeMap<String, Vec<f64>>,
+    pub group_ersp_b_db: BTreeMap<String, Vec<f64>>,
+    pub group_itc_b: BTreeMap<String, Vec<f64>>,
+    pub group_ersp_diff_db: BTreeMap<String, Vec<f64>>,
+    pub group_itc_diff: BTreeMap<String, Vec<f64>>,
+    pub failed_files: Vec<String>,
+}
+
+struct PerFileTfr {
+    subject: String,
+    group: String,
+    channel: String,
+    times_ms: Vec<f64>,
+    freqs_hz: Vec<f64>,
+    ersp_a: Vec<f64>,
+    itc_a: Vec<f64>,
+    ersp_b: Option<Vec<f64>>,
+    itc_b: Option<Vec<f64>>,
+}
+
+fn compute_single_file_tfr(
+    inp: &GroupErspItcInput,
+    job: &GroupErspItcJob,
+) -> Result<PerFileTfr, String> {
+    let rec = load_recording_any(&inp.path)?;
+    let n_pts = rec.source_epoch_samples.unwrap_or(0);
+    let total_samples = rec.channels.first().map(|c| c.len()).unwrap_or(0);
+    let epoch_count = if n_pts > 0 { total_samples / n_pts } else { 0 };
+    if epoch_count == 0 || n_pts == 0 {
+        return Err("Not epoched".into());
+    }
+    let srate = rec.rate;
+    let tmin_ms = load_epoched_meta_tmin_ms(&inp.path, job.epoch_tmin_ms);
+    let dt_ms = 1000.0 / srate;
+
+    let chan_indices: Vec<usize> = if !job.channel_name.is_empty()
+        && job.channel_name.to_uppercase() != "ROI"
+    {
+        vec![rec
+            .labels
+            .iter()
+            .position(|l| l.eq_ignore_ascii_case(&job.channel_name))
+            .ok_or_else(|| format!("Channel '{}' not found", job.channel_name))?]
+    } else if !job.roi_channels.is_empty() {
+        let idxs: Vec<usize> = job
+            .roi_channels
+            .iter()
+            .filter_map(|ch| rec.labels.iter().position(|l| l.eq_ignore_ascii_case(ch)))
+            .collect();
+        if idxs.is_empty() { vec![0] } else { idxs }
+    } else {
+        vec![0]
+    };
+    let channel_label = if chan_indices.len() == 1 {
+        rec.labels[chan_indices[0]].clone()
+    } else {
+        format!(
+            "ROI ({})",
+            chan_indices
+                .iter()
+                .map(|&i| rec.labels[i].as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    let trials_a_idx = resolve_trial_indices(
+        &rec,
+        &inp.condition_a_trials,
+        &inp.condition_a_labels,
+        epoch_count,
+        inp.condition_a_labels.is_empty(),
+    );
+    let trials_b_idx = resolve_trial_indices(
+        &rec,
+        &inp.condition_b_trials,
+        &inp.condition_b_labels,
+        epoch_count,
+        false,
+    );
+    if trials_a_idx.is_empty() {
+        return Err("No Condition A trials".into());
+    }
+
+    let extract_trial = |trial_idx: usize| -> Option<Vec<f64>> {
+        let start = trial_idx * n_pts;
+        let mut out = vec![0.0; n_pts];
+        let denom = chan_indices.len() as f64;
+        for &ch in &chan_indices {
+            if ch >= rec.channels.len() || start + n_pts > rec.channels[ch].len() {
+                return None;
+            }
+            for s in 0..n_pts {
+                out[s] += rec.channels[ch][start + s] as f64 / denom;
+            }
+        }
+        Some(out)
+    };
+    let trials_a: Vec<Vec<f64>> = trials_a_idx.iter().filter_map(|&i| extract_trial(i)).collect();
+    let trials_b: Vec<Vec<f64>> = trials_b_idx.iter().filter_map(|&i| extract_trial(i)).collect();
+    if trials_a.is_empty() {
+        return Err("Empty Condition A".into());
+    }
+
+    let step = (n_pts / 120).max(1);
+    let out_indices: Vec<usize> = (0..n_pts).step_by(step).collect();
+    let times_ms: Vec<f64> = out_indices.iter().map(|&i| tmin_ms + i as f64 * dt_ms).collect();
+    let n_out = times_ms.len();
+    let n_freqs = job.n_freqs.clamp(4, 60);
+    let fmin = job.fmin_hz.max(0.5);
+    let fmax = job.fmax_hz.min(srate * 0.45).max(fmin + 1.0);
+    let freqs_hz: Vec<f64> = (0..n_freqs)
+        .map(|i| if n_freqs == 1 { fmin } else { fmin + (fmax - fmin) * (i as f64) / ((n_freqs - 1) as f64) })
+        .collect();
+    let cycles: Vec<f64> = (0..n_freqs)
+        .map(|i| {
+            if n_freqs == 1 {
+                job.n_cycles_min
+            } else {
+                job.n_cycles_min + (job.n_cycles_max - job.n_cycles_min) * (i as f64) / ((n_freqs - 1) as f64)
+            }
+        })
+        .collect();
+
+    let base_indices: Vec<usize> = {
+        let v: Vec<usize> = times_ms
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &t)| if t >= job.baseline_start_ms && t <= job.baseline_end_ms { Some(i) } else { None })
+            .collect();
+        if v.is_empty() { vec![0] } else { v }
+    };
+
+    let (pow_a, phase_a) = morlet_tfr(&trials_a, srate, &freqs_hz, &cycles, &out_indices);
+    let (pow_b, phase_b) = if !trials_b.is_empty() {
+        morlet_tfr(&trials_b, srate, &freqs_hz, &cycles, &out_indices)
+    } else {
+        (vec![], vec![])
+    };
+
+    let mut common_base = vec![0.0; n_freqs];
+    let total_tr = (pow_a.len() + pow_b.len()).max(1) as f64;
+    for fi in 0..n_freqs {
+        let mut sum = 0.0;
+        for tr in pow_a.iter().chain(pow_b.iter()) {
+            for &bi in &base_indices {
+                sum += tr[fi][bi];
+            }
+        }
+        common_base[fi] = (sum / (total_tr * base_indices.len() as f64)).max(1e-20);
+    }
+
+    let make_maps = |pow: &[Vec<Vec<f64>>], phase: &[Vec<Vec<Complex64>>]| -> (Vec<f64>, Vec<f64>) {
+        let n_tr = pow.len().max(1) as f64;
+        let mut ersp = vec![0.0; n_freqs * n_out];
+        let mut itc = vec![0.0; n_freqs * n_out];
+        for fi in 0..n_freqs {
+            for ti in 0..n_out {
+                let mut ps = 0.0;
+                let mut ph = Complex64::new(0.0, 0.0);
+                for k in 0..pow.len() {
+                    ps += pow[k][fi][ti];
+                    ph += phase[k][fi][ti];
+                }
+                ersp[fi * n_out + ti] = 10.0 * ((ps / n_tr).max(1e-20) / common_base[fi]).log10();
+                itc[fi * n_out + ti] = ph.norm() / n_tr;
+            }
+        }
+        (ersp, itc)
+    };
+
+    let (ersp_a, itc_a) = make_maps(&pow_a, &phase_a);
+    let (ersp_b, itc_b) = if !pow_b.is_empty() {
+        let (eb, ib) = make_maps(&pow_b, &phase_b);
+        (Some(eb), Some(ib))
+    } else {
+        (None, None)
+    };
+
+    let subject = if inp.subject.trim().is_empty() {
+        crate::erp_workbench::participant(&inp.path)
+    } else {
+        inp.subject.trim().to_string()
+    };
+    let group = if inp.group.trim().is_empty() {
+        "All".to_string()
+    } else {
+        inp.group.trim().to_string()
+    };
+    Ok(PerFileTfr {
+        subject,
+        group,
+        channel: channel_label,
+        times_ms,
+        freqs_hz,
+        ersp_a,
+        itc_a,
+        ersp_b,
+        itc_b,
+    })
+}
+
+pub fn run_group(job: &GroupErspItcJob) -> Result<GroupErspItcResult, String> {
+    if job.inputs.is_empty() {
+        return Err("Group ERSP/ITC requires at least one recording.".into());
+    }
+    let results: Vec<(String, Result<PerFileTfr, String>)> = job
+        .inputs
+        .par_iter()
+        .map(|inp| (inp.path.clone(), compute_single_file_tfr(inp, job)))
+        .collect();
+
+    let mut per_files = Vec::new();
+    let mut failed_files = Vec::new();
+    for (p, res) in results {
+        match res {
+            Ok(v) => per_files.push(v),
+            Err(e) => failed_files.push(format!("{p}: {e}")),
+        }
+    }
+    if per_files.is_empty() {
+        return Err(format!(
+            "All recordings failed ERSP/ITC calculation. First error: {}",
+            failed_files.first().map(|s| s.as_str()).unwrap_or("unknown")
+        ));
+    }
+
+    let times_ms = per_files[0].times_ms.clone();
+    let freqs_hz = per_files[0].freqs_hz.clone();
+    let channel = per_files[0].channel.clone();
+    let n_cells = times_ms.len() * freqs_hz.len();
+    let compatible: Vec<PerFileTfr> = per_files
+        .into_iter()
+        .filter(|f| f.ersp_a.len() == n_cells)
+        .collect();
+    let n_files = compatible.len();
+
+    // Average per participant for equal participant weighting
+    let mut by_subj: BTreeMap<String, Vec<&PerFileTfr>> = BTreeMap::new();
+    for f in &compatible {
+        by_subj.entry(f.subject.clone()).or_default().push(f);
+    }
+
+    let avg_vecs = |vecs: &[&[f64]]| -> Vec<f64> {
+        let mut out = vec![0.0; n_cells];
+        if vecs.is_empty() {
+            return out;
+        }
+        for v in vecs {
+            for (i, &val) in v.iter().enumerate() {
+                out[i] += val / vecs.len() as f64;
+            }
+        }
+        out
+    };
+
+    struct SubjTfr {
+        group: String,
+        ersp_a: Vec<f64>,
+        itc_a: Vec<f64>,
+        ersp_b: Option<Vec<f64>>,
+        itc_b: Option<Vec<f64>>,
+    }
+    let mut subj_list = Vec::with_capacity(by_subj.len());
+    for (_, sfiles) in &by_subj {
+        let ea_refs: Vec<&[f64]> = sfiles.iter().map(|f| f.ersp_a.as_slice()).collect();
+        let ia_refs: Vec<&[f64]> = sfiles.iter().map(|f| f.itc_a.as_slice()).collect();
+        let eb_refs: Vec<&[f64]> = sfiles.iter().filter_map(|f| f.ersp_b.as_deref()).collect();
+        let ib_refs: Vec<&[f64]> = sfiles.iter().filter_map(|f| f.itc_b.as_deref()).collect();
+        subj_list.push(SubjTfr {
+            group: sfiles[0].group.clone(),
+            ersp_a: avg_vecs(&ea_refs),
+            itc_a: avg_vecs(&ia_refs),
+            ersp_b: if eb_refs.is_empty() { None } else { Some(avg_vecs(&eb_refs)) },
+            itc_b: if ib_refs.is_empty() { None } else { Some(avg_vecs(&ib_refs)) },
+        });
+    }
+
+    let n_subjects = subj_list.len();
+    let ersp_a_db = avg_vecs(&subj_list.iter().map(|s| s.ersp_a.as_slice()).collect::<Vec<_>>());
+    let itc_a = avg_vecs(&subj_list.iter().map(|s| s.itc_a.as_slice()).collect::<Vec<_>>());
+    let all_have_b = subj_list.iter().any(|s| s.ersp_b.is_some());
+    let ersp_b_db = if all_have_b {
+        Some(avg_vecs(&subj_list.iter().filter_map(|s| s.ersp_b.as_deref()).collect::<Vec<_>>()))
+    } else {
+        None
+    };
+    let itc_b = if all_have_b {
+        Some(avg_vecs(&subj_list.iter().filter_map(|s| s.itc_b.as_deref()).collect::<Vec<_>>()))
+    } else {
+        None
+    };
+    let ersp_diff_db = ersp_b_db.as_ref().map(|eb| eb.iter().zip(&ersp_a_db).map(|(b, a)| b - a).collect::<Vec<_>>());
+    let itc_diff = itc_b.as_ref().map(|ib| ib.iter().zip(&itc_a).map(|(b, a)| b - a).collect::<Vec<_>>());
+
+    // Subject-level paired sign-flip permutation p-values
+    let mut p_values_ersp = vec![1.0; n_cells];
+    let mut p_values_itc = vec![1.0; n_cells];
+    let n_perm = job.n_perm.clamp(20, 2000);
+    let mut rng = StdRng::seed_from_u64(job.seed);
+    if n_subjects >= 2 {
+        let mut counts_e = vec![0usize; n_cells];
+        let mut counts_i = vec![0usize; n_cells];
+        let obs_e = ersp_diff_db.as_deref().unwrap_or(&ersp_a_db);
+        let subj_diff_e: Vec<Vec<f64>> = subj_list
+            .iter()
+            .map(|s| match &s.ersp_b {
+                Some(eb) => eb.iter().zip(&s.ersp_a).map(|(b, a)| b - a).collect(),
+                None => s.ersp_a.clone(),
+            })
+            .collect();
+        let (obs_i_slice, subj_diff_i): (Vec<f64>, Vec<Vec<f64>>) = if let Some(ref idiff) = itc_diff {
+            (
+                idiff.clone(),
+                subj_list
+                    .iter()
+                    .map(|s| match &s.itc_b {
+                        Some(ib) => ib.iter().zip(&s.itc_a).map(|(b, a)| b - a).collect(),
+                        None => vec![0.0; n_cells],
+                    })
+                    .collect(),
+            )
+        } else {
+            let base_i: Vec<f64> = vec![0.0; n_cells];
+            let sdi = subj_list.iter().map(|s| s.itc_a.clone()).collect();
+            (base_i, sdi)
+        };
+        for _ in 0..n_perm {
+            let signs: Vec<f64> = (0..n_subjects)
+                .map(|_| if rng.gen_bool(0.5) { 1.0 } else { -1.0 })
+                .collect();
+            for cell in 0..n_cells {
+                let mut sum_e = 0.0;
+                let mut sum_i = 0.0;
+                for s in 0..n_subjects {
+                    sum_e += signs[s] * subj_diff_e[s][cell];
+                    if itc_diff.is_some() {
+                        sum_i += signs[s] * subj_diff_i[s][cell];
+                    }
+                }
+                if (sum_e / n_subjects as f64).abs() >= obs_e[cell].abs() {
+                    counts_e[cell] += 1;
+                }
+                if itc_diff.is_some() && (sum_i / n_subjects as f64).abs() >= obs_i_slice[cell].abs() {
+                    counts_i[cell] += 1;
+                }
+            }
+        }
+        for cell in 0..n_cells {
+            p_values_ersp[cell] = (counts_e[cell] as f64 + 1.0) / (n_perm as f64 + 1.0);
+            if itc_diff.is_some() {
+                p_values_itc[cell] = (counts_i[cell] as f64 + 1.0) / (n_perm as f64 + 1.0);
+            }
+        }
+    }
+
+    // Per-group averages
+    let mut by_grp: BTreeMap<String, Vec<&SubjTfr>> = BTreeMap::new();
+    for s in &subj_list {
+        by_grp.entry(s.group.clone()).or_default().push(s);
+    }
+    let groups: Vec<String> = by_grp.keys().cloned().collect();
+    let mut group_subject_counts = BTreeMap::new();
+    let mut group_ersp_a_db = BTreeMap::new();
+    let mut group_itc_a = BTreeMap::new();
+    let mut group_ersp_b_db = BTreeMap::new();
+    let mut group_itc_b = BTreeMap::new();
+    let mut group_ersp_diff_db = BTreeMap::new();
+    let mut group_itc_diff = BTreeMap::new();
+
+    for (g, gsubjs) in &by_grp {
+        group_subject_counts.insert(g.clone(), gsubjs.len());
+        let ga = avg_vecs(&gsubjs.iter().map(|s| s.ersp_a.as_slice()).collect::<Vec<_>>());
+        let gia = avg_vecs(&gsubjs.iter().map(|s| s.itc_a.as_slice()).collect::<Vec<_>>());
+        group_ersp_a_db.insert(g.clone(), ga.clone());
+        group_itc_a.insert(g.clone(), gia.clone());
+        let gbs: Vec<&[f64]> = gsubjs.iter().filter_map(|s| s.ersp_b.as_deref()).collect();
+        let gibs: Vec<&[f64]> = gsubjs.iter().filter_map(|s| s.itc_b.as_deref()).collect();
+        if !gbs.is_empty() {
+            let gb = avg_vecs(&gbs);
+            let gib = avg_vecs(&gibs);
+            group_ersp_diff_db.insert(g.clone(), gb.iter().zip(&ga).map(|(b, a)| b - a).collect());
+            group_itc_diff.insert(g.clone(), gib.iter().zip(&gia).map(|(b, a)| b - a).collect());
+            group_ersp_b_db.insert(g.clone(), gb);
+            group_itc_b.insert(g.clone(), gib);
+        }
+    }
+
+    Ok(GroupErspItcResult {
+        channel,
+        n_subjects,
+        n_files,
+        times_ms,
+        freqs_hz,
+        ersp_a_db,
+        itc_a,
+        ersp_b_db,
+        itc_b,
+        ersp_diff_db,
+        itc_diff,
+        p_values_ersp,
+        p_values_itc,
+        groups,
+        group_subject_counts,
+        group_ersp_a_db,
+        group_itc_a,
+        group_ersp_b_db,
+        group_itc_b,
+        group_ersp_diff_db,
+        group_itc_diff,
+        failed_files,
+    })
+}
+
+#[cfg(test)]
+mod ersp_group_tests {
+    use super::*;
+
+    #[test]
+    fn label_fallback_and_group_ersp_itc_work_across_subjects() {
+        let dir = std::env::temp_dir().join(format!("ersp-group-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rate = 128.0;
+        let pts = 128; // -0.2 .. ~0.79 s
+        let mut paths = Vec::new();
+        for (idx, grp) in [(1, "ADV"), (2, "CON")] {
+            let path = dir.join(format!("SKYMED00{idx}SESSION03.ccseeg.json"));
+            let mut ch_cz = vec![0.0f64; pts * 4];
+            let labels: Vec<String> = vec![
+                "Freq".into(),
+                "Rare".into(),
+                "Freq".into(),
+                "Rare".into(),
+            ];
+            for ep in 0..4 {
+                let is_rare = ep % 2 == 1;
+                for t in 0..pts {
+                    let sec = t as f64 / rate;
+                    let amp = if is_rare && sec > 0.3 { 6.0 } else { 1.0 };
+                    ch_cz[ep * pts + t] = amp * (2.0 * PI * 10.0 * sec).sin();
+                }
+            }
+            let payload = serde_json::json!({
+                "format": "ccseeg-v1",
+                "sample_rate": rate,
+                "labels": ["Cz"],
+                "channels": [ch_cz],
+                "source_epoch_samples": pts,
+                "epoch_tmin": -0.2,
+                "epoch_labels": labels,
+            });
+            std::fs::write(&path, payload.to_string()).unwrap();
+            paths.push((path.to_string_lossy().to_string(), format!("SKYMED00{idx}"), grp.to_string()));
+        }
+
+        // Test single-file run with condition_a_labels / condition_b_labels
+        let single_job = ErspItcJob {
+            recording_path: paths[0].0.clone(),
+            channel_name: "Cz".into(),
+            roi_channels: vec![],
+            condition_a_trials: vec![],
+            condition_b_trials: vec![],
+            condition_a_labels: vec!["Freq".into()],
+            condition_b_labels: vec!["Rare".into()],
+            epoch_tmin_ms: Some(-200.0),
+            fmin_hz: 4.0,
+            fmax_hz: 20.0,
+            n_freqs: 6,
+            n_cycles_min: 3.0,
+            n_cycles_max: 6.0,
+            baseline_start_ms: -200.0,
+            baseline_end_ms: 0.0,
+            n_perm: 20,
+            seed: 42,
+            topo_tmin_ms: None,
+            topo_tmax_ms: None,
+            topo_fmin_hz: None,
+            topo_fmax_hz: None,
+        };
+        let single_res = run(&single_job).unwrap();
+        assert_eq!(single_res.n_trials_a, 2);
+        assert_eq!(single_res.n_trials_b, 2);
+
+        // Test group_ersp_itc across 2 subjects / groups
+        let grp_job = GroupErspItcJob {
+            inputs: paths
+                .iter()
+                .map(|(p, s, g)| GroupErspItcInput {
+                    path: p.clone(),
+                    subject: s.clone(),
+                    group: g.clone(),
+                    condition_a_trials: vec![],
+                    condition_b_trials: vec![],
+                    condition_a_labels: vec!["Freq".into()],
+                    condition_b_labels: vec!["Rare".into()],
+                })
+                .collect(),
+            channel_name: "Cz".into(),
+            roi_channels: vec![],
+            epoch_tmin_ms: Some(-200.0),
+            fmin_hz: 4.0,
+            fmax_hz: 20.0,
+            n_freqs: 6,
+            n_cycles_min: 3.0,
+            n_cycles_max: 6.0,
+            baseline_start_ms: -200.0,
+            baseline_end_ms: 0.0,
+            n_perm: 20,
+            seed: 42,
+        };
+        let grp_res = run_group(&grp_job).unwrap();
+        assert_eq!(grp_res.n_subjects, 2);
+        assert_eq!(grp_res.groups, vec!["ADV".to_string(), "CON".to_string()]);
+        assert!(grp_res.ersp_diff_db.is_some());
+        assert!(grp_res.group_ersp_diff_db.contains_key("ADV"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

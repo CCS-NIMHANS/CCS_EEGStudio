@@ -26,6 +26,9 @@ import 'publication_plots.dart';
 import 'batch_file_selector.dart';
 import 'grand_average_dialog.dart';
 import 'factor_grouping_designer.dart';
+import 'erp_component_spec.dart';
+import 'erp_cache_recompute.dart';
+import '../recording_loader.dart';
 
 class ErpConditionConfig {
   ErpConditionConfig({
@@ -182,9 +185,24 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   bool _batchStage1Enabled = true;
   bool _batchStage2Enabled = true;
   bool _batchStage3Enabled = true;
+  bool _batchStage4Enabled = true;
   bool _batchUseStage1Outputs = true;
   bool _batchShowResults = false;
+  bool _stage4ExportComponentCsv = true;
+  bool _stage4ExportSvg = false;
+  bool _stage4ExportGaWaves = false;
+  bool _stage4AutoOpenStats = false;
   final List<String> _prepFiles = [];
+
+  ErpWaveformCache? _waveformCache;
+  final List<ErpComponentSpec> _components = [];
+  String? _primaryGroupFactor;
+  final Map<String, Set<String>> _excludedLevelsByFactor = {};
+  String? _resultsGroupFilter;
+  String? _focusedGridChannel;
+  EegRecording? _lazySubjectRecording;
+  String? _lazySubjectPath;
+  bool _lazyRecBusy = false;
   bool _erpPrepFilter = true;
   bool _erpPrepBadChannels = true;
   bool _erpPrepRereference = true;
@@ -556,11 +574,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   List<String> get _selectedPaths => _paths
       .where(
         (p) =>
-            !widget.batchMode ||
-            _task == 'Auto' ||
-            _task == 'Custom' ||
-            _taskFromPath(p) == null ||
-            _taskFromPath(p) == _task,
+            !_excludedFactorFiles.contains(p) &&
+            (!widget.batchMode ||
+                _task == 'Auto' ||
+                _task == 'Custom' ||
+                _taskFromPath(p) == null ||
+                _taskFromPath(p) == _task),
       )
       .toList();
   List<Map<String, dynamic>> get _inputs => [
@@ -803,6 +822,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       p['epoch'] = [number(_epoch0), number(_epoch1)];
       p['baseline'] = [number(_base0), number(_base1)];
       p['window'] = [number(_window0), number(_window1)];
+      if (_components.isNotEmpty) {
+        p['components'] = [for (final c in _components) c.toRustJson()];
+      }
       final epoching = widget.config?.stimEpochSpec;
       if (!_isPrepared &&
           !widget.batchMode &&
@@ -1304,11 +1326,19 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   }
 
   Future<void> _openResultFolder() async {
-    final dirPath = await FilePicker.getDirectoryPath();
+    final dirPath = await pickDirectorySafe(
+      dialogTitle: 'Open ERP results folder',
+      currentDirectory: _output.text,
+      fallbackFilePath: _paths.firstOrNull,
+    );
     if (dirPath == null || !mounted) return;
     try {
       final dir = Directory(dirPath);
-      final entries = dir.listSync(recursive: false).whereType<File>().toList();
+      final entries = await dir
+          .list(recursive: false, followLinks: false)
+          .where((e) => e is File)
+          .cast<File>()
+          .toList();
       final candidates = entries.where((f) {
         final lower = f.path.toLowerCase();
         return lower.endsWith('.ccserp') ||
@@ -1419,16 +1449,321 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     await _inspect();
   }
 
-  Future<void> _openFactorGroupingDesigner(List<String> candidatePaths) async {
-    if (candidatePaths.isEmpty) return;
+  void _clearAllBatchErp() {
+    setState(() {
+      _prepFiles.clear();
+      _paths.clear();
+      _subjects.clear();
+      _fileFactors.clear();
+      _participantGroups.clear();
+      _excludedFactorFiles.clear();
+      _excludedLevelsByFactor.clear();
+      _factorNames.clear();
+      _primaryGroupFactor = null;
+      _inspection = null;
+      _result = null;
+      _waveformCache = null;
+      _components.clear();
+      _file = null;
+      _component = '';
+      _resultsGroupFilter = null;
+      _focusedGridChannel = null;
+      _lazySubjectRecording = null;
+      _lazySubjectPath = null;
+      _lazyRecBusy = false;
+      _batchShowResults = false;
+      _fillProfile(null);
+      _status = 'Cleared all batch files and ERP results.';
+    });
+  }
+
+  List<ErpComponentSpec> _activeComponents() {
+    if (_components.isNotEmpty) return List<ErpComponentSpec>.from(_components);
+    final roi = _roi.text
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final w0 = double.tryParse(_window0.text) ?? 250.0;
+    final w1 = double.tryParse(_window1.text) ?? 500.0;
+    final pol = (_profile?['polarity'] as num?)?.toDouble() ?? 1.0;
+    final rawName = _componentLabel.text.trim();
+    final taskName = _profile?['task']?.toString() ?? 'Custom';
+    return [
+      ErpComponentSpec(
+        name: rawName.isNotEmpty
+            ? rawName
+            : (taskName == 'Custom' ? 'Component' : taskName),
+        windowStartMs: math.min(w0, w1),
+        windowEndMs: math.max(w0, w1),
+        polarity: pol < 0 ? -1.0 : 1.0,
+        roiChannels: roi.isEmpty ? const ['Cz'] : roi,
+      ),
+    ];
+  }
+
+  String _waveformCacheKey() {
+    final condSig = _conditions
+        .map(
+          (c) =>
+              '${c.name}:${_isPrepared ? c.savedGroups.join("+") : c.codesController.text.trim()}',
+        )
+        .join('|');
+    return '$_task|$_eventSource|$_regroupEpochs|$_correct|${_reject.text.trim()}|$_isPrepared|$condSig';
+  }
+
+  bool _cacheCoversInputs(List<Map<String, dynamic>> inputs) {
+    final cache = _waveformCache;
+    if (cache == null || cache.cacheKey != _waveformCacheKey()) return false;
+    final cachedPaths = {for (final f in cache.files) '${f['path'] ?? ''}'};
+    return inputs.every((inp) => cachedPaths.contains('${inp['path'] ?? ''}'));
+  }
+
+  void _storeWaveformCache(List<Map<String, dynamic>> files) {
+    if (files.isEmpty) return;
+    final key = _waveformCacheKey();
+    final existing = _waveformCache?.cacheKey == key
+        ? _waveformCache!.files
+        : const <Map<String, dynamic>>[];
+    final byPath = <String, Map<String, dynamic>>{
+      for (final f in existing)
+        if ('${f['path'] ?? ''}'.isNotEmpty) '${f['path']}': f,
+      for (final f in files)
+        if ('${f['path'] ?? ''}'.isNotEmpty) '${f['path']}': f,
+    };
+    _waveformCache = ErpWaveformCache(
+      cacheKey: key,
+      files: byPath.values.toList(),
+      cachedAt: DateTime.now(),
+      epochStartMs: double.tryParse(_epoch0.text),
+      epochEndMs: double.tryParse(_epoch1.text),
+      baselineStartMs: double.tryParse(_base0.text),
+      baselineEndMs: double.tryParse(_base1.text),
+    );
+  }
+
+  Future<void> _writeComponentMeasurementsCsv(
+    Map<String, dynamic> result,
+    String outDir,
+  ) async {
+    if (outDir.isEmpty) return;
+    await Directory(outDir).create(recursive: true);
+    String csvCell(dynamic v) => '"${'$v'.replaceAll('"', '""')}"';
+    final files = ((result['files'] as List?) ?? []).map(erpMap).toList();
+    final sb = StringBuffer(
+      'subject,group,task,file,component,roi,window_start_ms,window_end_ms,polarity,condition,n_trials,mean_uv,signed_auc_uv_s,positive_auc_uv_s,negative_auc_uv_s,peak_amplitude_uv,peak_latency_s,fractional_area_latency_s,fractional_peak_latency_s\n',
+    );
+    for (final f in files) {
+      final subj = '${f['subject'] ?? ''}';
+      final grp = (_participantGroups[subj] ?? '${f['group'] ?? ''}').trim();
+      final task = '${f['task'] ?? ''}';
+      final path = '${f['path'] ?? ''}';
+      final compRows = (f['component_measurements'] as List?) ?? const [];
+      for (final rawCm in compRows) {
+        final cm = erpMap(rawCm);
+        final win = erpNumbers(cm['window']);
+        final w0Ms = win.isNotEmpty ? (win.first * 1000.0).round() : 0;
+        final w1Ms = win.length > 1 ? (win[1] * 1000.0).round() : w0Ms;
+        final roiList = (cm['roi'] as List? ?? const []).join(' ');
+        final m = erpMap(cm['measures']);
+        sb.writeln(
+          [
+            csvCell(subj),
+            csvCell(grp.isEmpty ? 'Unknown' : grp),
+            csvCell(task),
+            csvCell(path),
+            csvCell(cm['component'] ?? ''),
+            csvCell(roiList),
+            w0Ms,
+            w1Ms,
+            cm['polarity'] ?? 1,
+            csvCell(cm['condition'] ?? ''),
+            cm['n_trials'] ?? 0,
+            m['mean'] ?? '',
+            m['signed_auc'] ?? '',
+            m['positive_auc'] ?? '',
+            m['negative_auc'] ?? '',
+            m['peak_amplitude'] ?? '',
+            m['peak_latency'] ?? '',
+            m['fractional_area_latency'] ?? '',
+            m['fractional_peak_latency'] ?? '',
+          ].join(','),
+        );
+      }
+    }
+    await File(
+      '$outDir${Platform.pathSeparator}erp_component_measurements.csv',
+    ).writeAsString(sb.toString());
+  }
+
+  Future<void> _runStage4PostActions(
+    Map<String, dynamic> result,
+    String outDir,
+  ) async {
+    if (!_batchStage4Enabled || outDir.isEmpty) return;
+    await Directory(outDir).create(recursive: true);
+    if (_stage4ExportComponentCsv) {
+      await _writeComponentMeasurementsCsv(result, outDir);
+    }
+    final files = ((result['files'] as List?) ?? []).map(erpMap).toList();
+    final groups = ((result['groups'] as List?) ?? []).map(erpMap).toList();
+    if (_stage4ExportGaWaves && groups.isNotEmpty) {
+      final g = groups.firstWhere(
+        (e) => e['task'] == _component,
+        orElse: () => groups.first,
+      );
+      final times = erpNumbers(g['times']);
+      final condNames = (g['condition_names'] as List? ?? const [])
+          .map((e) => '$e')
+          .toList();
+      final condWaves = erpMap(g['condition_waves']);
+      final diff = erpNumbers(g['difference']);
+      final cols = [
+        'time_ms',
+        for (final c in condNames) c,
+        if (diff.isNotEmpty) 'B_minus_A',
+      ];
+      final sb = StringBuffer('${cols.join(',')}\n');
+      for (var t = 0; t < times.length; t++) {
+        final row = <String>[(times[t] * 1000.0).toStringAsFixed(2)];
+        for (final c in condNames) {
+          final w = erpNumbers(condWaves[c]);
+          row.add(t < w.length ? w[t].toStringAsFixed(6) : '');
+        }
+        if (diff.isNotEmpty) {
+          row.add(t < diff.length ? diff[t].toStringAsFixed(6) : '');
+        }
+        sb.writeln(row.join(','));
+      }
+      await File(
+        '$outDir${Platform.pathSeparator}erp_grand_average_waveforms.csv',
+      ).writeAsString(sb.toString());
+    }
+    if (_stage4ExportSvg && files.isNotEmpty && groups.isNotEmpty) {
+      final g = groups.firstWhere(
+        (e) => e['task'] == _component,
+        orElse: () => groups.first,
+      );
+      final condNames = (g['condition_names'] as List? ?? const [])
+          .map((e) => '$e')
+          .where((e) => e.isNotEmpty)
+          .toList();
+      final prof = erpMap(g['profile']);
+      final roi = (prof['roi'] as List? ?? const ['Cz'])
+          .map((e) => '$e')
+          .where((e) => e.isNotEmpty)
+          .toList();
+      final grpSet = <String>{};
+      for (final f in files) {
+        if (_excludedFactorFiles.contains('${f['path'] ?? ''}')) continue;
+        final s = '${f['subject'] ?? ''}';
+        final label = (_participantGroups[s] ?? '${f['group'] ?? ''}').trim();
+        grpSet.add(label.isEmpty ? 'Unknown' : label);
+      }
+      final grpList = grpSet.toList()..sort();
+      final compDefs = [
+        for (final c in _activeComponents())
+          ErpComponentDef(
+            name: c.name,
+            startMs: c.windowStartMs,
+            endMs: c.windowEndMs,
+            polarity: c.polarity,
+            calloutElectrode:
+                c.roiChannels.isNotEmpty ? c.roiChannels.first : 'Cz',
+          ),
+      ];
+      if (condNames.isNotEmpty &&
+          roi.isNotEmpty &&
+          grpList.isNotEmpty &&
+          compDefs.isNotEmpty) {
+        final fig1Svg = generateWaveformGridSvg(
+          files: files,
+          groups: grpList,
+          participantGroups: _participantGroups,
+          fileFactors: _fileFactors,
+          conditions: condNames,
+          electrodes: roi,
+          components: compDefs,
+          negativeUp: _negativeUp,
+          monochrome: false,
+          showSem: true,
+          showCallouts: true,
+        );
+        await File(
+          '$outDir${Platform.pathSeparator}erp_figure_1_waveforms.svg',
+        ).writeAsString(fig1Svg);
+        final fig3Svg = generateInteractionPlotSvg(
+          files: files,
+          groups: grpList,
+          participantGroups: _participantGroups,
+          fileFactors: _fileFactors,
+          conditions: condNames,
+          electrodes: roi,
+          component: compDefs.first,
+          metric: 'mean',
+          monochrome: false,
+        );
+        await File(
+          '$outDir${Platform.pathSeparator}erp_figure_3_interaction.svg',
+        ).writeAsString(fig3Svg);
+      }
+    }
+    if (_stage4AutoOpenStats && mounted && _component.isNotEmpty) {
+      await _groupModels(difference: false);
+    }
+  }
+
+  Future<void> _fastRecomputeFromCache({String? reason}) async {
+    final cache = _waveformCache;
+    if (cache == null || cache.files.isEmpty) return;
+    final sw = Stopwatch()..start();
+    final activeTask = _component.isNotEmpty
+        ? _component
+        : (_profile?['task']?.toString() ?? 'Custom');
+    final comps = _activeComponents();
+    final recomputed = ErpCacheRecompute.recomputeErpResultsFromCache(
+      cachedFiles: cache.files,
+      task: activeTask,
+      components: comps,
+      participantGroups: _participantGroups,
+      excludedFiles: _excludedFactorFiles,
+      viewEpochStartMs: double.tryParse(_epoch0.text),
+      viewEpochEndMs: double.tryParse(_epoch1.text),
+      baselineStartMs: double.tryParse(_base0.text),
+      baselineEndMs: double.tryParse(_base1.text),
+    );
+    sw.stop();
+    if (!mounted) return;
+    setState(() {
+      _result = recomputed;
+      _component = _groups.isEmpty
+          ? activeTask
+          : '${_groups.first['task'] ?? activeTask}';
+      if (_file != null &&
+          (_excludedFactorFiles.contains(_file) ||
+              !_results.any((f) => f['path'] == _file))) {
+        _file = null;
+      }
+      _status =
+          '${reason ?? 'Recomputed'} from cache in ${sw.elapsedMilliseconds} ms (${_results.length} active file(s), ${comps.length} component(s)).';
+    });
+    final outDir = _output.text.trim();
+    if (outDir.isNotEmpty) {
+      await _writeComponentMeasurementsCsv(recomputed, outDir);
+    }
+  }
+
+  Future<bool> _openFactorGroupingDesigner(List<String> candidatePaths) async {
+    if (candidatePaths.isEmpty) return false;
     final res = await FactorGroupingDesignerDialog.show(
       context,
       filePaths: candidatePaths,
       initialFileFactors: _fileFactors,
       initialParticipantGroups: _participantGroups,
       initialExcludedFiles: _excludedFactorFiles,
+      initialPrimaryGroupFactor: _primaryGroupFactor,
     );
-    if (res == null || !mounted) return;
+    if (res == null || !mounted) return false;
     setState(() {
       _fileFactors
         ..clear()
@@ -1442,15 +1777,53 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       _participantGroups
         ..clear()
         ..addAll(res.participantGroups);
+      _primaryGroupFactor = res.primaryGroupFactor;
+      _excludedLevelsByFactor
+        ..clear()
+        ..addAll(res.excludedLevelsByFactor);
+      if (_resultsGroupFilter != null &&
+          !_participantGroups.values.contains(_resultsGroupFilter)) {
+        _resultsGroupFilter = null;
+      }
       _status =
           'Configured ${res.factorNames.length} factor(s) across ${candidatePaths.length - res.excludedFiles.length} active file(s).';
     });
+    if (_waveformCache != null && _result != null) {
+      await _fastRecomputeFromCache(reason: 'Updated groups & exclusions');
+    }
+    return true;
   }
 
   Future<void> _openGrandAverageLocalizer() async {
-    List<Map<String, dynamic>> previewFiles = _results;
-    if (previewFiles.isEmpty) {
-      if (_selectedPaths.isEmpty) {
+    final candidatePaths = _paths
+        .where(
+          (p) =>
+              !widget.batchMode ||
+              _task == 'Auto' ||
+              _task == 'Custom' ||
+              _taskFromPath(p) == null ||
+              _taskFromPath(p) == _task,
+        )
+        .toList();
+    final candidateInputs = [
+      for (final p in candidatePaths)
+        {
+          'path': p,
+          'subject': _subjects[p] ?? '',
+          'group': _participantGroups[_subjects[p] ?? ''] ?? '',
+        },
+    ];
+    List<Map<String, dynamic>> previewFiles = [];
+    if (_cacheCoversInputs(candidateInputs.isNotEmpty ? candidateInputs : _inputs)) {
+      previewFiles = _waveformCache!.files;
+    } else if (_results.isNotEmpty && _cacheCoversInputs(_inputs)) {
+      previewFiles = _waveformCache!.files;
+    } else if (_results.isNotEmpty) {
+      _storeWaveformCache(_results);
+      previewFiles = _waveformCache!.files;
+    } else {
+      final runInputs = candidateInputs.isNotEmpty ? candidateInputs : _inputs;
+      if (runInputs.isEmpty) {
         if (mounted) {
           setState(
             () => _status =
@@ -1468,7 +1841,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       try {
         final opts = _options()..['grand_average_preview'] = true;
         final res = await _service.execute(
-          _inputs,
+          runInputs,
           opts,
           tempDir.path,
           progress: (p, m) {
@@ -1483,6 +1856,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         previewFiles = (res['files'] as List? ?? [])
             .map((e) => erpMap(e))
             .toList();
+        _storeWaveformCache(previewFiles);
       } catch (e) {
         if (mounted) setState(() => _status = 'Grand Average failed: $e');
         return;
@@ -1501,6 +1875,21 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       initialEndMs: double.tryParse(_window1.text) ?? 500,
       initialPolarity: (_profile?['polarity'] as num?)?.toDouble() ?? 1.0,
       negativeUp: _negativeUp,
+      initialComponents: _activeComponents(),
+      initialEpochMinMs: double.tryParse(_epoch0.text),
+      initialEpochMaxMs: double.tryParse(_epoch1.text),
+      initialBaselineStartMs: double.tryParse(_base0.text),
+      initialBaselineEndMs: double.tryParse(_base1.text),
+      initialExcludedFiles: _excludedFactorFiles,
+      onConfigureFactors: (_) async {
+        final src = candidatePaths.isNotEmpty ? candidatePaths : _paths;
+        final ok = await _openFactorGroupingDesigner(src);
+        if (!ok) return null;
+        return (
+          groups: Map<String, String>.from(_participantGroups),
+          excludedFiles: Set<String>.from(_excludedFactorFiles),
+        );
+      },
     );
     if (sel == null || !mounted) return;
     setState(() {
@@ -1510,13 +1899,49 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (_profile != null) {
         _profile!['polarity'] = sel.polarity;
       }
+      if (sel.components.isNotEmpty) {
+        _components
+          ..clear()
+          ..addAll(sel.components);
+      }
+      if (sel.epochMinMs != null) {
+        _epoch0.text = sel.epochMinMs!.round().toString();
+      }
+      if (sel.epochMaxMs != null) {
+        _epoch1.text = sel.epochMaxMs!.round().toString();
+      }
+      if (sel.baselineStartMs != null) {
+        _base0.text = sel.baselineStartMs!.round().toString();
+      }
+      if (sel.baselineEndMs != null) {
+        _base1.text = sel.baselineEndMs!.round().toString();
+      }
+      if (sel.updatedParticipantGroups != null) {
+        _participantGroups
+          ..clear()
+          ..addAll(sel.updatedParticipantGroups!);
+      }
+      if (sel.updatedExcludedFiles != null) {
+        _excludedFactorFiles
+          ..clear()
+          ..addAll(sel.updatedExcludedFiles!);
+      }
       _status =
-          'Applied Grand Average ROI (${sel.roi}) and window (${sel.startMs.round()}–${sel.endMs.round()} ms).';
+          'Applied Grand Average (${_components.isNotEmpty ? "${_components.length} component(s)" : sel.roi}, ${sel.startMs.round()}–${sel.endMs.round()} ms).';
     });
+    if (_result != null && _waveformCache != null) {
+      await _fastRecomputeFromCache(
+        reason: 'Updated components, epochs & groups',
+      );
+    }
   }
 
   Future<void> _exportLinkedResults() async {
-    final destination = await FilePicker.getDirectoryPath(dialogTitle: 'Export ERP measurements and report');
+    final destination = await pickDirectorySafe(
+      dialogTitle: 'Export ERP measurements and report',
+      currentDirectory: _output.text,
+      fallbackFilePath: _paths.firstOrNull,
+    );
     if (destination == null) return;
     var count = 0;
     await for (final file in Directory(_output.text).list()) {
@@ -1581,8 +2006,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       });
     }
     if (_output.text.trim().isEmpty) {
-      final path = await FilePicker.getDirectoryPath(
+      final path = await pickDirectorySafe(
         dialogTitle: 'Choose ERP results folder',
+        fallbackFilePath: _paths.firstOrNull ?? _prepFiles.firstOrNull,
       );
       if (path == null || !mounted) return;
       _output.text = path;
@@ -1615,12 +2041,17 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (!mounted) return;
       setState(() {
         _result = result;
+        _storeWaveformCache(_results);
         _batchShowResults = true;
         _file = null;
+        _resultsGroupFilter = null;
+        _focusedGridChannel = null;
         _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
         _status = 'Writing the compact report…';
       });
-      await writeErpWorkbenchReport(result, _output.text.trim());
+      final outPath = _output.text.trim();
+      await writeErpWorkbenchReport(result, outPath);
+      await _runStage4PostActions(result, outPath);
       if (mounted)
         setState(
           () => _status =
@@ -1792,12 +2223,35 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     );
   }
 
+  Future<void> _loadLazySubjectForErpImage(String path) async {
+    if (_lazyRecBusy || path.isEmpty) return;
+    if (_lazySubjectPath == path && _lazySubjectRecording != null) return;
+    setState(() {
+      _lazyRecBusy = true;
+    });
+    try {
+      final loaded = await RecordingLoader().load(path);
+      final rec = loaded.isEpoched ? await RecordingLoader().loadFull(loaded) : loaded;
+      if (!mounted) return;
+      setState(() {
+        _lazySubjectPath = path;
+        _lazySubjectRecording = rec;
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _status = 'Could not load subject epochs for ERPimage: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _lazyRecBusy = false);
+    }
+  }
+
   Future<void> _runWithinSubjectStats(
     Map<String, dynamic> d,
     List<Map<String, dynamic>> current,
   ) async {
     final activeRec = widget.activeRecording;
-    final recPath = activeRec?.path ?? (current.isNotEmpty ? current.first['path']?.toString() : null);
+    final recPath = _file ?? activeRec?.path ?? (current.isNotEmpty ? current.first['path']?.toString() : null);
     if (recPath == null || recPath.isEmpty || _withinStatsBusy) return;
 
     final profile = erpMap(d['profile']);
@@ -1809,12 +2263,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     final baseStartMs = base.length == 2 ? base[0] * 1000.0 : (double.tryParse(_base0.text) ?? -200.0);
     final baseEndMs = base.length == 2 ? base[1] * 1000.0 : (double.tryParse(_base1.text) ?? 0.0);
 
-    // Resolve trial indices by condition from activeRecording if epoched
+    // Resolve trial indices by condition from activeRecording if matching path, else label fallback
     final condATrials = <int>[];
     final condBTrials = <int>[];
-    if (activeRec != null && activeRec.isEpoched && activeRec.epochLabels != null) {
-      final aName = profile['a_name']?.toString() ?? (_conditions.isNotEmpty ? _conditions[0].name : 'A');
-      final bName = profile['b_name']?.toString() ?? (_conditions.length > 1 ? _conditions[1].name : 'B');
+    final aName = profile['a_name']?.toString() ?? (_conditions.isNotEmpty ? _conditions[0].name : 'A');
+    final bName = profile['b_name']?.toString() ?? (_conditions.length > 1 ? _conditions[1].name : 'B');
+    final aLabels = _savedA.isNotEmpty ? _savedA : [aName];
+    final bLabels = _savedB.isNotEmpty ? _savedB : [bName];
+    if (activeRec != null && activeRec.path == recPath && activeRec.isEpoched && activeRec.epochLabels != null) {
       for (var i = 0; i < activeRec.epochLabels!.length; i++) {
         final lbl = activeRec.epochLabels![i];
         if (_savedA.contains(lbl) || lbl == aName) {
@@ -1829,11 +2285,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     try {
       final res = await _service.runWithinErpStats({
         'recording_path': recPath,
-        'channel_name': _primaryPlotChannel ?? 'ROI',
+        'channel_name': _focusedGridChannel ?? _primaryPlotChannel ?? 'ROI',
         'roi_channels': roi,
         'condition_a_trials': condATrials,
         'condition_b_trials': _withinStatsContrast == 'baseline' ? <int>[] : condBTrials,
-        if (activeRec?.epochTmin != null) 'epoch_tmin_ms': activeRec!.epochTmin! * 1000.0,
+        'condition_a_labels': aLabels,
+        'condition_b_labels': _withinStatsContrast == 'baseline' ? <String>[] : bLabels,
+        if (activeRec != null && activeRec.path == recPath && activeRec.epochTmin != null)
+          'epoch_tmin_ms': activeRec.epochTmin! * 1000.0,
         'window_start_ms': winStartMs,
         'window_end_ms': winEndMs,
         'baseline_start_ms': baseStartMs,
@@ -2281,7 +2740,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         ? null
                         : () => setState(() {
                             _paths.clear();
+                            _excludedFactorFiles.clear();
                             _inspection = null;
+                            _result = null;
+                            _waveformCache = null;
+                            _file = null;
                             _fillProfile(null);
                           }),
                     child: const Text(
@@ -2416,7 +2879,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               ? null
                               : () => setState(() {
                                   _paths.clear();
+                                  _excludedFactorFiles.clear();
                                   _inspection = null;
+                                  _result = null;
+                                  _waveformCache = null;
+                                  _file = null;
                                   _fillProfile(null);
                                 }),
                           child: const Text('Clear'),
@@ -2818,7 +3285,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   onPressed: _busy
                       ? null
                       : () async {
-                          final path = await FilePicker.getDirectoryPath();
+                          final path = await pickDirectorySafe(
+                            dialogTitle: 'Choose output folder',
+                            currentDirectory: _output.text,
+                            fallbackFilePath: _paths.firstOrNull ?? _prepFiles.firstOrNull,
+                          );
                           if (path != null && mounted)
                             setState(() => _output.text = path);
                         },
@@ -2831,16 +3302,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   icon: const Icon(Icons.play_arrow),
                   label: Text('Analyse ${_selectedPaths.length} recording(s)'),
                 ),
-                if (_busy) ...[
-                  const SizedBox(height: 10),
-                  LinearProgressIndicator(
-                    value: _progress > 0 ? _progress : null,
-                  ),
-                  TextButton(
-                    onPressed: () => _service.cancel(),
-                    child: const Text('Cancel'),
-                  ),
-                ],
                 const SizedBox(height: 8),
                 SelectableText(
                   _busy || !_isPrepared
@@ -2894,8 +3355,13 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                             onPressed: _busy
                                 ? null
                                 : () async {
-                                    final path =
-                                        await FilePicker.getDirectoryPath();
+                                    final path = await pickDirectorySafe(
+                                      dialogTitle: 'Choose results folder',
+                                      currentDirectory: _output.text,
+                                      fallbackFilePath:
+                                          widget.activeRecording?.path ??
+                                          _paths.firstOrNull,
+                                    );
                                     if (path != null && mounted)
                                       setState(() => _output.text = path);
                                   },
@@ -3055,6 +3521,21 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     style: const TextStyle(color: textMuted, fontSize: 11),
                   ),
                   const Spacer(),
+                  if (_prepFiles.isNotEmpty || _paths.isNotEmpty || _result != null) ...[
+                    TextButton.icon(
+                      onPressed: _busy ? null : _clearAllBatchErp,
+                      icon: const Icon(
+                        Icons.delete_sweep_outlined,
+                        size: 15,
+                        color: Colors.redAccent,
+                      ),
+                      label: const Text(
+                        'Clear All',
+                        style: TextStyle(fontSize: 11, color: Colors.redAccent),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   if (_result != null) ...[
                     OutlinedButton.icon(
                       onPressed: () =>
@@ -3134,6 +3615,72 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             ),
           ),
           const Divider(color: borderColor, height: 1),
+          if (_busy)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F1D32),
+                border: Border(
+                  bottom: BorderSide(color: accentBlue.withValues(alpha: 0.35)),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _status,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                            if (_progress > 0) ...[
+                              const SizedBox(width: 8),
+                              Text(
+                                '${(_progress * 100).round()}%',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.cyanAccent,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+                        LinearProgressIndicator(
+                          value: _progress > 0 ? _progress : null,
+                          minHeight: 5,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  TextButton.icon(
+                    onPressed: () => _service.cancel(),
+                    icon: const Icon(Icons.stop_circle, size: 15),
+                    label: const Text('Cancel', style: TextStyle(fontSize: 11)),
+                    style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                  ),
+                ],
+              ),
+            ),
 
           if (_batchShowResults && _result != null)
             Expanded(child: splitBody)
@@ -3210,9 +3757,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     onPressed: _busy
                         ? null
                         : () async {
-                            final path = await FilePicker.getDirectoryPath(
+                            final path = await pickDirectorySafe(
                               dialogTitle:
                                   'Select ERP batch output directory for all stages',
+                              currentDirectory: _output.text,
+                              fallbackFilePath:
+                                  _paths.firstOrNull ?? _prepFiles.firstOrNull,
                             );
                             if (path != null && mounted) {
                               setState(() => _output.text = path);
@@ -3409,9 +3959,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         title: 'Stage 4: ERP Plots & Group Stats',
         color: const Color(0xFF3B82F6),
         icon: Icons.groups,
-        badge: _result != null ? '${_results.length} results' : 'Waveforms / LMM',
+        badge: !_batchStage4Enabled
+            ? 'Skipped'
+            : (_result != null ? '${_results.length} results' : 'Waveforms / LMM'),
         enabled: true,
-        stageActive: true,
+        stageActive: _batchStage4Enabled,
       ),
     ];
 
@@ -3928,7 +4480,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       ? null
                       : () => setState(() {
                           _paths.clear();
+                          _excludedFactorFiles.clear();
                           _inspection = null;
+                          _result = null;
+                          _waveformCache = null;
+                          _file = null;
                           _fillProfile(null);
                         }),
                   child: const Text('Clear'),
@@ -3950,9 +4506,21 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       ? null
                       : () => _openFactorGroupingDesigner(_paths),
                   icon: const Icon(Icons.account_tree_outlined, size: 15),
-                  label: const Text('Factor & Grouping Designer…'),
+                  label: Text(
+                    _participantGroups.isNotEmpty || _excludedFactorFiles.isNotEmpty
+                        ? 'Factor & Grouping (${_participantGroups.values.toSet().length} grp · ${_excludedFactorFiles.length} excl)…'
+                        : 'Factor & Grouping Designer…',
+                  ),
                 ),
               ],
+            ),
+          if (_participantGroups.isNotEmpty || _excludedFactorFiles.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Active factors: ${_factorNames.isEmpty ? "Group" : _factorNames.join(", ")} · ${_participantGroups.values.toSet().length} group(s) · ${_excludedFactorFiles.length} file(s) excluded',
+                style: const TextStyle(fontSize: 10.5, color: Colors.cyanAccent),
+              ),
             ),
         ]),
         _card('2  Task and event markers', [
@@ -4129,16 +4697,64 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   : (v) => setState(() => _profile!['polarity'] = v!),
             ),
             const SizedBox(height: 10),
+            if (_components.isNotEmpty) ...[
+              Text(
+                'Defined ERP Components (${_components.length}):',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.cyanAccent,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  for (final c in _components)
+                    Chip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text(
+                        '${c.name}: ${c.windowStartMs.round()}–${c.windowEndMs.round()} ms (${c.roiChannels.join(",")})',
+                        style: const TextStyle(fontSize: 10.5),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: _busy || (_selectedPaths.isEmpty && _results.isEmpty)
+                onPressed: _busy || (_paths.isEmpty && _results.isEmpty)
                     ? null
                     : _openGrandAverageLocalizer,
                 icon: const Icon(Icons.insights, size: 16),
-                label: const Text('Grand Average Localizer (ROI & Window)…'),
+                label: Text(
+                  _components.isNotEmpty
+                      ? 'Grand Average Localizer & Multi-Components (${_components.length})…'
+                      : 'Grand Average Localizer (ROI & Window)…',
+                ),
               ),
             ),
+            if (_waveformCache != null && _result != null) ...[
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.tonalIcon(
+                  onPressed: _busy
+                      ? null
+                      : () => _fastRecomputeFromCache(
+                          reason: 'Fast cache recompute',
+                        ),
+                  icon: const Icon(Icons.bolt, size: 16),
+                  label: const Text(
+                    'Fast Recompute (from cache · ms)',
+                    style: TextStyle(fontSize: 11.5),
+                  ),
+                ),
+              ),
+            ],
           ]),
         _card('3  Analyses', [
           const Text(
@@ -4214,6 +4830,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       title: 'Stage 4: ERP Plots & Group Statistics',
       icon: Icons.groups,
       color: accentBlue,
+      stageEnabled: _batchStage4Enabled,
+      onStageEnabledChanged: (v) => setState(() => _batchStage4Enabled = v),
       onPrevious: onPrevious,
       runLabel: _result != null
           ? 'Open ERP Results & Plots Workbench'
@@ -4230,11 +4848,32 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             border: Border.all(color: accentBlue.withValues(alpha: 0.3)),
           ),
           child: const Text(
-            'Batch ERP waveforms, multi-condition topographies, latency/amplitude tables, LMM/GLM group models, and publication PDF reports.',
+            'Batch ERP waveforms, multi-condition topographies, latency/amplitude tables, LMM/GLM group models, and publication PDF reports. Disable this stage above to skip optional automated exports.',
             style: TextStyle(fontSize: 11, color: Colors.white70),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
+        _check(
+          'Export multi-component ERP CSV (erp_component_measurements.csv)',
+          _stage4ExportComponentCsv,
+          (v) => _stage4ExportComponentCsv = v,
+        ),
+        _check(
+          'Export publication waveform & interaction SVGs on run',
+          _stage4ExportSvg,
+          (v) => _stage4ExportSvg = v,
+        ),
+        _check(
+          'Export grand-average waveforms CSV (erp_grand_average_waveforms.csv)',
+          _stage4ExportGaWaves,
+          (v) => _stage4ExportGaWaves = v,
+        ),
+        _check(
+          'Auto-open Group Statistics workbench after run',
+          _stage4AutoOpenStats,
+          (v) => _stage4AutoOpenStats = v,
+        ),
+        const SizedBox(height: 8),
         if (widget.config != null)
           ExpansionTile(
             tilePadding: EdgeInsets.zero,
@@ -4264,7 +4903,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 onPressed: _busy
                     ? null
                     : () async {
-                        final path = await FilePicker.getDirectoryPath();
+                        final path = await pickDirectorySafe(
+                          dialogTitle: 'Choose output folder',
+                          currentDirectory: _output.text,
+                          fallbackFilePath:
+                              _paths.firstOrNull ?? _prepFiles.firstOrNull,
+                        );
                         if (path != null && mounted) {
                           setState(() => _output.text = path);
                         }
@@ -4279,10 +4923,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ),
             ],
           ),
-          if (_busy) ...[
-            const SizedBox(height: 10),
-            LinearProgressIndicator(value: _progress > 0 ? _progress : null),
-          ],
           const SizedBox(height: 8),
           SelectableText(
             _busy || !_isPrepared
@@ -4573,17 +5213,73 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     await dir.create(recursive: true);
     String quote(dynamic v) => '"${v.toString().replaceAll('"', '""')}"';
     final lines = <String>[
-      'filename,subjid,group,condn,Chan,Epoch,epoch_label,Condition,mean_amplitude_ERP,signed_auc_ERP,peak_amplitude_ERP,peak_latency_ms_ERP,fractional_area_latency_ms_ERP',
+      'filename,subjid,group,condn,component,Chan,Epoch,epoch_label,Condition,mean_amplitude_ERP,signed_auc_ERP,peak_amplitude_ERP,peak_latency_ms_ERP,fractional_area_latency_ms_ERP',
     ];
-    for (final file in _results.where((f) => f['task'] == _component)) {
+    final taskFiles = _results
+        .where(
+          (f) =>
+              f['task'] == _component &&
+              !_excludedFactorFiles.contains('${f['path'] ?? ''}'),
+        )
+        .toList();
+    final hasMultiComp =
+        _components.length > 1 ||
+        taskFiles.any(
+          (f) =>
+              ((f['component_measurements'] as List?) ?? const []).isNotEmpty,
+        );
+    for (final file in taskFiles) {
       final profile = erpMap(file['profile']);
       final subjid = file['subject'].toString();
-      final groupVal = _participantGroups[subjid] ?? 'Unknown';
+      final groupVal =
+          (_participantGroups[subjid] ?? '${file['group'] ?? ''}').trim();
+      final effGrp = groupVal.isEmpty ? 'Unknown' : groupVal;
+      final compMeas = (file['component_measurements'] as List?) ?? const [];
+      if (hasMultiComp && compMeas.isNotEmpty) {
+        for (final rawCm in compMeas) {
+          final cm = erpMap(rawCm);
+          final cond = '${cm['condition'] ?? ''}';
+          if (difference && cond != 'B_minus_A') continue;
+          if (!difference && cond == 'B_minus_A') continue;
+          final label = cond == 'B_minus_A' ? 'B - A' : cond;
+          final roiJoin = ((cm['roi'] as List?) ?? const []).join('+');
+          final compName = '${cm['component'] ?? _component}';
+          final m = erpMap(cm['measures']);
+          lines.add(
+            [
+              quote(file['path']),
+              quote(subjid),
+              quote(effGrp),
+              quote(file['task']),
+              quote(compName),
+              quote(roiJoin),
+              '1',
+              quote(label),
+              quote(label),
+              m['mean'] ?? '',
+              m['signed_auc'] ?? '',
+              m['peak_amplitude'] ?? '',
+              m['peak_latency'] is num
+                  ? (m['peak_latency'] as num) * 1000
+                  : '',
+              m['fractional_area_latency'] is num
+                  ? (m['fractional_area_latency'] as num) * 1000
+                  : '',
+            ].join(','),
+          );
+        }
+        continue;
+      }
       final condNames =
           (file['condition_names'] as List?)?.cast<String>() ?? [];
       final keys = difference
           ? ['B_minus_A']
           : (condNames.isNotEmpty ? condNames : ['A', 'B']);
+      final compName = _components.isNotEmpty
+          ? _components.first.name
+          : (_componentLabel.text.trim().isNotEmpty
+                ? _componentLabel.text.trim()
+                : '${file['task']}');
 
       for (final key in keys) {
         final m = erpMap(erpMap(file['measurements'])[key]);
@@ -4598,8 +5294,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           [
             quote(file['path']),
             quote(file['subject']),
-            quote(groupVal),
+            quote(effGrp),
             quote(file['task']),
+            quote(compName),
             quote((profile['roi'] as List).join('+')),
             '1',
             quote(label),
@@ -4626,6 +5323,373 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           body: GroupStatisticsWorkbench(initialCsvPath: path),
         ),
       ),
+    );
+  }
+
+  Future<void> _showSubjectPickerDialog(
+    BuildContext context,
+    List<Map<String, dynamic>> current,
+    Map<String, dynamic> d,
+  ) async {
+    final queryCtrl = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, update) {
+          final q = queryCtrl.text.trim().toLowerCase();
+          final matches = <int>[];
+          for (var i = 0; i < current.length; i++) {
+            final rf = current[i];
+            final info = _describeRecording(rf);
+            final subj = info['subject'] ?? '';
+            final grp = (_participantGroups[subj] ?? '${rf['group'] ?? ''}').trim();
+            final hay =
+                '${info['subject']} ${info['session']} ${info['fileName']} $grp'
+                    .toLowerCase();
+            if (q.isEmpty || hay.contains(q)) {
+              matches.add(i);
+            }
+          }
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.person_search, size: 20, color: Colors.cyanAccent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Select Subject / Session (${current.length} files)',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () {
+                    setState(() => _file = null);
+                    Navigator.pop(ctx);
+                  },
+                  icon: const Icon(Icons.star, size: 15, color: Colors.amberAccent),
+                  label: const Text('Grand Average'),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 560,
+              height: 440,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: queryCtrl,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search, size: 18),
+                      hintText: 'Search participant ID, session, group, or file…',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (_) => update(() {}),
+                  ),
+                  const SizedBox(height: 8),
+                  ListTile(
+                    dense: true,
+                    selected: _file == null,
+                    leading: const Icon(Icons.groups, color: Colors.cyanAccent),
+                    title: Text(
+                      '★ Grand Average (${d['n_subjects'] ?? current.length} subj · ${current.length} files)',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                    ),
+                    onTap: () {
+                      setState(() => _file = null);
+                      Navigator.pop(ctx);
+                    },
+                  ),
+                  const Divider(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: matches.length,
+                      itemBuilder: (_, mIdx) {
+                        final idx = matches[mIdx];
+                        final rf = current[idx];
+                        final path = '${rf['path'] ?? ''}';
+                        final info = _describeRecording(rf);
+                        final subj = info['subject'] ?? '';
+                        final grp = (_participantGroups[subj] ?? '${rf['group'] ?? ''}').trim();
+                        final effGrp = grp.isEmpty ? 'Unknown' : grp;
+                        return ListTile(
+                          dense: true,
+                          selected: _file == path,
+                          leading: Text('#${idx + 1}', style: const TextStyle(fontSize: 11)),
+                          title: Text(
+                            '${info['subject']} · ${info['session']}',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            '${info['fileName']}',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 10.5),
+                          ),
+                          trailing: Chip(
+                            visualDensity: VisualDensity.compact,
+                            label: Text(effGrp, style: const TextStyle(fontSize: 10)),
+                          ),
+                          onTap: () {
+                            setState(() {
+                              _file = path;
+                              if (_lazySubjectPath != path) {
+                                _lazySubjectRecording = null;
+                              }
+                            });
+                            Navigator.pop(ctx);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    queryCtrl.dispose();
+  }
+
+  ({
+    Map<String, dynamic> modelFile,
+    int nDecodeSubj,
+    double? decodeMeanAuc,
+    double? decodeSemAuc,
+    double? decodePValue,
+    int nRegSubj,
+    int nDeconvSubj,
+  })
+  _aggregateGroupModelFile(
+    List<Map<String, dynamic>> current,
+    Map<String, dynamic> d,
+  ) {
+    if (_file != null || current.length <= 1) {
+      final f = _file == null ? (current.isEmpty ? <String, dynamic>{} : current.first) : d;
+      return (
+        modelFile: f,
+        nDecodeSubj: f['decoding'] is Map ? 1 : 0,
+        decodeMeanAuc: null,
+        decodeSemAuc: null,
+        decodePValue: null,
+        nRegSubj: f['regression'] is Map ? 1 : 0,
+        nDeconvSubj: f['deconvolution'] is Map ? 1 : 0,
+      );
+    }
+
+    final base = current.first;
+    final out = <String, dynamic>{
+      ...d,
+      'subject': 'Grand Average (${d['n_subjects'] ?? current.length} subj)',
+      'profile': erpMap(base['profile']),
+      'labels': d['labels'] ?? base['labels'],
+    };
+
+    // Aggregate decoding across subjects
+    final win0Sec = (double.tryParse(_window0.text) ?? 300.0) / 1000.0;
+    final win1Sec = (double.tryParse(_window1.text) ?? 600.0) / 1000.0;
+    final decBySubj = <String, List<Map<String, dynamic>>>{};
+    for (final f in current) {
+      if (f['decoding'] is Map) {
+        final s = '${f['subject'] ?? f['path'] ?? ''}'.trim();
+        decBySubj.putIfAbsent(s, () => []).add(erpMap(f['decoding']));
+      }
+    }
+    double? meanWinAuc;
+    double? semWinAuc;
+    double? pWinAuc;
+    if (decBySubj.isNotEmpty) {
+      final firstDec = decBySubj.values.first.first;
+      final times = erpNumbers(firstDec['times']);
+      final nT = times.length;
+      final decChannels = (firstDec['channels'] as List?)?.cast<String>() ?? <String>[];
+      final subjAucs = <List<double>>[];
+      final subjWins = <double>[];
+      for (final sDecs in decBySubj.values) {
+        final ws = [for (final m in sDecs) erpNumbers(m['auc'])].where((a) => a.length == nT).toList();
+        if (ws.isEmpty) continue;
+        final sMean = List<double>.generate(nT, (t) {
+          var s = 0.0;
+          for (final w in ws) {
+            s += w[t];
+          }
+          return s / ws.length;
+        });
+        subjAucs.add(sMean);
+        var sum = 0.0;
+        var cnt = 0;
+        for (var t = 0; t < nT; t++) {
+          if (times[t] >= win0Sec && times[t] <= win1Sec) {
+            sum += sMean[t];
+            cnt++;
+          }
+        }
+        if (cnt > 0) subjWins.add(sum / cnt);
+      }
+      if (subjAucs.isNotEmpty) {
+        final gaAuc = List<double>.generate(nT, (t) {
+          var s = 0.0;
+          for (final w in subjAucs) {
+            s += w[t];
+          }
+          return s / subjAucs.length;
+        });
+        // Paired sign-flip permutation p-value vs 0.5
+        if (subjWins.length >= 2) {
+          final m = subjWins.reduce((a, b) => a + b) / subjWins.length;
+          meanWinAuc = m;
+          var sq = 0.0;
+          for (final v in subjWins) {
+            sq += (v - m) * (v - m);
+          }
+          semWinAuc = math.sqrt((sq / (subjWins.length - 1)) / subjWins.length);
+          final rng = math.Random(42);
+          final obsDiff = (m - 0.5).abs();
+          var ge = 0;
+          const nPerm = 1000;
+          for (var p = 0; p < nPerm; p++) {
+            var s = 0.0;
+            for (final v in subjWins) {
+              s += (rng.nextBool() ? 1.0 : -1.0) * (v - 0.5);
+            }
+            if ((s / subjWins.length).abs() >= obsDiff - 1e-12) ge++;
+          }
+          pWinAuc = (ge + 1) / (nPerm + 1);
+        } else if (subjWins.length == 1) {
+          meanWinAuc = subjWins.first;
+        }
+        out['decoding'] = {
+          ...firstDec,
+          'auc': gaAuc,
+          'folds_used': '${firstDec['folds_used'] ?? ''} (N=${subjAucs.length} subj)',
+        };
+        if (decChannels.isNotEmpty && d['topo_difference'] is List) {
+          out['topo_difference'] = d['topo_difference'];
+        }
+      }
+    }
+
+    // Aggregate regression & deconvolution coefficients across subjects
+    int nRegSubj = 0;
+    int nDeconvSubj = 0;
+    for (final key in ['regression', 'deconvolution']) {
+      final bySubj = <String, List<Map<String, dynamic>>>{};
+      for (final f in current) {
+        if (f[key] is Map) {
+          final s = '${f['subject'] ?? f['path'] ?? ''}'.trim();
+          bySubj.putIfAbsent(s, () => []).add(erpMap(f[key]));
+        }
+      }
+      if (bySubj.isEmpty) continue;
+      if (key == 'regression') nRegSubj = bySubj.length;
+      if (key == 'deconvolution') nDeconvSubj = bySubj.length;
+      final firstM = bySubj.values.first.first;
+      final times = erpNumbers(firstM['times']);
+      final channels = (firstM['channels'] as List? ?? const []).cast<String>();
+      final predictors = (firstM['predictors'] as List? ?? const []).cast<String>();
+      final nP = predictors.length;
+      final nC = channels.length;
+      final nT = times.length;
+      if (nP == 0 || nC == 0 || nT == 0) continue;
+
+      final accum = List.generate(
+        nP,
+        (_) => List.generate(nC, (_) => List<double>.filled(nT, 0.0)),
+      );
+      var usedSubj = 0;
+      for (final sMaps in bySubj.values) {
+        final sAccum = List.generate(
+          nP,
+          (_) => List.generate(nC, (_) => List<double>.filled(nT, 0.0)),
+        );
+        var sUsed = 0;
+        for (final m in sMaps) {
+          final coeff = m['coefficients'] as List?;
+          if (coeff == null || coeff.length != nP) continue;
+          var ok = true;
+          for (var p = 0; p < nP; p++) {
+            final chRows = coeff[p] as List?;
+            if (chRows == null || chRows.length != nC) {
+              ok = false;
+              break;
+            }
+          }
+          if (!ok) continue;
+          for (var p = 0; p < nP; p++) {
+            final chRows = coeff[p] as List;
+            for (var c = 0; c < nC; c++) {
+              final vec = erpNumbers(chRows[c]);
+              for (var t = 0; t < nT && t < vec.length; t++) {
+                sAccum[p][c][t] += vec[t];
+              }
+            }
+          }
+          sUsed++;
+        }
+        if (sUsed > 0) {
+          for (var p = 0; p < nP; p++) {
+            for (var c = 0; c < nC; c++) {
+              for (var t = 0; t < nT; t++) {
+                accum[p][c][t] += sAccum[p][c][t] / sUsed;
+              }
+            }
+          }
+          usedSubj++;
+        }
+      }
+      if (usedSubj > 0) {
+        final meanCoeffs = [
+          for (var p = 0; p < nP; p++)
+            [
+              for (var c = 0; c < nC; c++)
+                [for (var t = 0; t < nT; t++) accum[p][c][t] / usedSubj],
+            ],
+        ];
+        out[key] = {
+          ...firstM,
+          'method': '${firstM['method'] ?? key} (Grand Average N=$usedSubj participants)',
+          'coefficients': meanCoeffs,
+        };
+      }
+    }
+
+    // Attach grand channel_a / channel_b / channel_difference if present
+    final gaCondCh = erpMap(d['channel_conditions']);
+    final condNames = (d['condition_names'] as List? ?? const []).cast<String>();
+    final refCh = base['labels'] as List? ?? const [];
+    final labels = (d['labels'] as List? ?? refCh).cast<String>();
+    if (condNames.isNotEmpty && gaCondCh[condNames.first] is List) {
+      final aGrid = gaCondCh[condNames.first] as List;
+      out['channel_a'] = {
+        for (var i = 0; i < labels.length && i < aGrid.length; i++)
+          labels[i]: aGrid[i],
+      };
+      if (condNames.length >= 2 && gaCondCh[condNames[1]] is List) {
+        final bGrid = gaCondCh[condNames[1]] as List;
+        out['channel_b'] = {
+          for (var i = 0; i < labels.length && i < bGrid.length; i++)
+            labels[i]: bGrid[i],
+        };
+      }
+    }
+    return (
+      modelFile: out,
+      nDecodeSubj: decBySubj.length,
+      decodeMeanAuc: meanWinAuc,
+      decodeSemAuc: semWinAuc,
+      decodePValue: pWinAuc,
+      nRegSubj: nRegSubj,
+      nDeconvSubj: nDeconvSubj,
     );
   }
 
@@ -5210,11 +6274,46 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           ),
         ),
       );
-    final d = _display;
-    final current = _results.where((f) => f['task'] == _component).toList();
-    final modelFile = _file == null
-        ? (current.isEmpty ? <String, dynamic>{} : current.first)
-        : d;
+    final unfilteredCurrent = _results
+        .where(
+          (f) =>
+              f['task'] == _component &&
+              !_excludedFactorFiles.contains('${f['path'] ?? ''}'),
+        )
+        .toList();
+    final availableGroups = <String>{
+      for (final f in unfilteredCurrent)
+        () {
+          final s = '${f['subject'] ?? ''}';
+          final g = (_participantGroups[s] ?? '${f['group'] ?? ''}').trim();
+          return g.isEmpty ? 'Unknown' : g;
+        }(),
+    }.toList()
+      ..sort();
+    final activeGroupFilter = availableGroups.contains(_resultsGroupFilter)
+        ? _resultsGroupFilter
+        : null;
+    final current = activeGroupFilter == null
+        ? unfilteredCurrent
+        : unfilteredCurrent.where((f) {
+            final s = '${f['subject'] ?? ''}';
+            final g = (_participantGroups[s] ?? '${f['group'] ?? ''}').trim();
+            return (g.isEmpty ? 'Unknown' : g) == activeGroupFilter;
+          }).toList();
+    final d = (_file == null && activeGroupFilter != null && current.isNotEmpty)
+        ? erpMap(
+            (ErpCacheRecompute.recomputeErpResultsFromCache(
+                  cachedFiles: current,
+                  task: _component,
+                  components: _activeComponents(),
+                  participantGroups: _participantGroups,
+                  excludedFiles: const {},
+                )['groups'] as List)
+                .first,
+          )
+        : _display;
+    final groupModelSummary = _aggregateGroupModelFile(current, d);
+    final modelFile = groupModelSummary.modelFile;
     final activeFiles = current
         .where((f) => _file == null || f['path'] == _file)
         .toList();
@@ -5223,13 +6322,15 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         : (d['labels'] as List? ?? []).cast<String>();
     final roiLabels = (erpMap(d['profile'])['roi'] as List? ?? [])
         .cast<String>();
+    final selectedOrFocused = _focusedGridChannel ?? _primaryPlotChannel;
     final effectivePlotChannel =
-        _primaryPlotChannel != null &&
+        selectedOrFocused != null &&
                 allLabels.any(
-                  (l) =>
-                      l.toUpperCase() == _primaryPlotChannel!.toUpperCase(),
+                  (l) => l.toUpperCase() == selectedOrFocused.toUpperCase(),
                 )
-            ? _primaryPlotChannel
+            ? allLabels.firstWhere(
+                (l) => l.toUpperCase() == selectedOrFocused.toUpperCase(),
+              )
             : null;
     final primaryWaveSource = effectivePlotChannel != null && activeFiles.isNotEmpty
         ? buildErpChannelSelectionWaveData(
@@ -5298,52 +6399,134 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   }),
                 ),
               ),
-              SizedBox(
-                width: 280,
-                child: DropdownButtonFormField<String>(
-                  key: ValueKey('$_component/$_file'),
-                  initialValue: _file ?? 'group',
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Active Recording / Subject / Session',
-                    isDense: true,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 7,
+              if (availableGroups.length >= 2)
+                SizedBox(
+                  width: 148,
+                  child: DropdownButtonFormField<String?>(
+                    key: ValueKey('res_grp_$activeGroupFilter'),
+                    initialValue: activeGroupFilter,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Group Filter',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 7,
+                      ),
+                      border: OutlineInputBorder(),
                     ),
-                    border: OutlineInputBorder(),
+                    items: [
+                      DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text(
+                          'All groups (${unfilteredCurrent.length})',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                      ),
+                      for (final g in availableGroups)
+                        DropdownMenuItem<String?>(
+                          value: g,
+                          child: Text(
+                            g,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 11.5),
+                          ),
+                        ),
+                    ],
+                    onChanged: (v) => setState(() {
+                      _resultsGroupFilter = v;
+                      if (_file != null &&
+                          v != null &&
+                          !unfilteredCurrent.any((f) {
+                            if (f['path'] != _file) return false;
+                            final s = '${f['subject'] ?? ''}';
+                            final grp =
+                                (_participantGroups[s] ?? '${f['group'] ?? ''}')
+                                    .trim();
+                            return (grp.isEmpty ? 'Unknown' : grp) == v;
+                          })) {
+                        _file = null;
+                      }
+                    }),
                   ),
-                  items: [
-                    DropdownMenuItem(
-                      value: 'group',
-                      child: Text(
-                        '★ Grand Average (${d['n_subjects'] ?? current.length} subj · ${current.length} files)',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    for (var i = 0; i < current.length; i++)
-                      DropdownMenuItem(
-                        value: current[i]['path'] as String,
-                        child: Builder(
-                          builder: (_) {
-                            final info = _describeRecording(current[i]);
-                            return Text(
-                              '#${i + 1}: ${info['subject']} · ${info['session']} — ${info['fileName']}',
-                              style: const TextStyle(fontSize: 12),
-                              overflow: TextOverflow.ellipsis,
+                ),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 270),
+                child: OutlinedButton.icon(
+                  onPressed: current.isEmpty
+                      ? null
+                      : () => _showSubjectPickerDialog(context, current, d),
+                  icon: Icon(
+                    _file == null ? Icons.star : Icons.person_search,
+                    size: 15,
+                    color: _file == null ? Colors.amberAccent : Colors.cyanAccent,
+                  ),
+                  label: Text(
+                    _file == null
+                        ? 'Grand Avg (${d['n_subjects'] ?? current.length} subj · ${current.length} files)'
+                        : () {
+                            final f = current.firstWhere(
+                              (e) => e['path'] == _file,
+                              orElse: () => d,
                             );
-                          },
-                        ),
-                      ),
-                  ],
-                  onChanged: (v) =>
-                      setState(() => _file = v == 'group' ? null : v),
+                            final info = _describeRecording(f);
+                            return '${info['subject']} · ${info['session']}';
+                          }(),
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12),
+                  ),
                 ),
               ),
+              if (_file != null)
+                ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  avatar: const Icon(Icons.groups, size: 14, color: Colors.cyanAccent),
+                  label: const Text('Back to Grand Avg', style: TextStyle(fontSize: 11)),
+                  onPressed: () => setState(() => _file = null),
+                ),
+              if (allLabels.isNotEmpty)
+                SizedBox(
+                  width: 150,
+                  child: DropdownButtonFormField<String?>(
+                    key: ValueKey('hdr_ch_$effectivePlotChannel'),
+                    initialValue: effectivePlotChannel,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Global Channel / ROI',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 7,
+                      ),
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text(
+                          'ROI (${roiLabels.isEmpty ? "All" : roiLabels.join("+")})',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                      ),
+                      for (final ch in allLabels)
+                        DropdownMenuItem<String?>(
+                          value: ch,
+                          child: Text(
+                            ch,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 11.5),
+                          ),
+                        ),
+                    ],
+                    onChanged: (v) => setState(() {
+                      _focusedGridChannel = null;
+                      _primaryPlotChannel = v;
+                    }),
+                  ),
+                ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                 decoration: BoxDecoration(
@@ -5439,6 +6622,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                             files: current,
                             task: _component,
                             output: _output.text,
+                            initialParticipantGroups: _participantGroups,
+                            initialExcludedFiles: _excludedFactorFiles,
+                            components: _activeComponents(),
                           ),
                         ),
                       ),
@@ -5658,8 +6844,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               style: const TextStyle(fontSize: 11),
                             ),
                             selected: effectivePlotChannel == null,
-                            onSelected: (_) =>
-                                setState(() => _primaryPlotChannel = null),
+                            onSelected: (_) => setState(() {
+                              _focusedGridChannel = null;
+                              _primaryPlotChannel = null;
+                            }),
                           ),
                           for (final ch in <String>{
                             ...roiLabels,
@@ -5692,9 +6880,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               ),
                               selected: effectivePlotChannel?.toUpperCase() ==
                                   ch.toUpperCase(),
-                              onSelected: (sel) => setState(
-                                () => _primaryPlotChannel = sel ? ch : null,
-                              ),
+                              onSelected: (sel) => setState(() {
+                                _focusedGridChannel = null;
+                                _primaryPlotChannel = sel ? ch : null;
+                              }),
                             ),
                           if (allLabels.isNotEmpty)
                             SizedBox(
@@ -5723,8 +6912,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                       ),
                                     ),
                                 ],
-                                onChanged: (v) =>
-                                    setState(() => _primaryPlotChannel = v),
+                                onChanged: (v) => setState(() {
+                                  _focusedGridChannel = null;
+                                  _primaryPlotChannel = v;
+                                }),
                               ),
                             ),
                           const SizedBox(width: 8),
@@ -5866,6 +7057,50 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                     color: Color(0xFF0F172A),
                                   ),
                                 ),
+                                if (_focusedGridChannel != null) ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFE0F2FE),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: const Color(0xFF0284C7),
+                                      ),
+                                    ),
+                                    child: const Text(
+                                      'Enlarged from Grid',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF0369A1),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  TextButton(
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap,
+                                    ),
+                                    onPressed: () => setState(() {
+                                      _focusedGridChannel = null;
+                                      _primaryPlotChannel = null;
+                                    }),
+                                    child: const Text(
+                                      'Back to ROI',
+                                      style: TextStyle(fontSize: 11),
+                                    ),
+                                  ),
+                                ],
                                 const SizedBox(width: 8),
                                 OutlinedButton.icon(
                                   style: OutlinedButton.styleFrom(
@@ -6199,6 +7434,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       negativeUp: _negativeUp,
                       smoothingMs: _displaySmoothing,
                       axisLimits: _axisLimits,
+                      focusedChannel: effectivePlotChannel,
+                      onFocusChannel: (ch) =>
+                          setState(() => _focusedGridChannel = ch),
                     ),
                     const SizedBox(height: 8),
                     ExpansionTile(
@@ -6247,26 +7485,107 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ),
               Builder(
                 builder: (context) {
-                  final activeRec = widget.activeRecording;
-                  if (activeRec == null ||
-                      !activeRec.isEpoched ||
-                      (activeRec.pointsPerEpoch ?? 0) <= 0) {
+                  final condNames =
+                      (d['condition_names'] as List? ??
+                              [
+                                erpMap(d['profile'])['a_name'] ?? 'Cond A',
+                                erpMap(d['profile'])['b_name'] ?? 'Cond B',
+                              ])
+                          .map((e) => '$e')
+                          .where((e) => e.isNotEmpty)
+                          .toList();
+                  final win0 = double.tryParse(_window0.text) ?? 300.0;
+                  final win1 = double.tryParse(_window1.text) ?? 600.0;
+                  if (_file == null && current.length > 1) {
+                    return GroupErpImagePanel(
+                      files: current,
+                      participantGroups: _participantGroups,
+                      conditions: condNames,
+                      labels: allLabels,
+                      selectedChannel: effectivePlotChannel ?? 'ROI',
+                      onChannelChanged: (ch) => setState(() {
+                        _focusedGridChannel = null;
+                        _primaryPlotChannel = ch == 'ROI' ? null : ch;
+                      }),
+                      windowStartMs: win0,
+                      windowEndMs: win1,
+                      onSelectFile: (path) {
+                        setState(() {
+                          _file = path;
+                          _focusedGridChannel = null;
+                          if (_lazySubjectPath != path) {
+                            _lazySubjectRecording = null;
+                          }
+                        });
+                        _loadLazySubjectForErpImage(path);
+                      },
+                    );
+                  }
+                  final widgetRec = widget.activeRecording;
+                  final targetPath = _file ?? widgetRec?.path;
+                  final activeRec = (widgetRec != null &&
+                          widgetRec.isEpoched &&
+                          (widgetRec.pointsPerEpoch ?? 0) > 0 &&
+                          (targetPath == null || widgetRec.path == targetPath))
+                      ? widgetRec
+                      : (_lazySubjectRecording != null &&
+                              _lazySubjectPath == targetPath &&
+                              _lazySubjectRecording!.isEpoched &&
+                              (_lazySubjectRecording!.pointsPerEpoch ?? 0) > 0)
+                          ? _lazySubjectRecording
+                          : null;
+                  if (activeRec == null) {
                     return Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Text(
-                            'ERPimage requires an active epoched recording.',
-                            style: TextStyle(color: Colors.white70),
+                          Text(
+                            _lazyRecBusy
+                                ? 'Loading trial epochs for ERPimage…'
+                                : (targetPath != null
+                                      ? 'Single-trial ERPimage is loaded on demand to save memory.'
+                                      : 'ERPimage requires an active epoched recording.'),
+                            style: const TextStyle(color: Colors.white70),
                           ),
-                          if (widget.onEditEpochs != null) ...[
-                            const SizedBox(height: 8),
-                            OutlinedButton.icon(
-                              onPressed: widget.onEditEpochs,
-                              icon: const Icon(Icons.view_list, size: 16),
-                              label: const Text('Open Trial Review & ERPimage'),
+                          const SizedBox(height: 10),
+                          if (_lazyRecBusy)
+                            const SizedBox(
+                              width: 220,
+                              child: LinearProgressIndicator(),
+                            )
+                          else
+                            Wrap(
+                              spacing: 10,
+                              children: [
+                                if (targetPath != null &&
+                                    File(targetPath).existsSync())
+                                  FilledButton.icon(
+                                    onPressed: () =>
+                                        _loadLazySubjectForErpImage(targetPath),
+                                    icon: const Icon(Icons.download, size: 16),
+                                    label: const Text(
+                                      'Load Trial Epochs for ERPimage',
+                                    ),
+                                  ),
+                                if (current.length > 1)
+                                  OutlinedButton.icon(
+                                    onPressed: () =>
+                                        setState(() => _file = null),
+                                    icon: const Icon(Icons.groups, size: 16),
+                                    label: const Text(
+                                      'View Group ERPimage (All Participants)',
+                                    ),
+                                  ),
+                                if (widget.onEditEpochs != null)
+                                  OutlinedButton.icon(
+                                    onPressed: widget.onEditEpochs,
+                                    icon: const Icon(Icons.view_list, size: 16),
+                                    label: const Text(
+                                      'Open Trial Review & ERPimage',
+                                    ),
+                                  ),
+                              ],
                             ),
-                          ],
                         ],
                       ),
                     );
@@ -6280,8 +7599,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       (l) => l.toUpperCase() == chName.toUpperCase(),
                     ),
                   );
-                  final win0 = double.tryParse(_window0.text) ?? 300.0;
-                  final win1 = double.tryParse(_window1.text) ?? 600.0;
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -6293,9 +7610,18 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
                             Text(
-                              'Common Accepted Epochs: ${activeRec.epochCount} trials · Channel: ${activeRec.labels[chIdx]}',
+                              'Accepted Epochs: ${activeRec.epochCount} trials · Channel: ${activeRec.labels[chIdx]}',
                               style: const TextStyle(fontSize: 12, color: Colors.white70),
                             ),
+                            if (current.length > 1)
+                              OutlinedButton.icon(
+                                onPressed: () => setState(() => _file = null),
+                                icon: const Icon(Icons.groups, size: 14),
+                                label: const Text(
+                                  'Back to Group ERPimage',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                              ),
                             if (widget.onEditEpochs != null)
                               OutlinedButton.icon(
                                 onPressed: widget.onEditEpochs,
@@ -6336,7 +7662,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   final bName = profile['b_name']?.toString() ?? (_conditions.length > 1 ? _conditions[1].name : 'Condition B');
                   final condATrials = <int>[];
                   final condBTrials = <int>[];
-                  if (activeRec != null && activeRec.isEpoched && activeRec.epochLabels != null) {
+                  final recPath = _file ?? activeRec?.path ?? (current.isNotEmpty ? current.first['path']?.toString() : null);
+                  if (activeRec != null &&
+                      activeRec.path == recPath &&
+                      activeRec.isEpoched &&
+                      activeRec.epochLabels != null) {
                     for (var i = 0; i < activeRec.epochLabels!.length; i++) {
                       final lbl = activeRec.epochLabels![i];
                       if (_savedA.contains(lbl) || lbl == aName) {
@@ -6349,13 +7679,19 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   final win0 = double.tryParse(_window0.text) ?? 300.0;
                   final win1 = double.tryParse(_window1.text) ?? 600.0;
                   return ErspItcPanel(
-                    recordingPath: activeRec?.path ?? (current.isNotEmpty ? current.first['path']?.toString() : null),
+                    recordingPath: recPath,
                     labels: allLabels,
                     roiLabels: roiLabels,
                     conditionATrials: condATrials,
                     conditionBTrials: condBTrials,
                     conditionAName: aName,
                     conditionBName: bName,
+                    conditionALabels: _savedA.isNotEmpty ? _savedA : [aName],
+                    conditionBLabels: _savedB.isNotEmpty ? _savedB : [bName],
+                    groupMode: _file == null && current.length > 1,
+                    batchFiles: current,
+                    participantGroups: _participantGroups,
+                    excludedFiles: _excludedFactorFiles,
                     epochTminMs: activeRec?.epochTmin != null ? activeRec!.epochTmin! * 1000.0 : null,
                     outputDirectory: _output.text,
                     onEditEpochs: widget.onEditEpochs,
@@ -6370,10 +7706,16 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     },
                     onChannelChanged: (ch) {
                       if (ch != 'ROI' && allLabels.contains(ch)) {
-                        setState(() => _primaryPlotChannel = ch);
+                        setState(() {
+                          _focusedGridChannel = null;
+                          _primaryPlotChannel = ch;
+                        });
                         widget.onRoiChanged?.call(ch);
                       } else if (ch == 'ROI') {
-                        setState(() => _primaryPlotChannel = null);
+                        setState(() {
+                          _focusedGridChannel = null;
+                          _primaryPlotChannel = null;
+                        });
                       }
                     },
                   );
@@ -6421,6 +7763,48 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       ),
                     ),
                     const SizedBox(height: 8),
+                    if (_file == null && current.length > 1)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F292E),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: Colors.tealAccent.withValues(alpha: 0.35),
+                          ),
+                        ),
+                        child: Wrap(
+                          spacing: 12,
+                          runSpacing: 6,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.groups,
+                              size: 16,
+                              color: Colors.tealAccent,
+                            ),
+                            Text(
+                              'Group Aggregation: rERP (${groupModelSummary.nRegSubj} subj) · Deconv (${groupModelSummary.nDeconvSubj} subj) · ML Decoding (${groupModelSummary.nDecodeSubj} subj)',
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.tealAccent,
+                              ),
+                            ),
+                            if (groupModelSummary.decodeMeanAuc != null)
+                              Text(
+                                'Window AUC: ${groupModelSummary.decodeMeanAuc!.toStringAsFixed(3)}'
+                                '${groupModelSummary.decodeSemAuc != null ? " ± ${groupModelSummary.decodeSemAuc!.toStringAsFixed(3)}" : ""}'
+                                '${groupModelSummary.decodePValue != null ? " (sign-flip vs 0.50: p=${groupModelSummary.decodePValue!.toStringAsFixed(4)})" : ""}',
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  color: Colors.white,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
                     _models(modelFile),
                     const Divider(height: 24),
                     Card(
@@ -6668,11 +8052,29 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                             participantGroups: _participantGroups,
                             fileFactors: _fileFactors,
                             excludedFiles: _excludedFactorFiles,
+                            initialComponents: _activeComponents(),
+                            onComponentsChanged: (comps) {
+                              setState(() {
+                                _components
+                                  ..clear()
+                                  ..addAll(comps);
+                              });
+                              if (_waveformCache != null && _result != null) {
+                                _fastRecomputeFromCache(
+                                  reason: 'Updated components in Publication Plots',
+                                );
+                              }
+                            },
                             onGroupsChanged: (newGroups) {
                               setState(() {
                                 _participantGroups.clear();
                                 _participantGroups.addAll(newGroups);
                               });
+                              if (_waveformCache != null && _result != null) {
+                                _fastRecomputeFromCache(
+                                  reason: 'Updated participant groups',
+                                );
+                              }
                             },
                             outputDir: _output.text,
                           ),

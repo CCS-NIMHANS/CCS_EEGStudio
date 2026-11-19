@@ -104,21 +104,7 @@ pub fn load_vhdr(path: &Path) -> Result<Recording, String> {
     }
 
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
-    let mut data_path = parent.join(&data_file);
-    if data_file.is_empty() || !data_path.exists() {
-        let eeg_path = path.with_extension("eeg");
-        let dat_path = path.with_extension("dat");
-        if eeg_path.exists() {
-            data_path = eeg_path;
-        } else if dat_path.exists() {
-            data_path = dat_path;
-        } else {
-            return Err(format!(
-                "Companion data file not found for {}",
-                path.display()
-            ));
-        }
-    }
+    let data_path = resolve_companion_data_file(path, parent, &data_file)?;
 
     let bytes = fs::read(&data_path).map_err(|e| {
         format!(
@@ -214,4 +200,178 @@ pub fn load_vhdr(path: &Path) -> Result<Recording, String> {
         source_epoch_samples: None,
         epoch_labels: None,
     })
+}
+
+fn levenshtein_ci(a: &str, b: &str) -> usize {
+    let s: Vec<char> = a.to_lowercase().chars().collect();
+    let t: Vec<char> = b.to_lowercase().chars().collect();
+    if s == t {
+        return 0;
+    }
+    if s.is_empty() {
+        return t.len();
+    }
+    if t.is_empty() {
+        return s.len();
+    }
+    let mut prev: Vec<usize> = (0..=t.len()).collect();
+    let mut curr = vec![0usize; t.len() + 1];
+    for (i, &sc) in s.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, &tc) in t.iter().enumerate() {
+            let cost = if sc == tc { 0 } else { 1 };
+            curr[j + 1] = (curr[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[t.len()]
+}
+
+fn resolve_companion_data_file(
+    vhdr_path: &Path,
+    parent: &Path,
+    declared_data_file: &str,
+) -> Result<std::path::PathBuf, String> {
+    let declared_base = declared_data_file
+        .rsplit(&['/', '\\'][..])
+        .next()
+        .unwrap_or(declared_data_file)
+        .trim();
+
+    if !declared_base.is_empty() {
+        let direct = parent.join(declared_base);
+        if direct.exists() {
+            return Ok(direct);
+        }
+    }
+
+    let search_dir = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+
+    let mut siblings: Vec<std::path::PathBuf> = Vec::new();
+    let mut vhdr_count = 0usize;
+    if let Ok(entries) = fs::read_dir(search_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let name = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if name.starts_with("._") {
+                continue;
+            }
+            let low = name.to_lowercase();
+            if low.ends_with(".vhdr") {
+                vhdr_count += 1;
+            } else if low.ends_with(".eeg") || low.ends_with(".dat") {
+                siblings.push(p);
+            }
+        }
+    }
+    siblings.sort();
+
+    // Case-insensitive exact match for declared basename
+    if !declared_base.is_empty() {
+        let low_decl = declared_base.to_lowercase();
+        if let Some(hit) = siblings.iter().find(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|n| n.to_lowercase() == low_decl)
+        }) {
+            return Ok(hit.clone());
+        }
+    }
+
+    // 1. Case-insensitive same-stem sibling (<stem>.eeg or <stem>.dat)
+    let stem = vhdr_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    for ext in ["eeg", "dat"] {
+        let expected = format!("{}.{}", stem, ext).to_lowercase();
+        if let Some(hit) = siblings.iter().find(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|n| n.to_lowercase() == expected)
+        }) {
+            if !declared_base.is_empty() {
+                eprintln!(
+                    "Warning: BrainVision header {} referenced missing DataFile='{}'; auto-resolved to '{}'",
+                    vhdr_path.display(),
+                    declared_base,
+                    hit.file_name().and_then(|s| s.to_str()).unwrap_or("")
+                );
+            }
+            return Ok(hit.clone());
+        }
+    }
+
+    // 2. Unique close Levenshtein typo match among same-folder .eeg/.dat files
+    if !siblings.is_empty() {
+        let query = if !declared_base.is_empty() {
+            declared_base.to_string()
+        } else {
+            format!("{}.eeg", stem)
+        };
+        let mut scored: Vec<(usize, &std::path::PathBuf, usize)> = siblings
+            .iter()
+            .map(|p| {
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                let dist = levenshtein_ci(&query, name);
+                let min_len = query.chars().count().min(name.chars().count());
+                (dist, p, min_len)
+            })
+            .collect();
+        scored.sort_by_key(|a| a.0);
+        let (best_dist, best_path, best_len) = scored[0];
+        let max_allowed = ((best_len + 3) / 4).max(2).min(5);
+        let unique_gap = scored.len() == 1 || scored[1].0.saturating_sub(best_dist) >= 2;
+        if best_dist <= max_allowed && unique_gap {
+            eprintln!(
+                "Warning: BrainVision header {} referenced missing DataFile='{}'; auto-resolved by fuzzy match (distance {}) to '{}'",
+                vhdr_path.display(),
+                if declared_base.is_empty() { "(unspecified)" } else { declared_base },
+                best_dist,
+                best_path.file_name().and_then(|s| s.to_str()).unwrap_or("")
+            );
+            return Ok(best_path.clone());
+        }
+    }
+
+    // 3. Unique companion .eeg/.dat when folder has a single recording
+    if siblings.len() == 1 && vhdr_count <= 1 {
+        let hit = &siblings[0];
+        eprintln!(
+            "Warning: BrainVision header {} referenced missing DataFile='{}'; auto-resolved to unique companion '{}'",
+            vhdr_path.display(),
+            if declared_base.is_empty() { "(unspecified)" } else { declared_base },
+            hit.file_name().and_then(|s| s.to_str()).unwrap_or("")
+        );
+        return Ok(hit.clone());
+    }
+
+    let names: Vec<&str> = siblings
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|s| s.to_str()))
+        .collect();
+    let hint = if names.is_empty() {
+        format!("No .eeg or .dat files found in {}.", search_dir.display())
+    } else {
+        format!(
+            "Sibling files in folder: {}. Update DataFile= inside the .vhdr header if renamed.",
+            names.join(", ")
+        )
+    };
+    Err(format!(
+        "BrainVision DataFile='{}' referenced inside {} was not found. {}",
+        if declared_base.is_empty() { "(unspecified)" } else { declared_base },
+        vhdr_path.display(),
+        hint
+    ))
 }

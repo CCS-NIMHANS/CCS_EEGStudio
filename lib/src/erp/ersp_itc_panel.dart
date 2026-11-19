@@ -17,6 +17,12 @@ class ErspItcPanel extends StatefulWidget {
     required this.conditionBTrials,
     required this.conditionAName,
     required this.conditionBName,
+    this.conditionALabels = const [],
+    this.conditionBLabels = const [],
+    this.groupMode = false,
+    this.batchFiles = const [],
+    this.participantGroups = const {},
+    this.excludedFiles = const {},
     this.epochTminMs,
     this.outputDirectory,
     this.onEditEpochs,
@@ -34,6 +40,12 @@ class ErspItcPanel extends StatefulWidget {
   final List<int> conditionBTrials;
   final String conditionAName;
   final String conditionBName;
+  final List<String> conditionALabels;
+  final List<String> conditionBLabels;
+  final bool groupMode;
+  final List<Map<String, dynamic>> batchFiles;
+  final Map<String, String> participantGroups;
+  final Set<String> excludedFiles;
   final double? epochTminMs;
   final String? outputDirectory;
   final VoidCallback? onEditEpochs;
@@ -51,6 +63,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
   final ErpWorkbenchService _service = ErpWorkbenchService();
   String _selectedChannel = 'ROI';
   String _viewMode = 'diff'; // 'a', 'b', 'diff'
+  String? _selectedGroupView; // null = Grand Average across all active groups
   bool _maskSignificant = false;
   bool _busy = false;
   String _status = '';
@@ -83,6 +96,12 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     if (oldWidget.topoEndMs != widget.topoEndMs) {
       _topoEndCtrl.text = '${widget.topoEndMs.round()}';
     }
+    if (oldWidget.initialChannel != widget.initialChannel &&
+        widget.initialChannel != null &&
+        (widget.initialChannel == 'ROI' ||
+            widget.labels.contains(widget.initialChannel))) {
+      _selectedChannel = widget.initialChannel!;
+    }
   }
 
   @override
@@ -94,7 +113,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     } else if (widget.roiLabels.isEmpty && widget.labels.isNotEmpty) {
       _selectedChannel = widget.labels.first;
     }
-    if (widget.conditionBTrials.isEmpty) {
+    if (widget.conditionBTrials.isEmpty && widget.conditionBLabels.isEmpty) {
       _viewMode = 'a';
     }
   }
@@ -113,12 +132,70 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
   }
 
   Future<void> _compute() async {
+    if (_busy) return;
+    if (widget.groupMode && widget.batchFiles.isNotEmpty) {
+      final activeFiles = widget.batchFiles
+          .where((f) => !widget.excludedFiles.contains('${f['path'] ?? ''}'))
+          .toList();
+      if (activeFiles.isEmpty) {
+        setState(() => _status = 'No active batch recordings to average.');
+        return;
+      }
+      setState(() {
+        _busy = true;
+        _status =
+            'Computing Group Grand-Average ERSP & ITC across ${activeFiles.length} recordings…';
+      });
+      try {
+        final inputs = [
+          for (final f in activeFiles)
+            {
+              'path': '${f['path'] ?? ''}',
+              'subject': '${f['subject'] ?? ''}',
+              'group': (widget.participantGroups['${f['subject'] ?? ''}'] ??
+                      '${f['group'] ?? ''}')
+                  .trim(),
+              'condition_a_labels': widget.conditionALabels,
+              'condition_b_labels': widget.conditionBLabels,
+            },
+        ];
+        final res = await _service.runGroupErspItc({
+          'inputs': inputs,
+          'channel_name': _selectedChannel,
+          'roi_channels': widget.roiLabels,
+          if (widget.epochTminMs != null) 'epoch_tmin_ms': widget.epochTminMs,
+          'fmin_hz': double.tryParse(_fminCtrl.text.trim()) ?? 2.0,
+          'fmax_hz': double.tryParse(_fmaxCtrl.text.trim()) ?? 40.0,
+          'n_freqs': 24,
+          'baseline_start_ms':
+              double.tryParse(_baseStartCtrl.text.trim()) ?? -200.0,
+          'baseline_end_ms': double.tryParse(_baseEndCtrl.text.trim()) ?? 0.0,
+          'n_perm': 200,
+        });
+        if (!mounted) return;
+        setState(() {
+          _result = res;
+          _selectedGroupView = null;
+          if (res['ersp_b_db'] == null && _viewMode != 'a') _viewMode = 'a';
+          final failed = (res['failed_files'] as List? ?? const []).length;
+          _status =
+              'Grand-Avg ERSP & ITC ready across ${res['n_subjects']} participant(s) '
+              '(${res['n_files']} files${failed > 0 ? ', $failed skipped' : ''}).';
+        });
+      } catch (e) {
+        if (mounted) setState(() => _status = 'Group ERSP/ITC error: $e');
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+      return;
+    }
+
     final path = widget.recordingPath;
-    if (path == null || path.isEmpty || _busy) return;
+    if (path == null || path.isEmpty) return;
     final activeA = widget.conditionATrials;
     final activeB = widget.conditionBTrials;
-    if (activeA.isEmpty) {
-      setState(() => _status = 'Include at least 1 trial in Condition A.');
+    if (activeA.isEmpty && widget.conditionALabels.isEmpty) {
+      setState(() => _status = 'Include at least 1 trial or condition label.');
       return;
     }
     setState(() {
@@ -132,6 +209,8 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
         'roi_channels': widget.roiLabels,
         'condition_a_trials': activeA,
         'condition_b_trials': activeB,
+        'condition_a_labels': widget.conditionALabels,
+        'condition_b_labels': widget.conditionBLabels,
         if (widget.epochTminMs != null) 'epoch_tmin_ms': widget.epochTminMs,
         'fmin_hz': double.tryParse(_fminCtrl.text.trim()) ?? 2.0,
         'fmax_hz': double.tryParse(_fmaxCtrl.text.trim()) ?? 40.0,
@@ -147,7 +226,8 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
       if (!mounted) return;
       setState(() {
         _result = res;
-        if (activeB.isEmpty && _viewMode != 'a') _viewMode = 'a';
+        _selectedGroupView = null;
+        if (res['ersp_b_db'] == null && _viewMode != 'a') _viewMode = 'a';
         _status =
             'ERSP & ITC ready (${res['n_trials_a']} ${widget.conditionAName}, ${res['n_trials_b']} ${widget.conditionBName} trials).';
       });
@@ -204,29 +284,32 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     }
     await File(path).writeAsString(buf.toString());
 
-    // Also write per-trial summary table
-    final trialPath = path.replaceFirst(RegExp(r'\.csv$', caseSensitive: false), '_trials.csv');
-    final tBuf = StringBuffer()
-      ..writeln('trial_index,condition,included,mean_ersp_db,itc_alignment');
+    // Also write per-trial summary table when in single-recording mode
     final idxA = (res['trial_indices_a'] as List? ?? []).cast<int>();
     final powA = (res['trial_power_a_db'] as List? ?? []).cast<num>();
     final itcTrA = (res['trial_itc_a'] as List? ?? []).cast<num>();
-    for (var k = 0; k < idxA.length; k++) {
-      final tid = idxA[k];
-      tBuf.writeln(
-        '${tid + 1},${widget.conditionAName},true,${powA[k].toStringAsFixed(4)},${itcTrA[k].toStringAsFixed(4)}',
-      );
-    }
     final idxB = (res['trial_indices_b'] as List? ?? []).cast<int>();
     final powB = (res['trial_power_b_db'] as List? ?? []).cast<num>();
     final itcTrB = (res['trial_itc_b'] as List? ?? []).cast<num>();
-    for (var k = 0; k < idxB.length; k++) {
-      final tid = idxB[k];
-      tBuf.writeln(
-        '${tid + 1},${widget.conditionBName},true,${powB[k].toStringAsFixed(4)},${itcTrB[k].toStringAsFixed(4)}',
+    if (idxA.isNotEmpty || idxB.isNotEmpty) {
+      final trialPath = path.replaceFirst(
+        RegExp(r'\.csv$', caseSensitive: false),
+        '_trials.csv',
       );
+      final tBuf = StringBuffer()
+        ..writeln('trial_index,condition,included,mean_ersp_db,itc_alignment');
+      for (var k = 0; k < idxA.length && k < powA.length; k++) {
+        tBuf.writeln(
+          '${idxA[k] + 1},${widget.conditionAName},true,${powA[k].toStringAsFixed(4)},${itcTrA[k].toStringAsFixed(4)}',
+        );
+      }
+      for (var k = 0; k < idxB.length && k < powB.length; k++) {
+        tBuf.writeln(
+          '${idxB[k] + 1},${widget.conditionBName},true,${powB[k].toStringAsFixed(4)},${itcTrB[k].toStringAsFixed(4)}',
+        );
+      }
+      await File(trialPath).writeAsString(tBuf.toString());
     }
-    await File(trialPath).writeAsString(tBuf.toString());
 
     if (mounted) {
       setState(() => _status = 'Exported ERSP/ITC CSV & trial table to $path');
@@ -235,14 +318,18 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.recordingPath == null) {
+    if (!widget.groupMode && widget.recordingPath == null) {
       return const Center(
-        child: Text('Load or run an epoched ERP recording to compute ERSP & ITC.'),
+        child: Text(
+          'Load or run an epoched ERP recording (or switch to Grand Average) to compute ERSP & ITC.',
+        ),
       );
     }
 
     final res = _result;
     final hasB = res != null && res['ersp_b_db'] != null;
+    final availableResultGroups =
+        (res?['groups'] as List? ?? const []).map((e) => '$e').toList();
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12),
@@ -259,14 +346,16 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   SizedBox(
-                    width: 150,
+                    width: 170,
                     child: DropdownButtonFormField<String>(
-                      value: _selectedChannel,
+                      key: ValueKey('ersp_ch_$_selectedChannel'),
+                      initialValue: _selectedChannel,
                       isDense: true,
                       isExpanded: true,
                       decoration: const InputDecoration(
                         labelText: 'Channel / ROI',
                         isDense: true,
+                        border: OutlineInputBorder(),
                       ),
                       items: [
                         if (widget.roiLabels.isNotEmpty)
@@ -292,41 +381,63 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                     ),
                   ),
                   SizedBox(
-                    width: 72,
+                    width: 100,
                     child: TextField(
                       controller: _fminCtrl,
-                      decoration: const InputDecoration(labelText: 'Min Hz', isDense: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Min Hz',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
                   SizedBox(
-                    width: 72,
+                    width: 100,
                     child: TextField(
                       controller: _fmaxCtrl,
-                      decoration: const InputDecoration(labelText: 'Max Hz', isDense: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Max Hz',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
                   SizedBox(
-                    width: 82,
+                    width: 112,
                     child: TextField(
                       controller: _baseStartCtrl,
-                      decoration: const InputDecoration(labelText: 'Base start', isDense: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Base start (ms)',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
                   SizedBox(
-                    width: 82,
+                    width: 112,
                     child: TextField(
                       controller: _baseEndCtrl,
-                      decoration: const InputDecoration(labelText: 'Base end', isDense: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Base end (ms)',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
                   FilledButton.icon(
                     onPressed: _busy ? null : _compute,
                     icon: const Icon(Icons.waves, size: 16),
-                    label: Text(res == null ? 'Compute ERSP & ITC' : 'Recompute'),
+                    label: Text(
+                      res == null
+                          ? (widget.groupMode
+                                ? 'Compute Group ERSP & ITC'
+                                : 'Compute ERSP & ITC')
+                          : 'Recompute',
+                    ),
                   ),
                   if (res != null)
                     OutlinedButton.icon(
@@ -362,6 +473,36 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                   selected: {_viewMode},
                   onSelectionChanged: (v) => setState(() => _viewMode = v.first),
                 ),
+                if (availableResultGroups.length > 1)
+                  SizedBox(
+                    width: 210,
+                    child: DropdownButtonFormField<String?>(
+                      initialValue: availableResultGroups.contains(_selectedGroupView)
+                          ? _selectedGroupView
+                          : null,
+                      isDense: true,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Group View',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      items: [
+                        DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text('All Groups (${res['n_subjects']} subj)'),
+                        ),
+                        for (final g in availableResultGroups)
+                          DropdownMenuItem<String?>(
+                            value: g,
+                            child: Text(
+                              '$g (${(res['group_subject_counts'] as Map?)?[g] ?? 0} subj)',
+                            ),
+                          ),
+                      ],
+                      onChanged: (v) => setState(() => _selectedGroupView = v),
+                    ),
+                  ),
                 FilterChip(
                   label: const Text('Mask p < 0.05 (permutation)'),
                   selected: _maskSignificant,
@@ -410,6 +551,23 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
   }
 
   List<double> _pickGrid(Map<String, dynamic> res, {required bool isItc}) {
+    final grp = _selectedGroupView;
+    if (grp != null) {
+      final grpMapKey = isItc
+          ? (_viewMode == 'b'
+                ? 'group_itc_b'
+                : (_viewMode == 'diff' ? 'group_itc_diff' : 'group_itc_a'))
+          : (_viewMode == 'b'
+                ? 'group_ersp_b_db'
+                : (_viewMode == 'diff'
+                      ? 'group_ersp_diff_db'
+                      : 'group_ersp_a_db'));
+      final m = res[grpMapKey] as Map?;
+      final list = m?[grp] as List?;
+      if (list != null) {
+        return list.cast<num>().map((e) => e.toDouble()).toList();
+      }
+    }
     final key = isItc
         ? (_viewMode == 'b' && res['itc_b'] != null
               ? 'itc_b'
@@ -565,34 +723,50 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amberAccent),
                 ),
                 SizedBox(
-                  width: 68,
+                  width: 92,
                   child: TextField(
                     controller: _topoStartCtrl,
-                    decoration: const InputDecoration(labelText: 'Start ms', isDense: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Start ms',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
                     style: const TextStyle(fontSize: 11),
                   ),
                 ),
                 SizedBox(
-                  width: 68,
+                  width: 92,
                   child: TextField(
                     controller: _topoEndCtrl,
-                    decoration: const InputDecoration(labelText: 'End ms', isDense: true),
+                    decoration: const InputDecoration(
+                      labelText: 'End ms',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
                     style: const TextStyle(fontSize: 11),
                   ),
                 ),
                 SizedBox(
-                  width: 62,
+                  width: 84,
                   child: TextField(
                     controller: _topoFminCtrl,
-                    decoration: const InputDecoration(labelText: 'Min Hz', isDense: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Min Hz',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
                     style: const TextStyle(fontSize: 11),
                   ),
                 ),
                 SizedBox(
-                  width: 62,
+                  width: 84,
                   child: TextField(
                     controller: _topoFmaxCtrl,
-                    decoration: const InputDecoration(labelText: 'Max Hz', isDense: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Max Hz',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
                     style: const TextStyle(fontSize: 11),
                   ),
                 ),
@@ -634,6 +808,9 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     final idxB = (res['trial_indices_b'] as List? ?? []).cast<int>();
     final powB = (res['trial_power_b_db'] as List? ?? []).cast<num>();
     final itcB = (res['trial_itc_b'] as List? ?? []).cast<num>();
+    if (idxA.isEmpty && idxB.isEmpty) {
+      return const SizedBox.shrink();
+    }
 
     final entries = <({int idx, String cond, double pow, double itc})>[
       for (var k = 0; k < idxA.length; k++)

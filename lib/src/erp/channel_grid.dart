@@ -133,6 +133,8 @@ class ErpChannelGrid extends StatefulWidget {
     this.axisLimits = const {},
     this.selectedChannels,
     this.onSelectedChannelsChanged,
+    this.focusedChannel,
+    this.onFocusChannel,
   });
   final List<Map<String, dynamic>> files;
   final Map<String, dynamic> profile;
@@ -141,6 +143,8 @@ class ErpChannelGrid extends StatefulWidget {
   final Map<String, dynamic> axisLimits;
   final Set<String>? selectedChannels;
   final ValueChanged<Set<String>>? onSelectedChannelsChanged;
+  final String? focusedChannel;
+  final ValueChanged<String?>? onFocusChannel;
   @override
   State<ErpChannelGrid> createState() => _ErpChannelGridState();
 }
@@ -387,86 +391,140 @@ class _ErpChannelGridState extends State<ErpChannelGrid> {
                     runSpacing: 8,
                     children: [
                       for (final l in labels.where(selected.contains))
-                        SizedBox(
-                          width: (constraints.maxWidth - 8 * (cols - 1)) / cols,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(
-                                color: roiSet.contains(l.toUpperCase())
-                                    ? const Color(0xFF0284C7)
-                                    : const Color(0xFFCBD5E1),
-                                width: roiSet.contains(l.toUpperCase()) ? 1.5 : 1.0,
-                              ),
-                            ),
-                            child: Column(
-                              children: [
-                                Container(
-                                  width: double.infinity,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 3,
-                                  ),
+                        Builder(
+                          builder: (context) {
+                            final isFocused =
+                                widget.focusedChannel?.toUpperCase() ==
+                                l.toUpperCase();
+                            final isRoi = roiSet.contains(l.toUpperCase());
+                            return SizedBox(
+                              width:
+                                  (constraints.maxWidth - 8 * (cols - 1)) / cols,
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(6),
+                                onTap: widget.onFocusChannel == null
+                                    ? null
+                                    : () => widget.onFocusChannel!(
+                                        isFocused ? null : l,
+                                      ),
+                                child: Container(
                                   decoration: BoxDecoration(
-                                    color: roiSet.contains(l.toUpperCase())
-                                        ? const Color(0xFFE0F2FE)
-                                        : const Color(0xFFF1F5F9),
-                                    borderRadius: const BorderRadius.vertical(
-                                      top: Radius.circular(5),
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                      color: isFocused
+                                          ? const Color(0xFFF59E0B)
+                                          : (isRoi
+                                                ? const Color(0xFF0284C7)
+                                                : const Color(0xFFCBD5E1)),
+                                      width: isFocused
+                                          ? 2.2
+                                          : (isRoi ? 1.5 : 1.0),
                                     ),
                                   ),
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  child: Column(
                                     children: [
-                                      Text(
-                                        roiSet.contains(l.toUpperCase())
-                                            ? '$l (ROI)'
-                                            : l,
-                                        style: const TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.bold,
-                                          color: Color(0xFF0F172A),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 3,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: isFocused
+                                              ? const Color(0xFFFEF3C7)
+                                              : (isRoi
+                                                    ? const Color(0xFFE0F2FE)
+                                                    : const Color(0xFFF1F5F9)),
+                                          borderRadius:
+                                              const BorderRadius.vertical(
+                                            top: Radius.circular(5),
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                isFocused
+                                                    ? '$l · Enlarged'
+                                                    : (isRoi
+                                                          ? '$l (ROI)'
+                                                          : l),
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Color(0xFF0F172A),
+                                                ),
+                                              ),
+                                            ),
+                                            if (widget.onFocusChannel != null)
+                                              Tooltip(
+                                                message: isFocused
+                                                    ? 'Restore ROI in main plot'
+                                                    : 'Click card to enlarge $l in main plot',
+                                                child: Icon(
+                                                  isFocused
+                                                      ? Icons.zoom_in_map
+                                                      : Icons.open_in_full,
+                                                  size: 13,
+                                                  color: isFocused
+                                                      ? const Color(0xFFB45309)
+                                                      : const Color(0xFF64748B),
+                                                ),
+                                              ),
+                                            const SizedBox(width: 4),
+                                            InkWell(
+                                              onTap: () {
+                                                if (isFocused) {
+                                                  widget.onFocusChannel?.call(
+                                                    null,
+                                                  );
+                                                }
+                                                final next = {...selected}
+                                                  ..remove(l);
+                                                _updateSelected(next);
+                                              },
+                                              child: const Icon(
+                                                Icons.close,
+                                                size: 13,
+                                                color: Color(0xFF64748B),
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
-                                      InkWell(
-                                        onTap: () {
-                                          final next = {...selected}..remove(l);
-                                          _updateSelected(next);
-                                        },
-                                        child: const Icon(
-                                          Icons.close,
-                                          size: 13,
-                                          color: Color(0xFF64748B),
+                                      SizedBox(
+                                        height: 185,
+                                        child: ClipRRect(
+                                          borderRadius:
+                                              const BorderRadius.vertical(
+                                            bottom: Radius.circular(5),
+                                          ),
+                                          child: CustomPaint(
+                                            size: const Size(
+                                              double.infinity,
+                                              185,
+                                            ),
+                                            painter: ErpWorkbenchWavePainter(
+                                              buildErpChannelSelectionWaveData(
+                                                files: files,
+                                                profile: widget.profile,
+                                                targetChannels: [l],
+                                                smoothingMs: widget.smoothingMs,
+                                                axisLimits: widget.axisLimits,
+                                              ),
+                                              negativeUp: widget.negativeUp,
+                                            ),
+                                          ),
                                         ),
                                       ),
                                     ],
                                   ),
                                 ),
-                                SizedBox(
-                                  height: 185,
-                                  child: ClipRRect(
-                                    borderRadius: const BorderRadius.vertical(
-                                      bottom: Radius.circular(5),
-                                    ),
-                                    child: CustomPaint(
-                                      size: const Size(double.infinity, 185),
-                                      painter: ErpWorkbenchWavePainter(
-                                        buildErpChannelSelectionWaveData(
-                                          files: files,
-                                          profile: widget.profile,
-                                          targetChannels: [l],
-                                          smoothingMs: widget.smoothingMs,
-                                          axisLimits: widget.axisLimits,
-                                        ),
-                                        negativeUp: widget.negativeUp,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                              ),
+                            );
+                          },
                         ),
                     ],
                   );

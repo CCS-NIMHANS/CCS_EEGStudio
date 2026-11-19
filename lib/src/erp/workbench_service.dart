@@ -76,6 +76,12 @@ class ErpWorkbenchService {
     return _runDirectJob({'job_type': 'ersp_itc', ...payload});
   }
 
+  Future<Map<String, dynamic>> runGroupErspItc(
+    Map<String, dynamic> payload,
+  ) async {
+    return _runDirectJob({'job_type': 'group_ersp_itc', ...payload});
+  }
+
   Future<Map<String, dynamic>> runWithinErpStats(
     Map<String, dynamic> payload,
   ) async {
@@ -162,7 +168,19 @@ String extractRecordingSubject(String path) {
 
   final first = stem.split('_').first.trim();
   if (first.isNotEmpty && first != 'unknown') {
-    return first.replaceAll(RegExp(r'-epo|_clean'), '');
+    var clean = first.replaceAll(
+      RegExp(r'(?:-epo|_clean)+$', caseSensitive: false),
+      '',
+    );
+    // Split concatenated subject+session IDs (e.g. SKYMED013SESSION03 -> SKYMED013).
+    final concatMatch = RegExp(
+      r'^([A-Za-z]+[-_]?\d+)(?:[-_]?(?:session|ses|visit|run|tp)\d+.*)$',
+      caseSensitive: false,
+    ).firstMatch(clean);
+    if (concatMatch != null) {
+      clean = concatMatch.group(1)!;
+    }
+    if (clean.isNotEmpty) return clean;
   }
 
   if (parent.isNotEmpty && !genericDirs.contains(parentClean)) {

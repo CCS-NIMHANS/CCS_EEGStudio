@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../group_statistics.dart';
+import 'erp_component_spec.dart';
 import 'workbench_figures.dart';
 import 'review_math.dart';
 import 'channel_grid.dart';
@@ -14,15 +15,22 @@ class ErpReviewWorkspace extends StatefulWidget {
     required this.files,
     required this.task,
     required this.output,
+    this.initialParticipantGroups = const {},
+    this.initialExcludedFiles = const {},
+    this.components = const [],
   });
   final List<Map<String, dynamic>> files;
   final String task, output;
+  final Map<String, String> initialParticipantGroups;
+  final Set<String> initialExcludedFiles;
+  final List<ErpComponentSpec> components;
   @override
   State<ErpReviewWorkspace> createState() => _ErpReviewWorkspaceState();
 }
 
 class _ErpReviewWorkspaceState extends State<ErpReviewWorkspace> {
   Map<String, dynamic> _axisLimits = {};
+  String? _focusedChannel;
 
   final _selected = <String>{},
       _metrics = <String>{
@@ -57,6 +65,10 @@ class _ErpReviewWorkspaceState extends State<ErpReviewWorkspace> {
     // Do not silently combine recordings on different temporal grids or condition definitions.
     final reference = erpMap(first['profile']);
     _files = widget.files.where((f) {
+      final path = '${f['path'] ?? ''}';
+      if (path.isNotEmpty && widget.initialExcludedFiles.contains(path)) {
+        return false;
+      }
       final t = erpNumbers(f['times']), p = erpMap(f['profile']);
       return t.length == time.length &&
           List.generate(
@@ -69,6 +81,14 @@ class _ErpReviewWorkspaceState extends State<ErpReviewWorkspace> {
           jsonEncode(p['baseline']) == jsonEncode(reference['baseline']) &&
           p['lateralized'] == reference['lateralized'];
     }).toList();
+    for (final f in _files) {
+      final subj = '${f['subject'] ?? ''}';
+      final g =
+          (widget.initialParticipantGroups[subj] ?? '${f['group'] ?? ''}').trim();
+      if (g.isNotEmpty) {
+        _groups[subj] = g;
+      }
+    }
     _selected.addAll(_files.map((f) => '${f['subject']}'));
     final w = erpNumbers(reference['window']);
     _window = RangeValues(w[0], w[1]);
@@ -457,22 +477,76 @@ class _ErpReviewWorkspaceState extends State<ErpReviewWorkspace> {
                         'Select participants to view their waveforms.',
                       ),
                     )
-                  else
+                  else ...[
+                    if (_focusedChannel != null)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF3C7).withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: const Color(0xFFF59E0B).withValues(alpha: 0.55),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.zoom_in,
+                              size: 16,
+                              color: Color(0xFFF59E0B),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Enlarged channel from grid: $_focusedChannel (click channel card again or reset to return to Task ROI)',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                            TextButton.icon(
+                              onPressed: () =>
+                                  setState(() => _focusedChannel = null),
+                              icon: const Icon(Icons.undo, size: 15),
+                              label: const Text('Back to Task ROI'),
+                            ),
+                          ],
+                        ),
+                      ),
                     SizedBox(
                       height: 350,
                       child: CustomPaint(
-                        painter: ErpWorkbenchWavePainter({
-                          ...data,
-                          ..._axisLimits,
-                        }, negativeUp: _negativeUp),
+                        painter: ErpWorkbenchWavePainter(
+                          _focusedChannel != null &&
+                                  labels.any(
+                                    (l) =>
+                                        l.toUpperCase() ==
+                                        _focusedChannel!.toUpperCase(),
+                                  )
+                              ? buildErpChannelSelectionWaveData(
+                                  files: selectedFiles,
+                                  profile: profile,
+                                  targetChannels: [_focusedChannel!],
+                                  smoothingMs: _smooth,
+                                  axisLimits: _axisLimits,
+                                )
+                              : {...data, ..._axisLimits},
+                          negativeUp: _negativeUp,
+                        ),
                       ),
                     ),
+                  ],
                   ErpChannelGrid(
                     files: selectedFiles,
                     profile: profile,
                     negativeUp: _negativeUp,
                     smoothingMs: _smooth,
                     axisLimits: _axisLimits,
+                    focusedChannel: _focusedChannel,
+                    onFocusChannel: (ch) =>
+                        setState(() => _focusedChannel = ch),
                   ),
                   Row(
                     children: [

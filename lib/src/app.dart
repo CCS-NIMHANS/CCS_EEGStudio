@@ -19,6 +19,10 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'batch_progress_tracker.dart';
+import 'vhdr_loader.dart' show VhdrMappingIssue, repairVhdrMapping;
 
 import 'channel_types.dart';
 import 'topostats/mne_constants.dart';
@@ -204,45 +208,156 @@ Color _moduleColor(_Module m) => switch (m) {
   _Module.microstates => const Color(0xFF06B6D4),
 };
 
+bool _isRunningUnderWidgetTest() =>
+    WidgetsBinding.instance.runtimeType.toString().contains('Test');
+
 class CcsEegApp extends StatelessWidget {
   const CcsEegApp({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    title: 'CCS EEG Studio',
-    theme: ThemeData(
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: _accentBlue,
-        brightness: Brightness.dark,
-      ),
-      scaffoldBackgroundColor: _bgColor,
-      cardColor: _cardColor,
-      useMaterial3: true,
-      inputDecorationTheme: const InputDecorationTheme(
-        border: OutlineInputBorder(borderSide: BorderSide(color: _borderColor)),
-        enabledBorder: OutlineInputBorder(
-          borderSide: BorderSide(color: _borderColor),
+  Widget build(BuildContext context) {
+    final shortcuts = <ShortcutActivator, VoidCallback>{
+      SingleActivator(
+        LogicalKeyboardKey.keyN,
+        meta: Platform.isMacOS,
+        control: !Platform.isMacOS,
+      ): () {
+        unawaited(openAppInstance());
+      },
+    };
+
+    final app = MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'CCS EEG Studio',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: _accentBlue,
+          brightness: Brightness.dark,
         ),
-        focusedBorder: OutlineInputBorder(
-          borderSide: BorderSide(color: _accentBlue),
+        scaffoldBackgroundColor: _bgColor,
+        cardColor: _cardColor,
+        useMaterial3: true,
+        inputDecorationTheme: const InputDecorationTheme(
+          border: OutlineInputBorder(borderSide: BorderSide(color: _borderColor)),
+          enabledBorder: OutlineInputBorder(
+            borderSide: BorderSide(color: _borderColor),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderSide: BorderSide(color: _accentBlue),
+          ),
+          labelStyle: TextStyle(color: _textMuted),
+          isDense: true,
+          filled: true,
+          fillColor: _bgColor,
         ),
-        labelStyle: TextStyle(color: _textMuted),
-        isDense: true,
-        filled: true,
-        fillColor: _bgColor,
-      ),
-      checkboxTheme: CheckboxThemeData(
-        fillColor: WidgetStateProperty.resolveWith(
-          (s) => s.contains(WidgetState.selected)
-              ? _accentBlue
-              : Colors.transparent,
+        checkboxTheme: CheckboxThemeData(
+          fillColor: WidgetStateProperty.resolveWith(
+            (s) => s.contains(WidgetState.selected)
+                ? _accentBlue
+                : Colors.transparent,
+          ),
+          side: const BorderSide(color: _textMuted),
+          checkColor: WidgetStateProperty.all(Colors.white),
         ),
-        side: const BorderSide(color: _textMuted),
-        checkColor: WidgetStateProperty.all(Colors.white),
       ),
-    ),
-    home: const FeatureHome(),
-  );
+      builder: (context, child) => CallbackShortcuts(
+        bindings: shortcuts,
+        child: Focus(
+          autofocus: true,
+          child: child ?? const SizedBox.shrink(),
+        ),
+      ),
+      home: const FeatureHome(),
+    );
+
+    if (Platform.isMacOS && !_isRunningUnderWidgetTest()) {
+      return PlatformMenuBar(
+        menus: [
+          PlatformMenu(
+            label: 'CCS EEG Studio',
+            menus: [
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.about,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.about,
+                ),
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.servicesSubmenu,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.servicesSubmenu,
+                ),
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.hide,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.hide,
+                ),
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.hideOtherApplications,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.hideOtherApplications,
+                ),
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.showAllApplications,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.showAllApplications,
+                ),
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.quit,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.quit,
+                ),
+            ],
+          ),
+          PlatformMenu(
+            label: 'File',
+            menus: [
+              PlatformMenuItem(
+                label: 'New Instance',
+                shortcut: const SingleActivator(
+                  LogicalKeyboardKey.keyN,
+                  meta: true,
+                ),
+                onSelected: () {
+                  unawaited(openAppInstance());
+                },
+              ),
+            ],
+          ),
+          PlatformMenu(
+            label: 'Window',
+            menus: [
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.minimizeWindow,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.minimizeWindow,
+                ),
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.zoomWindow,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.zoomWindow,
+                ),
+              if (PlatformProvidedMenuItem.hasMenu(
+                PlatformProvidedMenuItemType.arrangeWindowsInFront,
+              ))
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.arrangeWindowsInFront,
+                ),
+            ],
+          ),
+        ],
+        child: app,
+      );
+    }
+
+    return app;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -829,6 +944,9 @@ class _FeatureHomeState extends State<FeatureHome>
   final ValueNotifier<int> _batchProgressPulse = ValueNotifier(0);
   final Map<String, String> _batchFileStatus = {};
   final List<String> _batchProgressLog = [];
+  final List<VhdrMappingIssue> _batchVhdrIssues = [];
+  BatchProgressTracker? _batchTracker;
+  Timer? _batchTicker;
   String _batchRunTitle = '';
   String _batchCurrent = '';
   int _batchDone = 0;
@@ -1175,6 +1293,7 @@ class _FeatureHomeState extends State<FeatureHome>
       c.dispose();
     }
     _loader.cancelPendingLoads();
+    _batchTicker?.cancel();
     _batchProgressPulse.dispose();
     super.dispose();
   }
@@ -1307,12 +1426,184 @@ class _FeatureHomeState extends State<FeatureHome>
       });
       _logChannelDetection();
       _log('✓ Loaded ${_shortName(path)}');
+      final vhdrIssues = _extractVhdrIssues(rec);
+      if (vhdrIssues.isNotEmpty) {
+        for (final issue in vhdrIssues) {
+          _log('⚠ BrainVision pointer mismatch auto-resolved: ${issue.summary}');
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'BrainVision header pointer mismatch auto-resolved for ${_shortName(path)}.',
+              ),
+              action: SnackBarAction(
+                label: 'Fix header…',
+                onPressed: () => _showVhdrRepairDialog(vhdrIssues),
+              ),
+              duration: const Duration(seconds: 7),
+            ),
+          );
+        }
+      }
       await _restoreInteractivePreview(rec);
     } catch (e) {
       _log('✗ ERROR ${_shortName(path)}: $e');
     } finally {
       if (mounted) setState(() => _running = false);
     }
+  }
+
+  List<VhdrMappingIssue> _extractVhdrIssues(EegRecording rec) {
+    final raw = rec.provenance['vhdr_mapping_issues'];
+    if (raw is! List) return const [];
+    return [
+      for (final item in raw)
+        if (item is Map)
+          VhdrMappingIssue.fromJson(Map<String, dynamic>.from(item)),
+    ];
+  }
+
+  Future<void> _showVhdrRepairDialog(List<VhdrMappingIssue> issues) async {
+    final repairable = issues.where((i) => i.isResolved).toList();
+    if (repairable.isEmpty || !mounted) return;
+    final selected = List<bool>.filled(repairable.length, true);
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: _cardColor,
+          title: const Row(
+            children: [
+              Icon(Icons.build_circle_outlined, color: _accentAmber),
+              SizedBox(width: 8),
+              Expanded(child: Text('BrainVision Header Mapping Repair')),
+            ],
+          ),
+          content: SizedBox(
+            width: 680,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'BrainVision .vhdr headers store internal DataFile= and MarkerFile= filenames. '
+                  'When files are renamed on disk without updating inside the header, other tools fail to open them. '
+                  'CCS EEG Studio auto-resolved these files in memory; optionally repair the header files below so they match:',
+                  style: TextStyle(fontSize: 12.5, color: Colors.white70),
+                ),
+                const SizedBox(height: 12),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 280),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F172A),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: _borderColor),
+                    ),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: repairable.length,
+                      separatorBuilder: (_, _) =>
+                          const Divider(height: 1, color: _borderColor),
+                      itemBuilder: (_, idx) {
+                        final issue = repairable[idx];
+                        return CheckboxListTile(
+                          dense: true,
+                          value: selected[idx],
+                          onChanged: (v) =>
+                              setDialogState(() => selected[idx] = v ?? true),
+                          title: Text(
+                            '${issue.vhdrFileName} (${issue.kind})',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '"${issue.declaredName}"  →  "${issue.resolvedFileName ?? ""}"',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: _accentAmber,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Keep Untouched'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(ctx, true),
+              icon: const Icon(Icons.auto_fix_high, size: 16),
+              label: const Text('Repair Selected .vhdr/.vmrk'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (proceed != true || !mounted) return;
+    var repaired = 0;
+    for (var i = 0; i < repairable.length; i++) {
+      if (!selected[i]) continue;
+      try {
+        await repairVhdrMapping(repairable[i]);
+        repaired++;
+        _log('✓ Repaired ${repairable[i].kind} in ${repairable[i].vhdrFileName} → ${repairable[i].resolvedFileName}');
+      } catch (e) {
+        _log('✗ Failed to repair ${repairable[i].vhdrFileName}: $e');
+      }
+    }
+    if (repaired > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Repaired $repaired BrainVision header mapping(s).'),
+        ),
+      );
+    }
+  }
+
+  void _removeOpenedRecording(EegRecording rec) {
+    if (_running) return;
+    final remaining = _openedRecordings
+        .where((item) => item.path != rec.path)
+        .toList();
+    if (remaining.isEmpty) {
+      _clearPipeline();
+      return;
+    }
+    setState(() {
+      _openedRecordings
+        ..clear()
+        ..addAll(remaining);
+    });
+    if (_raw?.path == rec.path || _activeRecording?.path == rec.path) {
+      _selectOpenedRecording(remaining.last);
+    }
+  }
+
+  void _clearAllBatchQueues() {
+    if (_running) return;
+    setState(() {
+      _batchPrepFiles.clear();
+      _batchPrepOutputs.clear();
+      _batchFeatFiles.clear();
+      _batchFeatOutputs.clear();
+      _batchPlotFiles.clear();
+      _batchResultCsvs.clear();
+      _plotsDir = null;
+      _groupInputCsv = null;
+    });
+    _log('Cleared EEG batch workspace file queues.');
   }
 
   void _restoreSavedEpochProtocol(EegRecording recording) {
@@ -1954,6 +2245,7 @@ class _FeatureHomeState extends State<FeatureHome>
     required List<String> csvPaths,
     required bool announce,
     String? outputDir,
+    void Function(double p, String msg)? onProgressUpdate,
   }) async {
     if (announce)
       _log('Generating TopoStats plots (PlotFeaturesTopoStats parity)…');
@@ -1975,7 +2267,11 @@ class _FeatureHomeState extends State<FeatureHome>
         writePng: _cfg.topoStatsPng || !_cfg.topoStatsPdf,
         onProgress: (p, msg) {
           if (msg.isNotEmpty) _log('  [Plots] $msg');
-          if (mounted) setState(() => _progress = p);
+          if (onProgressUpdate != null) {
+            onProgressUpdate(p, msg);
+          } else if (mounted) {
+            setState(() => _progress = p);
+          }
         },
       );
       final recs = results.map((r) => r.recId).toSet();
@@ -2381,11 +2677,18 @@ class _FeatureHomeState extends State<FeatureHome>
               _accentGreen,
             ),
             const SizedBox(width: 6),
-            IconButton(
-              tooltip: 'Clear pipeline',
-              onPressed: _running ? null : _clearPipeline,
-              icon: const Icon(Icons.close, size: 16, color: _textMuted),
-              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            Tooltip(
+              message: 'Clear loaded recordings and reset pipeline',
+              child: TextButton.icon(
+                onPressed: _running ? null : _clearPipeline,
+                icon: const Icon(Icons.clear_all, size: 15),
+                label: const Text('Clear', style: TextStyle(fontSize: 12)),
+                style: TextButton.styleFrom(
+                  foregroundColor: _textMuted,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 30),
+                ),
+              ),
             ),
           ],
           const SizedBox(width: 8),
@@ -3947,7 +4250,21 @@ class _FeatureHomeState extends State<FeatureHome>
           ),
           if (_openedRecordings.isNotEmpty) ...[
             const SizedBox(height: 12),
-            _subLabel('OPEN RECORDINGS'),
+            Row(
+              children: [
+                Expanded(child: _subLabel('OPEN RECORDINGS')),
+                TextButton.icon(
+                  onPressed: _running ? null : _clearPipeline,
+                  icon: const Icon(Icons.clear_all, size: 13),
+                  label: const Text('Clear All', style: TextStyle(fontSize: 11)),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.redAccent,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: const Size(0, 24),
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 4),
             for (final recording in _openedRecordings)
               InkWell(
@@ -3958,6 +4275,9 @@ class _FeatureHomeState extends State<FeatureHome>
                 child: _recordingChip(
                   recording,
                   active: recording.path == _raw?.path,
+                  onRemove: _running
+                      ? null
+                      : () => _removeOpenedRecording(recording),
                 ),
               ),
             const SizedBox(height: 10),
@@ -5894,6 +6214,19 @@ class _FeatureHomeState extends State<FeatureHome>
                     style: const TextStyle(color: _textMuted, fontSize: 11),
                   ),
                   const Spacer(),
+                  if (!_running &&
+                      (_batchPrepFiles.isNotEmpty ||
+                          _batchFeatFiles.isNotEmpty ||
+                          _batchPlotFiles.isNotEmpty))
+                    TextButton.icon(
+                      onPressed: _clearAllBatchQueues,
+                      icon: const Icon(Icons.clear_all, size: 15),
+                      label: const Text('Clear Queue', style: TextStyle(fontSize: 11)),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.redAccent,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                    ),
                   TextButton.icon(
                     onPressed: _running ? null : _openBatchGroupStatistics,
                     icon: const Icon(Icons.groups, size: 16),
@@ -6050,9 +6383,14 @@ class _FeatureHomeState extends State<FeatureHome>
                   onPressed: _running
                       ? null
                       : () async {
-                          final path = await FilePicker.getDirectoryPath(
+                          final path = await pickDirectorySafe(
                             dialogTitle:
                                 'Select batch output directory for all stages',
+                            currentDirectory: _batchGlobalOutputDir,
+                            fallbackFilePath:
+                                _batchPrepFiles.firstOrNull ??
+                                _batchFeatFiles.firstOrNull ??
+                                _batchPlotFiles.firstOrNull,
                           );
                           if (path != null) {
                             setState(() {
@@ -6443,8 +6781,10 @@ class _FeatureHomeState extends State<FeatureHome>
     outputDir: _effectiveBatchPrepOutputDir,
     outputLabel: 'Output Directory',
     onSelectOutput: () async {
-      final path = await FilePicker.getDirectoryPath(
+      final path = await pickDirectorySafe(
         dialogTitle: 'Output directory for preprocessed files',
+        currentDirectory: _effectiveBatchPrepOutputDir,
+        fallbackFilePath: _batchPrepFiles.firstOrNull,
       );
       if (path != null) setState(() => _batchPrepOutputDir = path);
     },
@@ -6479,8 +6819,10 @@ class _FeatureHomeState extends State<FeatureHome>
     outputDir: _effectiveBatchFeatOutputDir,
     outputLabel: 'Output Directory',
     onSelectOutput: () async {
-      final path = await FilePicker.getDirectoryPath(
+      final path = await pickDirectorySafe(
         dialogTitle: 'Output directory for feature CSVs',
+        currentDirectory: _effectiveBatchFeatOutputDir,
+        fallbackFilePath: _batchFeatFiles.firstOrNull ?? _batchPrepFiles.firstOrNull,
       );
       if (path != null) setState(() => _batchFeatOutputDir = path);
     },
@@ -6576,8 +6918,10 @@ class _FeatureHomeState extends State<FeatureHome>
     outputDir: _effectiveBatchPlotOutputDir,
     outputLabel: 'Output Directory',
     onSelectOutput: () async {
-      final path = await FilePicker.getDirectoryPath(
+      final path = await pickDirectorySafe(
         dialogTitle: 'Output directory for plots',
+        currentDirectory: _effectiveBatchPlotOutputDir,
+        fallbackFilePath: _batchPlotFiles.firstOrNull ?? _batchFeatFiles.firstOrNull,
       );
       if (path != null) setState(() => _batchPlotOutputDir = path);
     },
@@ -7178,7 +7522,29 @@ class _FeatureHomeState extends State<FeatureHome>
 
   // ── Batch runners ───────────────────────────────────────────────────────
 
-  void _startBatchProgress(String title, List<String> files) {
+  void _syncProgressBarFromTracker() {
+    final tracker = _batchTracker;
+    if (tracker == null || !mounted) return;
+    setState(() => _progress = tracker.overallProgress);
+  }
+
+  void _startBatchProgress(
+    String title,
+    List<String> files, {
+    List<BatchStageSpec>? stages,
+  }) {
+    _batchTicker?.cancel();
+    _batchVhdrIssues.clear();
+    final effectiveStages = stages ??
+        [
+          BatchStageSpec(
+            id: 'stage',
+            label: title,
+            fileCount: files.length,
+          ),
+        ];
+    _batchTracker = BatchProgressTracker(stages: effectiveStages)
+      ..startStage(0, actualFileCount: files.length);
     _batchRunTitle = title;
     _batchCurrent = 'Preparing…';
     _batchDone = 0;
@@ -7193,6 +7559,11 @@ class _FeatureHomeState extends State<FeatureHome>
       ..clear()
       ..addEntries(files.map((path) => MapEntry(path, 'Waiting')));
     _batchProgressPulse.value++;
+    _batchTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_batchProgressActive && !_batchProgressFinished) {
+        _batchProgressPulse.value++;
+      }
+    });
     unawaited(
       showDialog<void>(
         context: context,
@@ -7201,8 +7572,45 @@ class _FeatureHomeState extends State<FeatureHome>
           animation: _batchProgressPulse,
           builder: (_, __) => _buildBatchProgressDialog(dialogContext),
         ),
-      ).whenComplete(() => _batchProgressActive = false),
+      ).whenComplete(() {
+        _batchProgressActive = false;
+        _batchTicker?.cancel();
+        _batchTicker = null;
+      }),
     );
+  }
+
+  void _beginBatchFile(String path, [String status = 'Loading']) {
+    _batchTracker?.beginFile(path);
+    _updateBatchFile(path, status, progress: 0);
+  }
+
+  void _recordBatchVhdrIssues(EegRecording rec) {
+    final issues = _extractVhdrIssues(rec);
+    if (issues.isEmpty) return;
+    var added = false;
+    for (final issue in issues) {
+      final exists = _batchVhdrIssues.any(
+        (e) =>
+            e.vhdrPath == issue.vhdrPath &&
+            e.kind == issue.kind &&
+            e.declaredName == issue.declaredName,
+      );
+      if (!exists) {
+        _batchVhdrIssues.add(issue);
+        added = true;
+      }
+      if (issue.isResolved) {
+        _log(
+          '  ⚠ BrainVision ${issue.kind} mismatch in ${issue.vhdrFileName}: '
+          'declared "${issue.declaredName}", auto-resolved "${issue.resolvedFileName}". '
+          'File processed in memory; use "Fix BrainVision Mapping(s)…" after completion to repair the header.',
+        );
+      } else {
+        _log('  ⚠ BrainVision ${issue.kind}: ${issue.summary}');
+      }
+    }
+    if (added) _batchProgressPulse.value++;
   }
 
   void _updateBatchFile(
@@ -7210,24 +7618,42 @@ class _FeatureHomeState extends State<FeatureHome>
     String status, {
     double? progress,
     bool completed = false,
+    bool skipped = false,
     bool failed = false,
   }) {
     _batchCurrent = '${_shortName(path)} — $status';
     _batchFileStatus[path] = status;
-    if (progress != null) _batchFileProgress = progress.clamp(0, 1);
-    if (completed) _batchDone++;
+    if (progress != null) {
+      _batchFileProgress = progress.clamp(0, 1);
+      if (!completed) {
+        _batchTracker?.updateFileProgress(_batchFileProgress);
+      }
+    }
+    if (completed) {
+      _batchDone++;
+      _batchTracker?.completeFile(skipped: skipped, failed: failed);
+    }
     if (failed) _batchFailed++;
+    _syncProgressBarFromTracker();
     _batchProgressPulse.value++;
   }
 
   void _finishBatchProgress(String message) {
+    _batchTicker?.cancel();
+    _batchTicker = null;
+    _batchTracker?.finish();
     _batchCurrent = message;
     _batchFileProgress = 1;
     _batchProgressFinished = true;
+    _syncProgressBarFromTracker();
     _batchProgressPulse.value++;
   }
 
-  void _resetBatchProgressStage(String title, List<String> files) {
+  void _transitionBatchStage(
+    String stageId,
+    String title,
+    List<String> files,
+  ) {
     _batchRunTitle = title;
     _batchCurrent = 'Preparing…';
     _batchDone = 0;
@@ -7237,15 +7663,22 @@ class _FeatureHomeState extends State<FeatureHome>
     _batchFileStatus
       ..clear()
       ..addEntries(files.map((path) => MapEntry(path, 'Waiting')));
+    _batchTracker?.startStageById(stageId, actualFileCount: files.length);
+    _syncProgressBarFromTracker();
     _batchProgressPulse.value++;
   }
 
   Widget _buildBatchProgressDialog(BuildContext dialogContext) {
-    final overall = _batchTotal == 0
+    final tracker = _batchTracker;
+    final overall = _batchProgressFinished
         ? 1.0
-        : ((_batchDone + (_batchProgressFinished ? 0 : _batchFileProgress)) /
-                  _batchTotal)
+        : (tracker?.overallProgress ??
+                  (_batchTotal == 0
+                      ? 1.0
+                      : ((_batchDone + _batchFileProgress) / _batchTotal)))
               .clamp(0.0, 1.0);
+    final stageSnapshots = tracker?.stageSnapshots ?? const <BatchStageSnapshot>[];
+    final repairableIssues = _batchVhdrIssues.where((i) => i.isResolved).toList();
     Color statusColor(String status) {
       if (status.startsWith('Done')) return _accentGreen;
       if (status.startsWith('Failed')) return Colors.redAccent;
@@ -7263,17 +7696,75 @@ class _FeatureHomeState extends State<FeatureHome>
           const SizedBox(width: 10),
           Expanded(child: Text(_batchRunTitle)),
           Text(
-            '$_batchDone / $_batchTotal',
+            'Stage: $_batchDone / $_batchTotal',
             style: const TextStyle(color: _textMuted, fontSize: 13),
           ),
         ],
       ),
       content: SizedBox(
         width: 920,
-        height: 580,
+        height: 600,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (stageSnapshots.length > 1) ...[
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final st in stageSnapshots)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: st.isActive
+                            ? _accentBlue.withValues(alpha: 0.16)
+                            : (st.isCompleted
+                                  ? _accentGreen.withValues(alpha: 0.14)
+                                  : const Color(0xFF0F172A)),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: st.isActive
+                              ? _accentBlue
+                              : (st.isCompleted ? _accentGreen : _borderColor),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            st.isCompleted
+                                ? Icons.check_circle
+                                : (st.isActive
+                                      ? Icons.timelapse
+                                      : Icons.radio_button_unchecked),
+                            size: 13,
+                            color: st.isCompleted
+                                ? _accentGreen
+                                : (st.isActive ? _accentBlue : _textMuted),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            '${st.label} (${st.completedCount}/${st.fileCount})',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: st.isActive
+                                  ? FontWeight.w600
+                                  : FontWeight.normal,
+                              color: st.isActive || st.isCompleted
+                                  ? Colors.white
+                                  : _textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
             Text(
               _batchCurrent,
               style: const TextStyle(
@@ -7284,17 +7775,30 @@ class _FeatureHomeState extends State<FeatureHome>
             ),
             const SizedBox(height: 7),
             LinearProgressIndicator(
-              value: _batchProgressFinished ? 1 : overall,
+              value: overall,
               minHeight: 7,
               borderRadius: BorderRadius.circular(4),
               backgroundColor: const Color(0xFF0F172A),
               color: _batchFailed > 0 ? _accentAmber : _accentBlue,
             ),
             const SizedBox(height: 6),
-            Text(
-              '${(overall * 100).toStringAsFixed(1)}% overall'
-              '${_batchFailed > 0 ? ' · $_batchFailed failed' : ''}',
-              style: const TextStyle(color: _textMuted, fontSize: 11),
+            Row(
+              children: [
+                Text(
+                  '${(overall * 100).toStringAsFixed(1)}% overall'
+                  '${_batchFailed > 0 ? ' · $_batchFailed failed' : ''}',
+                  style: const TextStyle(color: _textMuted, fontSize: 11),
+                ),
+                const Spacer(),
+                Text(
+                  [
+                    'Elapsed: ${formatBatchDuration(tracker?.elapsed ?? Duration.zero)}',
+                    if (!_batchProgressFinished && tracker != null)
+                      tracker.estimatedRemainingInfo,
+                  ].join(' · '),
+                  style: const TextStyle(color: _textMuted, fontSize: 11),
+                ),
+              ],
             ),
             const SizedBox(height: 10),
             SizedBox(
@@ -7361,6 +7865,8 @@ class _FeatureHomeState extends State<FeatureHome>
                       style: TextStyle(
                         color: line.contains('ERROR') || line.contains('Failed')
                             ? Colors.red.shade200
+                            : line.contains('⚠') || line.contains('mismatch')
+                            ? _accentAmber
                             : Colors.grey.shade300,
                         fontFamily: 'monospace',
                         fontSize: 10.5,
@@ -7374,6 +7880,21 @@ class _FeatureHomeState extends State<FeatureHome>
         ),
       ),
       actions: [
+        OutlinedButton.icon(
+          onPressed: _openAppInstance,
+          icon: const Icon(Icons.open_in_new, size: 15),
+          label: const Text('New Instance'),
+        ),
+        if (repairableIssues.isNotEmpty)
+          OutlinedButton.icon(
+            onPressed: () =>
+                _showVhdrRepairDialog(List<VhdrMappingIssue>.of(_batchVhdrIssues)),
+            icon: const Icon(Icons.build_circle_outlined, size: 15),
+            label: Text(
+              'Fix ${repairableIssues.length} BrainVision Mapping(s)…',
+            ),
+            style: OutlinedButton.styleFrom(foregroundColor: _accentAmber),
+          ),
         if (_batchProgressFinished && _plotsDir != null)
           TextButton.icon(
             onPressed: _openBatchResultsFolder,
@@ -7414,7 +7935,18 @@ class _FeatureHomeState extends State<FeatureHome>
       return const [];
     }
     if (standalone) {
-      _startBatchProgress('Batch preprocessing', _batchPrepFiles);
+      _startBatchProgress(
+        'Batch preprocessing',
+        _batchPrepFiles,
+        stages: [
+          BatchStageSpec(
+            id: 'prep',
+            label: 'Preprocessing',
+            fileCount: _batchPrepFiles.length,
+            priorWeightPerFile: 12.0,
+          ),
+        ],
+      );
     }
     if (standalone) {
       setState(() {
@@ -7440,7 +7972,7 @@ class _FeatureHomeState extends State<FeatureHome>
     for (var i = 0; i < _batchPrepFiles.length; i++) {
       if (_batchCancelRequested) break;
       final path = _batchPrepFiles[i];
-      _updateBatchFile(path, 'Loading', progress: 0);
+      _beginBatchFile(path, 'Loading');
       _log('[${i + 1}/${_batchPrepFiles.length}] ${_shortName(path)}');
       try {
         final dir = _effectiveBatchPrepOutputDir ?? File(path).parent.path;
@@ -7474,10 +8006,8 @@ class _FeatureHomeState extends State<FeatureHome>
               'Done (Skipped)',
               progress: 1,
               completed: true,
+              skipped: true,
             );
-            if (standalone) {
-              setState(() => _progress = (i + 1) / _batchPrepFiles.length);
-            }
             continue;
           }
         }
@@ -7485,6 +8015,7 @@ class _FeatureHomeState extends State<FeatureHome>
         final rec = await _resolveBatchChannels(
           await _loadRecordingWithFeedback(path),
         );
+        _recordBatchVhdrIssues(rec);
         if (_batchCancelRequested) break;
         final outPath =
             '$dir${Platform.pathSeparator}${erpOutputName(path, extension: RecordingStorage.extension, epoched: rec.isEpoched || _cfg.stimEpochs || _cfg.epochBeforeGedai, cleaned: true)}';
@@ -7506,12 +8037,11 @@ class _FeatureHomeState extends State<FeatureHome>
               : _cfg.preprocessingOverlapSeconds,
           outputWindowSeconds: _cfg.preprocessingEpochSeconds,
           onProgress: (p, msg) {
-            _updateBatchFile(path, 'Running', progress: p);
-            if (standalone) {
-              setState(
-                () => _progress = (i + p.clamp(0, 1)) / _batchPrepFiles.length,
-              );
-            }
+            _updateBatchFile(
+              path,
+              'Running',
+              progress: _cfg.sourceLocalization ? p * 0.65 : p,
+            );
             if (msg.isNotEmpty) _log('  $msg');
           },
         );
@@ -7530,6 +8060,11 @@ class _FeatureHomeState extends State<FeatureHome>
               sourceLocalizationOnly: true,
             ),
             onProgress: (p, msg) {
+              _updateBatchFile(
+                path,
+                'Source Localization',
+                progress: 0.65 + p * 0.35,
+              );
               if (msg.isNotEmpty) _log('  $msg');
             },
           );
@@ -7628,7 +8163,18 @@ class _FeatureHomeState extends State<FeatureHome>
     }
 
     if (standalone) {
-      _startBatchProgress('Batch feature extraction', kept);
+      _startBatchProgress(
+        'Batch feature extraction',
+        kept,
+        stages: [
+          BatchStageSpec(
+            id: 'feat',
+            label: 'Features',
+            fileCount: kept.length,
+            priorWeightPerFile: 5.0,
+          ),
+        ],
+      );
     }
 
     final outDir = _effectiveBatchFeatOutputDir ?? File(kept.first).parent.path;
@@ -7677,14 +8223,12 @@ class _FeatureHomeState extends State<FeatureHome>
             'Done (Skipped)',
             progress: 1,
             completed: true,
+            skipped: true,
           );
-          if (mounted && standalone) {
-            setState(() => _progress = (i + 1) / kept.length);
-          }
           continue;
         }
 
-        _updateBatchFile(path, 'Loading', progress: 0);
+        _beginBatchFile(path, 'Loading');
         _log('[${i + 1}/${kept.length}] Loading ${_shortName(path)}');
         try {
           // Deliberately retain only one recording at a time. The psiconnect
@@ -7692,6 +8236,7 @@ class _FeatureHomeState extends State<FeatureHome>
           final rec = await _resolveBatchChannels(
             await _loadRecordingWithFeedback(path),
           );
+          _recordBatchVhdrIssues(rec);
           if (_batchCancelRequested) break;
           final windowAdvice = featureWindowWarnings(_cfg, rec).join('\n');
           if (windowAdvice.isNotEmpty &&
@@ -7724,9 +8269,11 @@ class _FeatureHomeState extends State<FeatureHome>
             writeCombined: true,
             options: options,
             onProgress: (p, msg) {
-              final overall = (i + p.clamp(0, 1)) / kept.length;
-              if (mounted) setState(() => _progress = overall);
-              _updateBatchFile(path, 'Running', progress: p);
+              _updateBatchFile(
+                path,
+                'Running',
+                progress: _cfg.generatePdfReport ? p * 0.85 : p,
+              );
               if (msg.isNotEmpty) _log('  $msg');
             },
           );
@@ -7745,6 +8292,7 @@ class _FeatureHomeState extends State<FeatureHome>
 
           if (_cfg.perFileCsv) written.add(perFilePath);
           if (_cfg.generatePdfReport) {
+            _updateBatchFile(path, 'PDF Report', progress: 0.90);
             await _writeReport(
               jobCsv,
               rec,
@@ -7855,7 +8403,18 @@ class _FeatureHomeState extends State<FeatureHome>
       return;
     }
     if (standalone) {
-      _startBatchProgress('Batch plotting', inputs);
+      _startBatchProgress(
+        'Batch plotting',
+        inputs,
+        stages: [
+          BatchStageSpec(
+            id: 'plot',
+            label: 'Plotting',
+            fileCount: inputs.length,
+            priorWeightPerFile: 1.5,
+          ),
+        ],
+      );
       setState(() {
         _running = true;
         _stopRequested = false;
@@ -7888,30 +8447,63 @@ class _FeatureHomeState extends State<FeatureHome>
               'Done (Skipped)',
               progress: 1,
               completed: true,
+              skipped: true,
             );
             return false;
           }
           return true;
         }).toList();
       }
-      for (final path in toPlot) {
-        _updateBatchFile(path, 'Running', progress: 0);
-      }
       if (toPlot.isNotEmpty) {
+        var completedIdx = 0;
+        var maxP = 0.0;
+        _beginBatchFile(toPlot.first, 'Running');
         await _runPlotting(
           csvPaths: toPlot,
           announce: false,
           outputDir: outDir,
+          onProgressUpdate: (p, msg) {
+            final clamped = p.clamp(0.0, 1.0);
+            if (clamped > maxP) maxP = clamped;
+            final scaled = maxP * toPlot.length;
+            final targetDone = scaled.floor().clamp(0, toPlot.length);
+            while (completedIdx < targetDone) {
+              _updateBatchFile(
+                toPlot[completedIdx],
+                'Done',
+                progress: 1,
+                completed: true,
+              );
+              completedIdx++;
+              if (completedIdx < toPlot.length) {
+                _beginBatchFile(toPlot[completedIdx], 'Running');
+              }
+            }
+            if (completedIdx < toPlot.length) {
+              _updateBatchFile(
+                toPlot[completedIdx],
+                'Running',
+                progress: (scaled - completedIdx).clamp(0.0, 0.99),
+              );
+            }
+          },
         );
+        while (completedIdx < toPlot.length) {
+          _updateBatchFile(
+            toPlot[completedIdx],
+            'Done',
+            progress: 1,
+            completed: true,
+          );
+          completedIdx++;
+        }
       } else {
         _log(
           '✓ All requested plots already exist in Figures_TopoStats — skipping re-plotting.',
         );
       }
-      if (mounted)
+      if (mounted) {
         setState(() => _batchResultCsvs = preferSessionFeatureCsvs(inputs));
-      for (final path in inputs) {
-        _updateBatchFile(path, 'Done', progress: 1, completed: true);
       }
     } finally {
       if (standalone && mounted) {
@@ -7936,13 +8528,17 @@ class _FeatureHomeState extends State<FeatureHome>
       return;
     }
 
+    final initialFeatQueue = runPrep
+        ? _batchPrepFiles
+        : (_batchFeatUsePrep
+              ? _resolveBatchExtractionInputs()
+              : _batchFeatFiles);
+    final initialPlotQueue = runFeat
+        ? initialFeatQueue
+        : _resolveBatchPlotInputs();
     final queue = runPrep
         ? _batchPrepFiles
-        : (runFeat
-              ? (_batchFeatUsePrep
-                    ? _resolveBatchExtractionInputs()
-                    : _batchFeatFiles)
-              : _resolveBatchPlotInputs());
+        : (runFeat ? initialFeatQueue : initialPlotQueue);
 
     if (queue.isEmpty) {
       _log('Queue is empty — add recordings in the active input stage.');
@@ -7954,7 +8550,30 @@ class _FeatureHomeState extends State<FeatureHome>
       _progress = 0;
       _logVisible = true;
     });
-    _startBatchProgress('Batch workflow', queue);
+    final stages = <BatchStageSpec>[
+      if (runPrep)
+        BatchStageSpec(
+          id: 'prep',
+          label: '1. Preprocess',
+          fileCount: _batchPrepFiles.length,
+          priorWeightPerFile: 12.0,
+        ),
+      if (runFeat)
+        BatchStageSpec(
+          id: 'feat',
+          label: '2. Features',
+          fileCount: initialFeatQueue.length,
+          priorWeightPerFile: 5.0,
+        ),
+      if (runPlot)
+        BatchStageSpec(
+          id: 'plot',
+          label: '3. Plots',
+          fileCount: initialPlotQueue.length,
+          priorWeightPerFile: 1.5,
+        ),
+    ];
+    _startBatchProgress('Batch workflow', queue, stages: stages);
     final activeStagesDesc = [
       if (runPrep) 'Stage 1 (Prep)',
       if (runFeat) 'Stage 2 (Features)',
@@ -7972,7 +8591,6 @@ class _FeatureHomeState extends State<FeatureHome>
       } else {
         preprocessed = _resolveBatchExtractionInputs();
       }
-      setState(() => _progress = 1 / 3);
 
       List<String> csvs = const [];
       if (runFeat) {
@@ -7980,7 +8598,8 @@ class _FeatureHomeState extends State<FeatureHome>
         final featInputs = preprocessed.isNotEmpty
             ? preprocessed
             : _resolveBatchExtractionInputs();
-        _resetBatchProgressStage(
+        _transitionBatchStage(
+          'feat',
           'Full batch pipeline · feature extraction',
           featInputs,
         );
@@ -7992,25 +8611,18 @@ class _FeatureHomeState extends State<FeatureHome>
       } else {
         csvs = _resolveBatchPlotInputs();
       }
-      setState(() => _progress = 2 / 3);
 
       if (runPlot) {
         _batchPlotUseFeat = runFeat;
         final plotInputs = csvs.isNotEmpty ? csvs : _resolveBatchPlotInputs();
-        _resetBatchProgressStage('Full batch pipeline · plotting', plotInputs);
+        _transitionBatchStage(
+          'plot',
+          'Full batch pipeline · plotting',
+          plotInputs,
+        );
         await _runBatchPlotting(standalone: false);
-        for (final path in plotInputs) {
-          _updateBatchFile(path, 'Done', progress: 1, completed: true);
-        }
       }
 
-      _log('══ FULL BATCH PIPELINE COMPLETE ══');
-      if (_batchOpenGroupAfter && !_batchCancelRequested) {
-        await _openBatchGroupStatistics();
-      }
-      for (final path in csvs) {
-        _updateBatchFile(path, 'Done', progress: 1, completed: true);
-      }
       _log('══ FULL BATCH PIPELINE COMPLETE ══');
       if (_batchOpenGroupAfter && !_batchCancelRequested) {
         await _openBatchGroupStatistics();
@@ -8088,7 +8700,11 @@ class _FeatureHomeState extends State<FeatureHome>
     );
   }
 
-  Widget _recordingChip(EegRecording rec, {bool active = false}) => Container(
+  Widget _recordingChip(
+    EegRecording rec, {
+    bool active = false,
+    VoidCallback? onRemove,
+  }) => Container(
     margin: const EdgeInsets.only(top: 4),
     padding: const EdgeInsets.all(10),
     decoration: BoxDecoration(
@@ -8118,6 +8734,14 @@ class _FeatureHomeState extends State<FeatureHome>
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+            if (onRemove != null)
+              IconButton(
+                tooltip: 'Remove recording from workspace',
+                onPressed: onRemove,
+                icon: const Icon(Icons.close, size: 14, color: _textMuted),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+              ),
           ],
         ),
         InkWell(

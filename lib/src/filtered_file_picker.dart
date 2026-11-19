@@ -1,7 +1,74 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+
+bool _directoryPickerBusy = false;
+
+bool _isSlowNetworkMount(String path) =>
+    path.startsWith('/Volumes/') || path.startsWith(r'\\');
+
+/// Resolves a fast, reachable initial directory for native folder dialogs so
+/// macOS NSOpenPanel does not freeze restoring a slow SMB/network
+/// `NSNavLastRootDirectory`.
+Future<String?> resolveSafeInitialDirectory({
+  String? currentDirectory,
+  String? fallbackFilePath,
+}) async {
+  Future<bool> quickExists(String dirPath) async {
+    if (dirPath.trim().isEmpty) return false;
+    try {
+      return await Directory(dirPath)
+          .exists()
+          .timeout(const Duration(milliseconds: 250), onTimeout: () => false);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  final cur = currentDirectory?.trim();
+  if (cur != null && cur.isNotEmpty && await quickExists(cur)) {
+    return cur;
+  }
+  final fallback = fallbackFilePath?.trim();
+  if (fallback != null && fallback.isNotEmpty) {
+    final parent = File(fallback).parent.path;
+    if (!_isSlowNetworkMount(parent) && await quickExists(parent)) {
+      return parent;
+    }
+  }
+  final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+  if (home != null && home.isNotEmpty && await quickExists(home)) {
+    return home;
+  }
+  return null;
+}
+
+/// Opens the native folder picker with re-entrancy protection and a safe
+/// non-blocking `initialDirectory` fallback.
+Future<String?> pickDirectorySafe({
+  String? dialogTitle,
+  String? currentDirectory,
+  String? fallbackFilePath,
+}) async {
+  if (_directoryPickerBusy) return null;
+  _directoryPickerBusy = true;
+  try {
+    final initialDir = await resolveSafeInitialDirectory(
+      currentDirectory: currentDirectory,
+      fallbackFilePath: fallbackFilePath,
+    );
+    await Future<void>.delayed(Duration.zero);
+    return await FilePicker.getDirectoryPath(
+      dialogTitle: dialogTitle,
+      initialDirectory: initialDir,
+      lockParentWindow: true,
+    );
+  } finally {
+    _directoryPickerBusy = false;
+  }
+}
 
 bool matchesFilename(String path, String patterns) {
   final name = path.split(RegExp(r'[\\/]')).last;
@@ -164,12 +231,17 @@ Future<FilePickerResult?> pickFilteredFiles(
                     icon: const Icon(Icons.folder),
                     label: const Text('Browse folder'),
                     onPressed: () async {
-                      final directory = await FilePicker.getDirectoryPath();
+                      final directory = await pickDirectorySafe(
+                        dialogTitle: 'Select folder',
+                        fallbackFilePath: paths.firstOrNull,
+                      );
                       if (directory == null) return;
                       try {
+                        final entities = await Directory(
+                          directory,
+                        ).list(followLinks: false).toList();
                         final found =
-                            Directory(directory)
-                                .listSync()
+                            entities
                                 .whereType<File>()
                                 .map((f) => f.path)
                                 .where(

@@ -35,6 +35,26 @@ fn default_b_name() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentSpec {
+    pub name: String,
+    pub window: [f64; 2],
+    pub polarity: f64,
+    #[serde(default)]
+    pub roi: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ComponentMeasurement {
+    pub component: String,
+    pub roi: Vec<String>,
+    pub window: [f64; 2],
+    pub polarity: f64,
+    pub condition: String,
+    pub n_trials: usize,
+    pub measures: math::Measures,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub task: String,
     #[serde(default)]
@@ -56,9 +76,32 @@ pub struct Profile {
     pub polarity: f64,
     #[serde(default)]
     pub lateralized: bool,
+    #[serde(default)]
+    pub components: Vec<ComponentSpec>,
 }
 
 impl Profile {
+    pub fn resolved_components(&self) -> Vec<ComponentSpec> {
+        if !self.components.is_empty() {
+            self.components.clone()
+        } else {
+            vec![ComponentSpec {
+                name: if self.component_name.trim().is_empty() {
+                    if self.task.trim().is_empty() {
+                        "Primary".into()
+                    } else {
+                        self.task.clone()
+                    }
+                } else {
+                    self.component_name.clone()
+                },
+                window: self.window,
+                polarity: self.polarity,
+                roi: self.roi.clone(),
+            }]
+        }
+    }
+
     pub fn resolved_conditions(&self) -> Vec<ConditionDef> {
         if !self.conditions.is_empty() {
             self.conditions.clone()
@@ -116,6 +159,7 @@ pub fn profile(task: &str) -> Result<Profile, String> {
         window: [0.1, 0.2],
         polarity: -1.,
         lateralized: false,
+        components: Vec::new(),
     };
     match task {
         "MMN" => {
@@ -219,6 +263,30 @@ pub fn detect_task(path: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn strip_concatenated_session_suffix(tok: &str) -> String {
+    let lower = tok.to_lowercase();
+    for tag in ["session", "ses", "visit", "run"] {
+        let mut search_from = 0;
+        while let Some(rel) = lower[search_from..].find(tag) {
+            let idx = search_from + rel;
+            let rest = &lower[idx + tag.len()..];
+            let has_digits = rest.starts_with(|c: char| c.is_ascii_digit())
+                || ((rest.starts_with('-') || rest.starts_with('_'))
+                    && rest[1..].starts_with(|c: char| c.is_ascii_digit()));
+            if idx > 0 && has_digits {
+                let prefix = tok[..idx].trim_end_matches(['_', '-']);
+                let has_alpha = prefix.chars().any(|c| c.is_ascii_alphabetic());
+                let ends_digit = prefix.ends_with(|c: char| c.is_ascii_digit());
+                if has_alpha && ends_digit {
+                    return prefix.to_string();
+                }
+            }
+            search_from = idx + tag.len();
+        }
+    }
+    tok.to_string()
 }
 
 pub fn participant(path: &str) -> String {
@@ -334,8 +402,10 @@ pub fn participant(path: &str) -> String {
             break;
         }
         if !is_meta_token(part) {
-            subj_tokens.push(p_clean);
-            if subj_tokens.len() >= 2 {
+            let cleaned = strip_concatenated_session_suffix(&p_clean);
+            let stripped_changed = cleaned != p_clean;
+            subj_tokens.push(cleaned);
+            if stripped_changed || subj_tokens.len() >= 2 {
                 break;
             }
         }
@@ -347,7 +417,8 @@ pub fn participant(path: &str) -> String {
 
     let first = stem.split('_').next().unwrap_or("").trim();
     if !first.is_empty() && first != "unknown" {
-        return first.replace("-epo", "").replace("_clean", "");
+        let cleaned = first.replace("-epo", "").replace("_clean", "");
+        return strip_concatenated_session_suffix(&cleaned);
     }
 
     if !is_generic_dir {
@@ -1133,6 +1204,10 @@ pub struct FileResult {
     pub accepted_events: Vec<Value>,
     #[serde(skip)]
     pub trial_metrics: Vec<Value>,
+    #[serde(default)]
+    pub component_specs: Vec<ComponentSpec>,
+    #[serde(default)]
+    pub component_measurements: Vec<ComponentMeasurement>,
 }
 fn to_bins(y: &[f64], times: &[f64], p: &Profile, dt: f64, nb: usize) -> Vec<f64> {
     let mut sum = vec![0.; nb];
@@ -1511,6 +1586,74 @@ fn analyse_file(input: &Input, rec: Recording, o: &Options) -> Result<FileResult
         measurements.insert("B".into(), math::measure(&times, &roi_b, p.window, p.polarity)?);
         measurements.insert("B_minus_A".into(), math::measure(&times, &difference, p.window, p.polarity)?);
     }
+    let component_specs = p.resolved_components();
+    let mut component_measurements = Vec::new();
+    let t_lo = times.first().copied().unwrap_or(0.0);
+    let t_hi = times.last().copied().unwrap_or(0.0);
+    for comp in &component_specs {
+        let mut comp_roi_idx: Vec<usize> = comp
+            .roi
+            .iter()
+            .filter_map(|name| labels.iter().position(|l| l.eq_ignore_ascii_case(name.trim())))
+            .collect();
+        if comp_roi_idx.is_empty() {
+            comp_roi_idx = roi.clone();
+        }
+        let comp_roi_names: Vec<String> = comp_roi_idx
+            .iter()
+            .filter_map(|&idx| labels.get(idx).cloned())
+            .collect();
+        if comp.window[1] < t_lo || comp.window[0] > t_hi {
+            warnings.push(format!(
+                "Component {} window [{:.0}, {:.0}] ms falls outside epoch [{:.0}, {:.0}] ms; skipped",
+                comp.name,
+                comp.window[0] * 1000.0,
+                comp.window[1] * 1000.0,
+                t_lo * 1000.0,
+                t_hi * 1000.0,
+            ));
+            continue;
+        }
+        let avg_roi = |chans: &[Vec<f64>]| -> Vec<f64> {
+            (0..points)
+                .map(|t| {
+                    comp_roi_idx.iter().map(|&c| chans[c][t]).sum::<f64>()
+                        / comp_roi_idx.len().max(1) as f64
+                })
+                .collect()
+        };
+        for k in 0..num_conditions {
+            let w = avg_roi(&mean_conditions[k]);
+            if let Ok(m) = math::measure(&times, &w, comp.window, comp.polarity) {
+                component_measurements.push(ComponentMeasurement {
+                    component: comp.name.clone(),
+                    roi: comp_roi_names.clone(),
+                    window: comp.window,
+                    polarity: comp.polarity,
+                    condition: conditions[k].name.clone(),
+                    n_trials: n[k],
+                    measures: m,
+                });
+            }
+        }
+        if num_conditions >= 2 {
+            let wa = avg_roi(&mean_a);
+            let wb = avg_roi(&mean_b);
+            let diff_w: Vec<f64> = wb.iter().zip(&wa).map(|(b, a)| b - a).collect();
+            if let Ok(m) = math::measure(&times, &diff_w, comp.window, comp.polarity) {
+                component_measurements.push(ComponentMeasurement {
+                    component: comp.name.clone(),
+                    roi: comp_roi_names,
+                    window: comp.window,
+                    polarity: comp.polarity,
+                    condition: "B_minus_A".into(),
+                    n_trials: n[0] + n[1],
+                    measures: m,
+                });
+            }
+        }
+    }
+
     let topo_a: Vec<_> = mean_a
         .iter()
         .map(|c| column_measure(c, &times, p.window))
@@ -1643,8 +1786,10 @@ fn analyse_file(input: &Input, rec: Recording, o: &Options) -> Result<FileResult
         decoding,
         warnings,
         topo_bins,
-        accepted_events: accepted,
+        accepted_events: if o.grand_average_preview { Vec::new() } else { accepted },
         trial_metrics,
+        component_specs,
+        component_measurements,
     })
 }
 fn fit_regression(
@@ -2423,6 +2568,49 @@ where
             &measurements,
         );
     }
+    let mut comp_csv = String::from("subject,group,task,file,component,roi,window_start_ms,window_end_ms,polarity,condition,n_trials,mean_uv,signed_auc_uv_s,positive_auc_uv_s,negative_auc_uv_s,peak_amplitude_uv,peak_latency_s,fractional_area_latency_s,fractional_peak_latency_s\n");
+    for f in &files {
+        for cm in &f.component_measurements {
+            let m = &cm.measures;
+            comp_csv.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                csv(&f.subject),
+                csv(&f.group),
+                csv(&f.task),
+                csv(&f.path),
+                csv(&cm.component),
+                csv(&cm.roi.join(" ")),
+                (cm.window[0] * 1000.0).round(),
+                (cm.window[1] * 1000.0).round(),
+                cm.polarity,
+                csv(&cm.condition),
+                cm.n_trials,
+                m.mean,
+                m.signed_auc,
+                m.positive_auc,
+                m.negative_auc,
+                m.peak_amplitude,
+                m.peak_latency,
+                m.fractional_area_latency
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                m.fractional_peak_latency
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            ));
+        }
+    }
+    fs::write(
+        Path::new(&job.output).join("erp_component_measurements.csv"),
+        &comp_csv,
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(ref stem) = single_stem {
+        let _ = fs::write(
+            Path::new(&job.output).join(format!("{}_erp_component_measurements.csv", stem)),
+            &comp_csv,
+        );
+    }
     let mut statistics = String::from("task,n_subjects,metric,mean_difference,t,p,q_fdr\n");
     for g in &groups {
         for s in g["statistics"].as_array().unwrap() {
@@ -2657,5 +2845,21 @@ mod prepared_condition_suggestion_tests {
             assert!(p.conditions.iter().all(|c| !c.codes.is_empty()));
             if task=="P3" { assert_eq!(p.window,[0.3,0.6]); assert_eq!(p.roi,vec!["Pz"]); }
         }
+    }
+
+    #[test]
+    fn concatenated_subject_session_ids_extract_clean_subject() {
+        assert_eq!(
+            participant("/tmp/AOBD/SKYMED013SESSION03-epo_clean.edf"),
+            "SKYMED013"
+        );
+        assert_eq!(
+            participant("/tmp/AOBD/SKYMED104SESSION06_clean.edf"),
+            "SKYMED104"
+        );
+        assert_eq!(
+            participant("/tmp/sub-01_ses-02_task-oddball_eeg.edf"),
+            "01"
+        );
     }
 }

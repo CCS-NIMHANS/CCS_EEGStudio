@@ -14,6 +14,10 @@ import 'set_loader.dart';
 import 'vhdr_loader.dart';
 import 'xdf_loader.dart';
 
+// Top-level worker boundary prevents Isolate closures from retaining UI State/context.
+Future<EegRecording> _loadPortableInWorker(String outputPath) =>
+    Isolate.run(() => RecordingLoader()._loadPortable(outputPath));
+
 class RecordingLoader {
   final _setLoader = SetLoader();
   final _vhdrLoader = VhdrLoader();
@@ -69,9 +73,7 @@ class RecordingLoader {
         throw StateError(
           'Could not load full-resolution data: ${result.stderr}',
         );
-      final full = await Isolate.run(
-        () => RecordingLoader()._loadPortable(output),
-      );
+      final full = await _loadPortableInWorker(output);
       if (full.sampleCount != recording.sampleCount)
         throw StateError(
           'Full-resolution export does not match the input sample count.',
@@ -360,7 +362,10 @@ class RecordingLoader {
         for (final v in m['markers'] as List? ?? [])
           EegMarker.fromJson(Map<String, dynamic>.from(v as Map)),
       ],
-      provenance: Map<String, dynamic>.from(m['provenance'] as Map? ?? {}),
+      provenance: {
+        ...rec.provenance,
+        ...Map<String, dynamic>.from(m['provenance'] as Map? ?? {}),
+      },
       completedStages: (m['completed_stages'] as List? ?? []).cast<String>(),
       epochStartSeconds: [
         for (final v in m['epoch_start_seconds'] as List? ?? [])

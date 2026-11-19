@@ -827,3 +827,509 @@ class _ErpImagePainter extends CustomPainter {
       old.revision != revision ||
       old.hoverPos != hoverPos;
 }
+
+enum GroupErpImageSort { byGroupAndPeak, bySubject, byPeakAmplitude, byMeanAmplitude }
+
+/// Group-level Participant x Time ERPimage panel for inspecting all participants
+/// side-by-side at a chosen condition and channel/ROI, with row click to jump to subject.
+class GroupErpImagePanel extends StatefulWidget {
+  const GroupErpImagePanel({
+    super.key,
+    required this.files,
+    required this.participantGroups,
+    required this.conditions,
+    required this.labels,
+    this.selectedChannel = 'ROI',
+    this.onChannelChanged,
+    this.windowStartMs = 300.0,
+    this.windowEndMs = 600.0,
+    this.onSelectFile,
+  });
+
+  final List<Map<String, dynamic>> files;
+  final Map<String, String> participantGroups;
+  final List<String> conditions;
+  final List<String> labels;
+  final String selectedChannel;
+  final ValueChanged<String>? onChannelChanged;
+  final double windowStartMs;
+  final double windowEndMs;
+  final ValueChanged<String>? onSelectFile;
+
+  @override
+  State<GroupErpImagePanel> createState() => _GroupErpImagePanelState();
+}
+
+class _GroupErpImagePanelState extends State<GroupErpImagePanel> {
+  String? _condition;
+  String? _groupFilter;
+  late String _channel;
+  GroupErpImageSort _sort = GroupErpImageSort.byGroupAndPeak;
+  Offset? _hoverPos;
+
+  @override
+  void initState() {
+    super.initState();
+    _channel = widget.selectedChannel;
+    if (widget.conditions.isNotEmpty) {
+      _condition = widget.conditions.first;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant GroupErpImagePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.selectedChannel != widget.selectedChannel) {
+      _channel = widget.selectedChannel;
+    }
+    if ((_condition == null || !widget.conditions.contains(_condition)) &&
+        widget.conditions.isNotEmpty) {
+      _condition = widget.conditions.first;
+    }
+  }
+
+  List<({String subject, String group, String path, List<double> wave, double score})>
+  _buildParticipantRows() {
+    if (widget.files.isEmpty) return const [];
+    final firstTimes = erpNumbers(widget.files.first['times']);
+    final timesMs = [for (final s in firstTimes) s * 1000.0];
+    final cond = _condition ??
+        (widget.conditions.isNotEmpty ? widget.conditions.first : 'A');
+
+    // Group files by subject for equal participant weighting
+    final bySubj = <String, List<Map<String, dynamic>>>{};
+    for (final f in widget.files) {
+      final subj = '${f['subject'] ?? f['path'] ?? ''}'.trim();
+      final grp =
+          (widget.participantGroups[subj] ?? '${f['group'] ?? ''}').trim();
+      final effGrp = grp.isEmpty ? 'Unknown' : grp;
+      if (_groupFilter != null && effGrp != _groupFilter) continue;
+      bySubj.putIfAbsent(subj, () => []).add(f);
+    }
+
+    final rows =
+        <({String subject, String group, String path, List<double> wave, double score})>[];
+    for (final entry in bySubj.entries) {
+      final sFiles = entry.value;
+      final subj = entry.key;
+      final grp =
+          (widget.participantGroups[subj] ?? '${sFiles.first['group'] ?? ''}')
+              .trim();
+      final effGrp = grp.isEmpty ? 'Unknown' : grp;
+
+      final waves = <List<double>>[];
+      for (final f in sFiles) {
+        if (_channel == 'ROI') {
+          final cw = f['condition_waves'] as Map?;
+          final w = cw?[cond] != null
+              ? erpNumbers(cw![cond])
+              : erpNumbers(f['b'] ?? f['a']);
+          if (w.length == timesMs.length) waves.add(w);
+        } else {
+          final labels = (f['labels'] as List? ?? []).map((e) => '$e').toList();
+          final chIdx = labels.indexWhere(
+            (l) => l.toUpperCase() == _channel.toUpperCase(),
+          );
+          final chans = f['channel_conditions'] as Map?;
+          final chRows = chans?[cond] as List?;
+          if (chIdx >= 0 && chRows != null && chIdx < chRows.length) {
+            final w = erpNumbers(chRows[chIdx]);
+            if (w.length == timesMs.length) waves.add(w);
+          }
+        }
+      }
+      if (waves.isEmpty) continue;
+      final nT = timesMs.length;
+      final avg = List<double>.generate(nT, (t) {
+        var s = 0.0;
+        for (final w in waves) {
+          s += w[t];
+        }
+        return s / waves.length;
+      });
+
+      var meanWin = 0.0;
+      var peakWin = 0.0;
+      var cnt = 0;
+      for (var t = 0; t < nT; t++) {
+        if (timesMs[t] >= widget.windowStartMs &&
+            timesMs[t] <= widget.windowEndMs) {
+          meanWin += avg[t];
+          if (avg[t].abs() > peakWin) peakWin = avg[t].abs();
+          cnt++;
+        }
+      }
+      final score = _sort == GroupErpImageSort.byMeanAmplitude
+          ? (cnt > 0 ? meanWin / cnt : 0.0)
+          : peakWin;
+      rows.add((
+        subject: subj,
+        group: effGrp,
+        path: '${sFiles.first['path'] ?? ''}',
+        wave: avg,
+        score: score,
+      ));
+    }
+
+    rows.sort((a, b) {
+      switch (_sort) {
+        case GroupErpImageSort.byGroupAndPeak:
+          final gc = a.group.compareTo(b.group);
+          return gc != 0 ? gc : b.score.compareTo(a.score);
+        case GroupErpImageSort.bySubject:
+          return a.subject.compareTo(b.subject);
+        case GroupErpImageSort.byPeakAmplitude:
+        case GroupErpImageSort.byMeanAmplitude:
+          return b.score.compareTo(a.score);
+      }
+    });
+    return rows;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.files.isEmpty) {
+      return const Center(
+        child: Text('Run or load ERP results to view Group ERPimage.'),
+      );
+    }
+    final timesMs = [
+      for (final s in erpNumbers(widget.files.first['times'])) s * 1000.0,
+    ];
+    final availableGroups = widget.files
+        .map((f) {
+          final subj = '${f['subject'] ?? ''}';
+          final g =
+              (widget.participantGroups[subj] ?? '${f['group'] ?? ''}').trim();
+          return g.isEmpty ? 'Unknown' : g;
+        })
+        .toSet()
+        .toList()
+      ..sort();
+    final rows = _buildParticipantRows();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                'Group ERPimage (${rows.length} participants · $_channel · ${_condition ?? ""})',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12.5,
+                ),
+              ),
+              if (widget.conditions.isNotEmpty)
+                DropdownButton<String>(
+                  value: widget.conditions.contains(_condition)
+                      ? _condition
+                      : widget.conditions.first,
+                  isDense: true,
+                  underline: const SizedBox.shrink(),
+                  items: [
+                    for (final c in widget.conditions)
+                      DropdownMenuItem(
+                        value: c,
+                        child: Text('Cond: $c', style: const TextStyle(fontSize: 12)),
+                      ),
+                  ],
+                  onChanged: (v) => setState(() => _condition = v),
+                ),
+              DropdownButton<String>(
+                value: (_channel == 'ROI' || widget.labels.contains(_channel))
+                    ? _channel
+                    : 'ROI',
+                isDense: true,
+                underline: const SizedBox.shrink(),
+                items: [
+                  const DropdownMenuItem(
+                    value: 'ROI',
+                    child: Text('Channel: Task ROI', style: TextStyle(fontSize: 12)),
+                  ),
+                  for (final ch in widget.labels)
+                    DropdownMenuItem(
+                      value: ch,
+                      child: Text('Ch: $ch', style: const TextStyle(fontSize: 12)),
+                    ),
+                ],
+                onChanged: (v) {
+                  if (v != null) {
+                    setState(() => _channel = v);
+                    widget.onChannelChanged?.call(v);
+                  }
+                },
+              ),
+              if (availableGroups.length > 1)
+                DropdownButton<String?>(
+                  value: _groupFilter,
+                  isDense: true,
+                  underline: const SizedBox.shrink(),
+                  items: [
+                    const DropdownMenuItem<String?>(
+                      value: null,
+                      child: Text('Group: All', style: TextStyle(fontSize: 12)),
+                    ),
+                    for (final g in availableGroups)
+                      DropdownMenuItem<String?>(
+                        value: g,
+                        child: Text('Group: $g', style: TextStyle(fontSize: 12)),
+                      ),
+                  ],
+                  onChanged: (v) => setState(() => _groupFilter = v),
+                ),
+              DropdownButton<GroupErpImageSort>(
+                value: _sort,
+                isDense: true,
+                underline: const SizedBox.shrink(),
+                items: const [
+                  DropdownMenuItem(
+                    value: GroupErpImageSort.byGroupAndPeak,
+                    child: Text('Sort: Group + Peak', style: TextStyle(fontSize: 12)),
+                  ),
+                  DropdownMenuItem(
+                    value: GroupErpImageSort.byMeanAmplitude,
+                    child: Text('Sort: Window Mean', style: TextStyle(fontSize: 12)),
+                  ),
+                  DropdownMenuItem(
+                    value: GroupErpImageSort.byPeakAmplitude,
+                    child: Text('Sort: Window Peak', style: TextStyle(fontSize: 12)),
+                  ),
+                  DropdownMenuItem(
+                    value: GroupErpImageSort.bySubject,
+                    child: Text('Sort: Subject ID', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
+                onChanged: (v) {
+                  if (v != null) setState(() => _sort = v);
+                },
+              ),
+            ],
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            'Hover any participant row to inspect voltage; click a row to open that recording in detail view.',
+            style: TextStyle(fontSize: 11, color: Colors.white60),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return MouseRegion(
+                  onHover: (ev) => setState(() => _hoverPos = ev.localPosition),
+                  onExit: (_) => setState(() => _hoverPos = null),
+                  child: GestureDetector(
+                    onTapUp: (ev) {
+                      if (rows.isEmpty || widget.onSelectFile == null) return;
+                      const topPad = 14.0;
+                      const bottomPad = 28.0;
+                      final plotH = math.max(
+                        1.0,
+                        constraints.maxHeight - topPad - bottomPad,
+                      );
+                      final y = ev.localPosition.dy;
+                      if (y >= topPad && y <= topPad + plotH) {
+                        final r = ((y - topPad) / plotH * rows.length)
+                            .floor()
+                            .clamp(0, rows.length - 1);
+                        if (rows[r].path.isNotEmpty) {
+                          widget.onSelectFile!(rows[r].path);
+                        }
+                      }
+                    },
+                    child: CustomPaint(
+                      size: Size(constraints.maxWidth, constraints.maxHeight),
+                      painter: _GroupErpImagePainter(
+                        rows: rows,
+                        timesMs: timesMs,
+                        winStartMs: widget.windowStartMs,
+                        winEndMs: widget.windowEndMs,
+                        hoverPos: _hoverPos,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _GroupErpImagePainter extends CustomPainter {
+  const _GroupErpImagePainter({
+    required this.rows,
+    required this.timesMs,
+    required this.winStartMs,
+    required this.winEndMs,
+    required this.hoverPos,
+  });
+
+  final List<({String subject, String group, String path, List<double> wave, double score})>
+  rows;
+  final List<double> timesMs;
+  final double winStartMs;
+  final double winEndMs;
+  final Offset? hoverPos;
+
+  static const _grpPalette = [
+    Color(0xFF0072B2),
+    Color(0xFFD55E00),
+    Color(0xFF009E73),
+    Color(0xFFCC79A7),
+    Color(0xFFE69F00),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (rows.isEmpty || timesMs.isEmpty) return;
+    const leftPad = 92.0;
+    const rightPad = 54.0;
+    const topPad = 14.0;
+    const bottomPad = 28.0;
+    final box = Rect.fromLTWH(
+      leftPad,
+      topPad,
+      math.max(1.0, size.width - leftPad - rightPad),
+      math.max(1.0, size.height - topPad - bottomPad),
+    );
+
+    var maxV = 1.0;
+    for (final r in rows) {
+      for (final v in r.wave) {
+        if (v.isFinite && v.abs() > maxV) maxV = v.abs();
+      }
+    }
+    maxV = math.min(maxV, 25.0);
+
+    final distinctGroups = rows.map((r) => r.group).toSet().toList()..sort();
+    final grpIndex = {for (var i = 0; i < distinctGroups.length; i++) distinctGroups[i]: i};
+
+    final nRows = rows.length;
+    final nT = timesMs.length;
+    final rowH = box.height / nRows;
+    final colStep = math.max(1, (nT / 180).ceil());
+    final nCols = (nT / colStep).ceil();
+    final colW = box.width / nCols;
+
+    for (var r = 0; r < nRows; r++) {
+      final y0 = box.top + r * rowH;
+      final gi = grpIndex[rows[r].group] ?? 0;
+      canvas.drawRect(
+        Rect.fromLTWH(leftPad - 10, y0, 7, rowH + 0.4),
+        Paint()..color = _grpPalette[gi % _grpPalette.length],
+      );
+      final w = rows[r].wave;
+      for (var c = 0; c < nCols; c++) {
+        final tIdx = c * colStep;
+        final val = (w[tIdx] / maxV).clamp(-1.0, 1.0);
+        final col = val >= 0
+            ? (val < 0.5
+                ? Color.lerp(const Color(0xFFF8FAFC), const Color(0xFFF97316), val * 2)!
+                : Color.lerp(const Color(0xFFF97316), const Color(0xFF991B1B), (val - 0.5) * 2)!)
+            : ((-val) < 0.5
+                ? Color.lerp(const Color(0xFFF8FAFC), const Color(0xFF3B82F6), (-val) * 2)!
+                : Color.lerp(const Color(0xFF3B82F6), const Color(0xFF1E3A8A), ((-val) - 0.5) * 2)!);
+        canvas.drawRect(
+          Rect.fromLTWH(box.left + c * colW, y0, colW + 0.6, rowH + 0.6),
+          Paint()..color = col,
+        );
+      }
+    }
+
+    // Window guides + 0 ms line
+    final tMin = timesMs.first;
+    final tSpan = math.max(1e-6, timesMs.last - tMin);
+    double xAt(double ms) => box.left + ((ms - tMin) / tSpan).clamp(0.0, 1.0) * box.width;
+    if (0 >= tMin && 0 <= timesMs.last) {
+      canvas.drawLine(
+        Offset(xAt(0), box.top),
+        Offset(xAt(0), box.bottom),
+        Paint()..color = Colors.black54..strokeWidth = 1.2,
+      );
+    }
+    if (winEndMs > winStartMs) {
+      final p = Paint()..color = Colors.amberAccent.withValues(alpha: 0.75)..strokeWidth = 1.2;
+      canvas.drawLine(Offset(xAt(winStartMs), box.top), Offset(xAt(winStartMs), box.bottom), p);
+      canvas.drawLine(Offset(xAt(winEndMs), box.top), Offset(xAt(winEndMs), box.bottom), p);
+    }
+
+    canvas.drawRect(
+      box,
+      Paint()
+        ..color = Colors.white24
+        ..style = PaintingStyle.stroke,
+    );
+
+    void drawTxt(String s, Offset at, {Color color = Colors.white70}) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(color: color, fontSize: 10),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, at);
+    }
+
+    // Subject/Group row labels
+    final stepRow = math.max(1, (nRows / 12).ceil());
+    for (var r = 0; r < nRows; r += stepRow) {
+      final y = box.top + r * rowH;
+      drawTxt(
+        '${rows[r].subject} (${rows[r].group})',
+        Offset(2, (y - 2).clamp(box.top, box.bottom - 12)),
+      );
+    }
+
+    // Colorbar
+    final cb = Rect.fromLTWH(box.right + 10, box.top, 10, box.height);
+    for (var i = 0; i < 32; i++) {
+      final f = 1.0 - 2.0 * i / 31.0;
+      final col = f >= 0
+          ? Color.lerp(const Color(0xFFF8FAFC), const Color(0xFF991B1B), f)!
+          : Color.lerp(const Color(0xFFF8FAFC), const Color(0xFF1E3A8A), -f)!;
+      canvas.drawRect(
+        Rect.fromLTWH(cb.left, cb.top + cb.height * i / 32, cb.width, cb.height / 32 + 0.5),
+        Paint()..color = col,
+      );
+    }
+    drawTxt('+${maxV.toStringAsFixed(0)}µV', Offset(cb.right + 3, cb.top - 2));
+    drawTxt('-${maxV.toStringAsFixed(0)}µV', Offset(cb.right + 3, cb.bottom - 10));
+
+    for (var i = 0; i <= 4; i++) {
+      final ms = (tMin + tSpan * i / 4).round();
+      drawTxt('$ms ms', Offset(box.left + box.width * i / 4 - 14, box.bottom + 6));
+    }
+
+    if (hoverPos != null && box.contains(hoverPos!)) {
+      final r = ((hoverPos!.dy - box.top) / box.height * nRows)
+          .floor()
+          .clamp(0, nRows - 1);
+      final c = ((hoverPos!.dx - box.left) / box.width * nT)
+          .floor()
+          .clamp(0, nT - 1);
+      final row = rows[r];
+      drawTxt(
+        '${row.subject} (${row.group}) · ${timesMs[c].round()} ms · ${row.wave[c].toStringAsFixed(2)} µV  [Click to inspect]',
+        Offset(box.left + 8, box.top + 4),
+        color: Colors.amberAccent,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _GroupErpImagePainter old) => true;
+}

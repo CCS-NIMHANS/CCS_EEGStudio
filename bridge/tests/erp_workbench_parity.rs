@@ -366,3 +366,134 @@ fn portable_continuous_events_use_only_time_preserved_sidecars() {
     assert!(read_events(&path).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn multi_component_specs_emit_component_measurements_csv() {
+    use ccs_eeg_engine::Recording;
+    let dir = std::env::temp_dir().join(format!("erp-multi-comp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("SKYMED013SESSION03.ccseeg");
+    let rate = 100.;
+    let n = 101; // -0.2 .. 0.8 s
+    let labels = vec!["Fz".into(), "Cz".into(), "Pz".into(), "Oz".into()];
+    let mut channels = vec![vec![0f32; n * 6]; 4];
+    let epoch_labels = vec![
+        "Standard".into(),
+        "Target".into(),
+        "Standard".into(),
+        "Target".into(),
+        "Standard".into(),
+        "Target".into(),
+    ];
+    for ep in 0..6 {
+        let is_target = ep % 2 == 1;
+        for t in 0..n {
+            let sec = -0.2 + t as f64 / rate;
+            // N100 negative deflection on Fz/Cz around 100ms
+            if sec >= 0.08 && sec <= 0.14 {
+                channels[0][ep * n + t] = if is_target { -6. } else { -2. };
+                channels[1][ep * n + t] = if is_target { -6. } else { -2. };
+            }
+            // P300 positive deflection on Pz around 350ms
+            if sec >= 0.30 && sec <= 0.45 {
+                channels[2][ep * n + t] = if is_target { 8. } else { 1. };
+            }
+        }
+    }
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "sample_rate": rate,
+            "source_epoch_samples": n,
+            "epoch_tmin": -0.2,
+            "epoch_tmax": 0.8,
+            "epoch_labels": epoch_labels,
+            "epoch_onsets": [1., 4., 7., 10., 13., 16.],
+            "markers": [
+                {"epoch_index": 0, "description": "Standard", "start_seconds": 0.2},
+                {"epoch_index": 1, "description": "Target", "start_seconds": 0.2},
+                {"epoch_index": 2, "description": "Standard", "start_seconds": 0.2},
+                {"epoch_index": 3, "description": "Target", "start_seconds": 0.2},
+                {"epoch_index": 4, "description": "Standard", "start_seconds": 0.2},
+                {"epoch_index": 5, "description": "Target", "start_seconds": 0.2},
+            ],
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut p = profile("Custom").unwrap();
+    p.a_name = "Standard".into();
+    p.b_name = "Target".into();
+    p.a_codes = vec!["Standard".into()];
+    p.b_codes = vec!["Target".into()];
+    p.roi = vec!["Cz".into()];
+    p.window = [0.3, 0.45];
+    p.polarity = 1.0;
+    p.components = vec![
+        ComponentSpec {
+            name: "N100".into(),
+            window: [0.08, 0.14],
+            polarity: -1.0,
+            roi: vec!["Fz".into(), "Cz".into()],
+        },
+        ComponentSpec {
+            name: "P300".into(),
+            window: [0.30, 0.45],
+            polarity: 1.0,
+            roi: vec!["Pz".into()],
+        },
+    ];
+
+    let mut options = Options::default();
+    options.task = "Custom".into();
+    options.regroup_epochs = false;
+    options.profile_override = Some(p);
+    let out_dir = dir.join("out");
+    let job = Job {
+        inputs: vec![Input {
+            path: path.to_string_lossy().into(),
+            subject: String::new(),
+            group: "ADV".into(),
+        }],
+        output: out_dir.to_string_lossy().into(),
+        options,
+    };
+
+    let res = run(&job, |_| {
+        Ok(Recording {
+            rate,
+            labels: labels.clone(),
+            channels: channels.clone(),
+            source_epoch_samples: Some(n),
+            epoch_labels: Some(epoch_labels.clone()),
+        })
+    })
+    .unwrap();
+
+    assert!(
+        res["failures"].as_array().unwrap().is_empty(),
+        "unexpected failures: {}",
+        res["failures"]
+    );
+    assert_eq!(res["files"][0]["subject"], "SKYMED013");
+    let comps = res["files"][0]["component_measurements"].as_array().unwrap();
+    assert!(comps.iter().any(|c| c["component"] == "N100" && c["condition"] == "Target"));
+    assert!(comps.iter().any(|c| c["component"] == "P300" && c["condition"] == "Target"));
+    let p3_target = comps
+        .iter()
+        .find(|c| c["component"] == "P300" && c["condition"] == "Target")
+        .unwrap();
+    assert!((p3_target["measures"]["mean"].as_f64().unwrap() - 8.0).abs() < 1e-6);
+
+    let comp_csv = std::fs::read_to_string(out_dir.join("erp_component_measurements.csv")).unwrap();
+    assert!(comp_csv.starts_with("subject,group,task,file,component,roi,"));
+    assert!(comp_csv.contains("SKYMED013,ADV,Custom"));
+    assert!(comp_csv.contains(",N100,Fz Cz,80,140,-1,"));
+    assert!(comp_csv.contains(",P300,Pz,300,450,1,"));
+
+    let legacy_csv = std::fs::read_to_string(out_dir.join("erp_measurements.csv")).unwrap();
+    assert!(legacy_csv.starts_with("subject,group,task,file,condition,n_trials,mean_uv,"));
+
+    std::fs::remove_dir_all(dir).unwrap();
+}

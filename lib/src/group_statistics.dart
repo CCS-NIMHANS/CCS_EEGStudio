@@ -13,6 +13,52 @@ import 'filtered_file_picker.dart';
 import 'group_statistics_engine.dart';
 import 'group_statistics_plots.dart';
 
+/// Top-level entry point for running N-way permutation GLM/LMM models inside
+/// [Isolate.run] without capturing any UI [State] or [BuildContext].
+Map<String, dynamic> runDartPermutationsInIsolate(Map<String, dynamic> args) {
+  final headers = (args['headers'] as List).cast<String>();
+  final rows = (args['rows'] as List)
+      .map((r) => (r as List).map((e) => '$e').toList())
+      .toList();
+  final factors = (args['factors'] as List).cast<String>();
+  final metrics = (args['metrics'] as List).cast<String>();
+  final subjectCol = args['subjectCol'] as String?;
+  final preferredModel = args['preferredModel'] as String? ?? 'auto';
+  final posthocMethod = args['posthocMethod'] as String? ?? 'fdr';
+  final includeInteractions = args['includeInteractions'] as bool? ?? true;
+  final nPermutations = (args['nPermutations'] as num?)?.toInt() ?? 1000;
+  final rawExcluded = args['excludedLevels'] as Map? ?? const {};
+  final excludedLevels = <String, Set<String>>{
+    for (final entry in rawExcluded.entries)
+      '${entry.key}': (entry.value as Iterable).map((e) => '$e').toSet(),
+  };
+  final rawOrder = args['customLevelOrder'] as Map? ?? const {};
+  final customLevelOrder = <String, List<String>>{
+    for (final entry in rawOrder.entries)
+      '${entry.key}': (entry.value as Iterable).map((e) => '$e').toList(),
+  };
+
+  return ErpGroupStatsEngine.runAnalysis(
+    headers: headers,
+    rows: rows,
+    factors: factors,
+    metrics: metrics,
+    subjectCol: subjectCol,
+    preferredModel: preferredModel,
+    posthocMethod: posthocMethod,
+    includeInteractions: includeInteractions,
+    nPermutations: nPermutations,
+    excludedLevels: excludedLevels,
+    customLevelOrder: customLevelOrder,
+  );
+}
+
+/// Top-level `Isolate.run` boundary prevents Dart shared closures in Stateful
+/// callbacks from retaining UI `State` / `BuildContext` / `WidgetsFlutterBinding`.
+Future<Map<String, dynamic>> runDartPermutationsInWorker(
+  Map<String, dynamic> payload,
+) => Isolate.run(() => runDartPermutationsInIsolate(payload));
+
 class GroupStatisticsWorkbench extends StatefulWidget {
   const GroupStatisticsWorkbench({
     super.key,
@@ -400,6 +446,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       if (_metadataPathController.text.trim().isNotEmpty) {
         args.addAll(['--metadata-csv', _metadataPathController.text.trim()]);
       }
+      if (_metadataKeyController.text.trim().isNotEmpty) {
+        args.addAll(['--metadata-key', _metadataKeyController.text.trim()]);
+      }
 
       final res = await Process.run(
         python,
@@ -417,6 +466,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         _selectedSubgroupCol = jsonMap['subgroup_col'] as String? ?? 'None';
         _selectedSubjectIdCol = jsonMap['subject_id'] as String?;
         _selectedCovariates.clear();
+        if (jsonMap['has_composite_roi'] == true ||
+            (jsonMap['channel_count'] as num? ?? 0) <= 1) {
+          _channelScope = 'all';
+        }
         // Covariates are an explicit design choice, not an automatic default.
 
         _selectedMetrics.clear();
@@ -455,10 +508,18 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     final factorCols = (insp['factor_columns'] as List? ?? []).cast<String>();
     final metricCols = (insp['metric_columns'] as List? ?? []).cast<String>();
     final subjCol = insp['detected_subject_col'] as String?;
+    final rawLevels = (insp['factor_levels'] as Map<String, dynamic>? ?? {});
 
-    final nonSubjFactors = factorCols
-        .where((f) => f != subjCol)
-        .toList();
+    final nonSubjFactors = factorCols.where((f) {
+      if (f == subjCol) return false;
+      final fl = f.toLowerCase();
+      if (const {'filename', 'file', 'source_file', 'source_path', 'path'}
+          .contains(fl)) {
+        return false;
+      }
+      final lvls = rawLevels[f] as List? ?? const [];
+      return lvls.length >= 2;
+    }).toList();
 
     setState(() {
       _dartInspection = insp;
@@ -534,28 +595,28 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       final posthoc = _posthocMethod;
       final interactions = _includeInteractions;
       final nPerm = int.tryParse(_permCountCtrl.text.trim()) ?? 1000;
-      final excluded = {
-        for (final e in _dartExcludedLevels.entries) e.key: Set<String>.from(e.value),
+      final excluded = <String, List<String>>{
+        for (final e in _dartExcludedLevels.entries)
+          if (e.value.isNotEmpty) e.key: List<String>.from(e.value),
       };
-      final order = {
+      final order = <String, List<String>>{
         for (final e in _dartLevelOrder.entries) e.key: List<String>.from(e.value),
       };
+      final payload = <String, dynamic>{
+        'headers': headers,
+        'rows': rows,
+        'factors': factors,
+        'metrics': metrics,
+        'subjectCol': subjCol,
+        'preferredModel': modelPref,
+        'posthocMethod': posthoc,
+        'includeInteractions': interactions,
+        'nPermutations': nPerm,
+        'excludedLevels': excluded,
+        'customLevelOrder': order,
+      };
 
-      final res = await Isolate.run(
-        () => ErpGroupStatsEngine.runAnalysis(
-          headers: headers,
-          rows: rows,
-          factors: factors,
-          metrics: metrics,
-          subjectCol: subjCol,
-          preferredModel: modelPref,
-          posthocMethod: posthoc,
-          includeInteractions: interactions,
-          nPermutations: nPerm,
-          excludedLevels: excluded,
-          customLevelOrder: order,
-        ),
-      );
+      final res = await runDartPermutationsInWorker(payload);
       if (!mounted) return;
       if (res.containsKey('error')) {
         _showSnack('${res['error']}');
@@ -647,6 +708,16 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       ];
       if (_metadataPathController.text.trim().isNotEmpty) {
         args.addAll(['--metadata-csv', _metadataPathController.text.trim()]);
+      }
+      if (_metadataKeyController.text.trim().isNotEmpty) {
+        args.addAll(['--metadata-key', _metadataKeyController.text.trim()]);
+      }
+      final exclMap = <String, List<String>>{
+        for (final e in _dartExcludedLevels.entries)
+          if (e.value.isNotEmpty) e.key: e.value.toList(),
+      };
+      if (exclMap.isNotEmpty) {
+        args.addAll(['--exclude-levels', jsonEncode(exclMap)]);
       }
 
       final process = await Process.start(
@@ -759,72 +830,123 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           _buildDataSourceCard(),
           const SizedBox(height: 12),
           if (_inspectionData != null) ...[
-            if (_selectedMetrics.isEmpty)
-              const Text(
-                'Choose the subject/group fields and select outcomes below to enable Run.',
-                style: TextStyle(color: Color(0xFF334155)),
-              ),
-            _buildActionRunCard(),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              value: _channelScope,
-              decoration: const InputDecoration(
-                labelText: 'Channel Scope & Grouping',
-                helperText:
-                    'ROIs groups standard scalp electrodes into Frontal, Central, Temporal, Parietal, Occipital. All channels retains genuine EEG derivations. Mean averages whole scalp.',
-              ),
-              items: const [
-                DropdownMenuItem(
-                  value: 'roi',
-                  child: Text('Neurophysiological ROIs (Frontal, Central, Temporal, Parietal, Occipital)'),
-                ),
-                DropdownMenuItem(
-                  value: 'mean',
-                  child: Text('Global Scalp Average (1 observation per recording)'),
-                ),
-                DropdownMenuItem(
-                  value: 'all',
-                  child: Text(
-                    'Analyze all channels separately (genuine EEG only; non-EEG excluded)',
-                  ),
-                ),
-              ],
-              onChanged: (v) => setState(() => _channelScope = v ?? 'roi'),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _excludeChannelsController,
-                    decoration: const InputDecoration(
-                      labelText: 'Exclude channels (optional)',
-                      hintText: 'e.g. Cz, Pz, POL \$A1 (comma separated)',
-                      isDense: true,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _includeChannelsController,
-                    decoration: const InputDecoration(
-                      labelText: 'Include only channels (optional)',
-                      hintText: 'e.g. F3, F4, C3, C4 (comma separated)',
-                      isDense: true,
-                    ),
-                  ),
-                ),
-              ],
-            ),
             _buildConfigurationCard(),
             const SizedBox(height: 12),
             _buildMetricsSelectionCard(),
+            const SizedBox(height: 12),
+            Card(
+              elevation: 0,
+              color: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(color: Colors.grey.shade300),
+              ),
+              child: ExpansionTile(
+                tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                initiallyExpanded:
+                    !((_inspectionData?['has_composite_roi'] == true) ||
+                        ((_inspectionData?['channel_count'] as num? ?? 0) <= 1)),
+                leading: const Icon(Icons.sensors, size: 20, color: Color(0xFF1F4E79)),
+                title: const Text(
+                  'Advanced: EEG Channel Scope & Filtering',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
+                ),
+                subtitle: Text(
+                  _inspectionData?['has_composite_roi'] == true
+                      ? 'Composite ERP ROIs detected — keeping CSV ROI rows intact (scope: $_channelScope)'
+                      : 'Channel aggregation scope: $_channelScope',
+                  style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700),
+                ),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        DropdownButtonFormField<String>(
+                          key: ValueKey('ch_scope_$_channelScope'),
+                          initialValue: _channelScope,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Channel Scope & Grouping',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                            helperMaxLines: 2,
+                            helperText:
+                                'ROIs groups standard 10-20 electrodes into 5 regions. All keeps derivations / composite ROIs intact. Mean averages whole scalp.',
+                          ),
+                          items: const [
+                            DropdownMenuItem(
+                              value: 'roi',
+                              child: Text(
+                                'Neurophysiological ROIs (Frontal, Central, Temporal, Parietal, Occipital)',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            DropdownMenuItem(
+                              value: 'mean',
+                              child: Text(
+                                'Global Scalp Average (1 observation per recording)',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            DropdownMenuItem(
+                              value: 'all',
+                              child: Text(
+                                'Analyze all channels / composite ROIs as-is',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                          onChanged: (v) => setState(() => _channelScope = v ?? 'roi'),
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _excludeChannelsController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Exclude channels (optional)',
+                                  hintText: 'e.g. Cz, Pz, POL \$A1 (comma separated)',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: TextField(
+                                controller: _includeChannelsController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Include only channels (optional)',
+                                  hintText: 'e.g. F3, F4, C3, C4 (comma separated)',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
             if (_dartInspection != null) ...[
               _buildConfigurablePlotAndPreviewCard(),
               const SizedBox(height: 12),
             ],
+            if (_selectedMetrics.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 6),
+                child: Text(
+                  'Choose the subject/group fields and select outcomes above to enable Run.',
+                  style: TextStyle(color: Color(0xFF475569)),
+                ),
+              ),
             _buildActionRunCard(),
             const SizedBox(height: 12),
           ],
@@ -1116,7 +1238,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 // Primary Grouping Factor
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _selectedGroupCol,
+                    key: ValueKey('grp_col_$_selectedGroupCol'),
+                    initialValue: _selectedGroupCol,
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Primary Grouping Factor (Cohort)',
                       border: OutlineInputBorder(),
@@ -1137,7 +1261,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 // Subgroup / Within-Subject Factor
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _selectedSubgroupCol ?? 'None',
+                    key: ValueKey('subgrp_col_$_selectedSubgroupCol'),
+                    initialValue: _selectedSubgroupCol ?? 'None',
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Secondary / Within-Subject Factor',
                       border: OutlineInputBorder(),
@@ -1159,7 +1285,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 // Subject ID Column
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _selectedSubjectIdCol,
+                    key: ValueKey('subj_col_$_selectedSubjectIdCol'),
+                    initialValue: _selectedSubjectIdCol,
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Subject Identifier (Random Effect)',
                       border: OutlineInputBorder(),
@@ -1171,7 +1299,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                           !candidateSubj.contains(_selectedSubjectIdCol))
                         DropdownMenuItem(
                           value: _selectedSubjectIdCol,
-                          child: Text(_selectedSubjectIdCol!),
+                          child: Text(_selectedSubjectIdCol!, overflow: TextOverflow.ellipsis),
                         ),
                       for (final col in candidateSubj)
                         DropdownMenuItem(
@@ -1220,7 +1348,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               children: [
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _preferredModel,
+                    initialValue: _preferredModel,
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Statistical Model Approach',
                       border: OutlineInputBorder(),
@@ -1231,18 +1360,21 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                         value: 'auto',
                         child: Text(
                           'Auto (Mixed-Design ANOVA/LMM for repeated, GLM for single)',
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       DropdownMenuItem(
                         value: 'lmm',
                         child: Text(
                           'Mixed-Design ANOVA / LMM (Subject Random Intercept)',
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       DropdownMenuItem(
                         value: 'glm',
                         child: Text(
                           'General Linear Model (GLM / ANOVA Type II)',
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
@@ -1253,7 +1385,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 const SizedBox(width: 14),
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _posthocMethod,
+                    initialValue: _posthocMethod,
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Post-Hoc Multiple Testing Adjustment',
                       border: OutlineInputBorder(),
@@ -1262,12 +1395,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     items: const [
                       DropdownMenuItem(
                         value: 'fdr',
-                        child: Text('Benjamini-Hochberg FDR (Recommended)'),
+                        child: Text('Benjamini-Hochberg FDR (Recommended)', overflow: TextOverflow.ellipsis),
                       ),
 
                       DropdownMenuItem(
                         value: 'bonferroni',
-                        child: Text('Bonferroni (Strict)'),
+                        child: Text('Bonferroni (Strict)', overflow: TextOverflow.ellipsis),
                       ),
                     ],
                     onChanged: (v) =>
@@ -1277,7 +1410,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 const SizedBox(width: 14),
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _reportFormat,
+                    initialValue: _reportFormat,
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Scientific Report Output Format',
                       border: OutlineInputBorder(),
@@ -1286,15 +1420,15 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     items: const [
                       DropdownMenuItem(
                         value: 'both',
-                        child: Text('Both Word (.docx) & PDF (.pdf)'),
+                        child: Text('Both Word (.docx) & PDF (.pdf)', overflow: TextOverflow.ellipsis),
                       ),
                       DropdownMenuItem(
                         value: 'docx',
-                        child: Text('Microsoft Word Document (.docx)'),
+                        child: Text('Microsoft Word Document (.docx)', overflow: TextOverflow.ellipsis),
                       ),
                       DropdownMenuItem(
                         value: 'pdf',
-                        child: Text('Portable Document Format (.pdf)'),
+                        child: Text('Portable Document Format (.pdf)', overflow: TextOverflow.ellipsis),
                       ),
                     ],
                     onChanged: (v) =>
@@ -1672,6 +1806,35 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                             fontWeight: FontWeight.w600,
                           ),
                         ),
+                        if (raw.any((l) => l.toLowerCase() == 'unknown'))
+                          ActionChip(
+                            avatar: const Icon(Icons.filter_alt_off, size: 14),
+                            label: Text(
+                              raw
+                                      .where((l) => l.toLowerCase() == 'unknown')
+                                      .every((u) => excl.contains(u))
+                                  ? 'Include "Unknown"'
+                                  : 'Exclude "Unknown"',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            onPressed: () => setState(() {
+                              final set = _dartExcludedLevels.putIfAbsent(
+                                f,
+                                () => <String>{},
+                              );
+                              final unknowns = raw
+                                  .where((l) => l.toLowerCase() == 'unknown')
+                                  .toList();
+                              final allExcl = unknowns.every(
+                                (u) => set.contains(u),
+                              );
+                              if (allExcl) {
+                                set.removeAll(unknowns);
+                              } else {
+                                set.addAll(unknowns);
+                              }
+                            }),
+                          ),
                         for (var i = 0; i < ordered.length; i++)
                           InputChip(
                             label: Text(

@@ -35,6 +35,42 @@ pub struct SpeechTrackingJob {
     pub tmax_ms: Option<f64>,
     pub ridge_lambda: Option<f64>,
     pub channels: Option<Vec<String>>,
+    /// Sliding-window length (s) for the time-resolved tracking series (default 20).
+    pub window_seconds: Option<f64>,
+    /// Sliding-window hop (s) for the time-resolved tracking series (default 5).
+    pub step_seconds: Option<f64>,
+}
+
+#[derive(Deserialize)]
+pub struct AlignAudioJob {
+    pub reference: String,
+    pub target: String,
+    pub max_lag_seconds: Option<f64>,
+    pub rate: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub struct AlignAudioResult {
+    /// Start of `target` on the `reference` timeline (s). Positive = target starts later.
+    pub lag_seconds: f64,
+    pub peak_r: f64,
+    /// Peak z-score against all other admissible lags (>= ~6 is a reliable match).
+    pub confidence: f64,
+    pub reference_duration: f64,
+    pub target_duration: f64,
+}
+
+/// Time-resolved neural speech tracking. All times are seconds on the EEG
+/// recording's own clock (window centres), so they plot directly against
+/// the feature time axis. Correlations come from out-of-fold predictions.
+#[derive(Serialize)]
+pub struct TrackingSeries {
+    pub window_seconds: f64,
+    pub times_sec: Vec<f64>,
+    pub decoder_r: Vec<f64>,
+    pub encoding_r: Vec<f64>,
+    pub decoder_null95: f64,
+    pub encoding_null95: f64,
 }
 
 #[derive(Serialize)]
@@ -58,6 +94,7 @@ pub struct SpeechTrackingResult {
     pub best_channel: String,
     pub best_encoding_r: f64,
     pub channels: Vec<ChannelTrackingResult>,
+    pub tracking_series: Option<TrackingSeries>,
 }
 
 struct WavStreamMeta {
@@ -586,6 +623,109 @@ fn band_coherence(x: &[f64], y: &[f64], rate: f64, f_lo: f64, f_hi: f64) -> f64 
     sum_coh / pxx.len() as f64
 }
 
+fn window_starts(n: usize, win: usize, step: usize) -> Vec<usize> {
+    if win == 0 || step == 0 || n < win {
+        return Vec::new();
+    }
+    (0..=(n - win)).step_by(step).collect()
+}
+
+fn windowed_pearson(a: &[f64], b: &[f64], starts: &[usize], win: usize) -> Vec<f64> {
+    starts
+        .iter()
+        .map(|&s| pearson_r(&a[s..s + win], &b[s..s + win]))
+        .collect()
+}
+
+fn circ_shift(x: &[f64], shift: usize) -> Vec<f64> {
+    let n = x.len();
+    let shift = if n == 0 { 0 } else { shift % n };
+    let mut out = vec![0.0_f64; n];
+    out[..n - shift].copy_from_slice(&x[shift..]);
+    out[n - shift..].copy_from_slice(&x[..shift]);
+    out
+}
+
+fn percentile95(mut v: Vec<f64>) -> f64 {
+    v.retain(|x| x.is_finite());
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    v[(((v.len() - 1) as f64) * 0.95).round() as usize]
+}
+
+/// Aligns two recordings of the same acoustic scene (e.g. a video's audio track and a
+/// separate recorder) by FFT cross-correlation of their speech envelopes.
+pub fn run_align_audio(job: &AlignAudioJob) -> Result<AlignAudioResult, String> {
+    let rate = job.rate.unwrap_or(100.0).clamp(20.0, 200.0);
+    let (_, ref_dur, _, _, ref_env) =
+        stream_wav_envelope_and_peaks(Path::new(&job.reference), rate, 100, 0.5)?;
+    let (_, tgt_dur, _, _, tgt_env) =
+        stream_wav_envelope_and_peaks(Path::new(&job.target), rate, 100, 0.5)?;
+    let a = zscore(&ref_env);
+    let b = zscore(&tgt_env);
+    let (na, nb) = (a.len(), b.len());
+    if na < 16 || nb < 16 {
+        return Err("Audio too short for alignment".into());
+    }
+    let nfft = (na + nb).next_power_of_two();
+    let mut planner = FftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(nfft);
+    let ifft = planner.plan_fft_inverse(nfft);
+    let mut fa = vec![Complex::new(0.0, 0.0); nfft];
+    let mut fb = vec![Complex::new(0.0, 0.0); nfft];
+    for (i, &v) in a.iter().enumerate() {
+        fa[i] = Complex::new(v, 0.0);
+    }
+    for (i, &v) in b.iter().enumerate() {
+        fb[i] = Complex::new(v, 0.0);
+    }
+    fft.process(&mut fa);
+    fft.process(&mut fb);
+    for i in 0..nfft {
+        fa[i] = fa[i] * fb[i].conj();
+    }
+    ifft.process(&mut fa);
+    let inv = 1.0 / nfft as f64;
+
+    let max_lag = (job.max_lag_seconds.unwrap_or(900.0).max(1.0) * rate).round() as isize;
+    let min_overlap = ((10.0 * rate) as isize).max(16).min(na.min(nb) as isize);
+    let (na_i, nb_i) = (na as isize, nb as isize);
+    let mut best_k = 0_isize;
+    let mut best_r = f64::NEG_INFINITY;
+    let (mut sum, mut sum2, mut cnt_lags) = (0.0_f64, 0.0_f64, 0_usize);
+    for k in -max_lag..=max_lag {
+        let lo = (-k).max(0);
+        let hi = nb_i.min(na_i - k);
+        let overlap = hi - lo;
+        if overlap < min_overlap {
+            continue;
+        }
+        let idx = if k >= 0 { k as usize } else { (nfft as isize + k) as usize };
+        let r = fa[idx].re * inv / overlap as f64;
+        sum += r;
+        sum2 += r * r;
+        cnt_lags += 1;
+        if r > best_r {
+            best_r = r;
+            best_k = k;
+        }
+    }
+    if cnt_lags < 3 || !best_r.is_finite() {
+        return Err("No admissible alignment lag (recordings too short for the lag window)".into());
+    }
+    let mean = sum / cnt_lags as f64;
+    let sd = (sum2 / cnt_lags as f64 - mean * mean).max(1e-18).sqrt();
+    Ok(AlignAudioResult {
+        lag_seconds: best_k as f64 / rate,
+        peak_r: best_r,
+        confidence: (best_r - mean) / sd,
+        reference_duration: ref_dur,
+        target_duration: tgt_dur,
+    })
+}
+
 pub fn run_speech_tracking(
     job: &SpeechTrackingJob,
     eeg_channels: &[Vec<f32>],
@@ -693,7 +833,7 @@ pub fn run_speech_tracking(
             .collect(),
     };
 
-    let ch_results: Vec<ChannelTrackingResult> = eeg_resampled
+    let ch_pairs: Vec<(ChannelTrackingResult, Vec<f64>)> = eeg_resampled
         .par_iter()
         .map(|(name, y)| {
             let y_vec = DMatrix::from_column_slice(n_pts, 1, y);
@@ -734,6 +874,24 @@ pub fn run_speech_tracking(
                 }
             }
             let trf_encoding_r = if best_cv_r.is_finite() { best_cv_r } else { 0.0 };
+
+            // Out-of-fold forward predictions at the chosen lambda (for the time-resolved series)
+            let mut oof = vec![0.0_f64; n_pts];
+            for f in 0..n_folds {
+                let (a, b) = fold_bounds[f];
+                if b <= a + 4 {
+                    continue;
+                }
+                let tr_xtx = &xtx - &fold_xtx[f];
+                let tr_xty = &xty_all - &fold_xty[f];
+                if let Some(inv_f) = (tr_xtx + &m_fwd * best_lam).try_inverse() {
+                    let wf = inv_f * tr_xty;
+                    let pred_m = x_mat.rows(a, b - a) * &wf;
+                    for (i, v) in pred_m.iter().enumerate() {
+                        oof[a + i] = *v;
+                    }
+                }
+            }
             let reg_inv = (xtx.clone() + &m_fwd * best_lam)
                 .try_inverse()
                 .unwrap_or_else(|| DMatrix::identity(n_lags, n_lags));
@@ -762,17 +920,22 @@ pub fn run_speech_tracking(
             let delta_coherence = band_coherence(y, &env_slice, track_rate, 1.0, 4.0);
             let theta_coherence = band_coherence(y, &env_slice, track_rate, 4.0, 8.0);
 
-            ChannelTrackingResult {
-                channel: name.clone(),
-                xcorr_peak_r: best_r,
-                xcorr_peak_lag_ms: best_lag_ms,
-                trf_encoding_r,
-                trf_weights,
-                delta_coherence,
-                theta_coherence,
-            }
+            (
+                ChannelTrackingResult {
+                    channel: name.clone(),
+                    xcorr_peak_r: best_r,
+                    xcorr_peak_lag_ms: best_lag_ms,
+                    trf_encoding_r,
+                    trf_weights,
+                    delta_coherence,
+                    theta_coherence,
+                },
+                oof,
+            )
         })
         .collect();
+    let (ch_results, fwd_oof): (Vec<ChannelTrackingResult>, Vec<Vec<f64>>) =
+        ch_pairs.into_iter().unzip();
 
     // Backward Stimulus Reconstruction Decoder (multi-channel EEG -> speech envelope)
     // Dense causal lags 0..=250 ms across up to 16 evenly spaced channels
@@ -882,6 +1045,57 @@ pub fn run_speech_tracking(
     }
     let decoder_p_approx = (exceed + 1) as f64 / (n_perm + 1) as f64;
 
+    // Time-resolved tracking: sliding-window Pearson r between out-of-fold predictions and
+    // observations, plus circular-shift null 95th percentiles for a chance threshold.
+    let win_sec = job.window_seconds.unwrap_or(20.0).clamp(4.0, 300.0);
+    let step_sec = job.step_seconds.unwrap_or(5.0).clamp(0.5, win_sec);
+    let win = ((win_sec * track_rate).round() as usize).max(16);
+    let step = ((step_sec * track_rate).round() as usize).max(1);
+    let starts = window_starts(n_pts, win, step);
+    let tracking_series = if starts.is_empty() {
+        None
+    } else {
+        let decoder_r = windowed_pearson(&best_pred_oof, &env_slice, &starts, win);
+        let nch = eeg_resampled.len().max(1) as f64;
+        let mut encoding_r = vec![0.0_f64; starts.len()];
+        for (ci, (_, y)) in eeg_resampled.iter().enumerate() {
+            let r = windowed_pearson(&fwd_oof[ci], y, &starts, win);
+            for (acc, v) in encoding_r.iter_mut().zip(r) {
+                *acc += v / nch;
+            }
+        }
+        let mut dec_null = Vec::new();
+        for k in 0..24_usize {
+            let shift = min_shift + (k * span / 24);
+            let sh = circ_shift(&env_slice, shift);
+            dec_null.extend(windowed_pearson(&best_pred_oof, &sh, &starts, win));
+        }
+        let mut enc_null = Vec::new();
+        for k in 0..8_usize {
+            let shift = min_shift + (k * span / 8);
+            let mut acc = vec![0.0_f64; starts.len()];
+            for (ci, (_, y)) in eeg_resampled.iter().enumerate() {
+                let sh = circ_shift(y, shift);
+                let r = windowed_pearson(&fwd_oof[ci], &sh, &starts, win);
+                for (a_, v) in acc.iter_mut().zip(r) {
+                    *a_ += v / nch;
+                }
+            }
+            enc_null.extend(acc);
+        }
+        Some(TrackingSeries {
+            window_seconds: win as f64 / track_rate,
+            times_sec: starts
+                .iter()
+                .map(|&s| overlap_start + (s as f64 + win as f64 / 2.0) / track_rate)
+                .collect(),
+            decoder_r,
+            encoding_r,
+            decoder_null95: percentile95(dec_null),
+            encoding_null95: percentile95(enc_null),
+        })
+    };
+
     let best = ch_results
         .iter()
         .max_by(|a, b| a.trf_encoding_r.total_cmp(&b.trf_encoding_r))
@@ -896,6 +1110,7 @@ pub fn run_speech_tracking(
         best_channel: best.channel.clone(),
         best_encoding_r: best.trf_encoding_r,
         channels: ch_results,
+        tracking_series,
     })
 }
 
@@ -978,6 +1193,8 @@ mod tests {
             tmax_ms: Some(450.0),
             ridge_lambda: None,
             channels: None,
+            window_seconds: Some(8.0),
+            step_seconds: Some(2.0),
         };
         let res = run_speech_tracking(&job, &eeg_channels, &labels, eeg_rate).unwrap();
         assert!(
@@ -995,6 +1212,12 @@ mod tests {
             "expected significant surrogate p < 0.02, got {}",
             res.decoder_p_approx
         );
+
+        let series = res.tracking_series.as_ref().expect("tracking series");
+        assert!(!series.times_sec.is_empty());
+        assert_eq!(series.times_sec.len(), series.decoder_r.len());
+        assert_eq!(series.times_sec.len(), series.encoding_r.len());
+        assert!(series.times_sec.windows(2).all(|w| w[1] > w[0]));
 
         // Verify N1 negative weight near 100 ms and P2 positive weight near 200 ms
         let idx_100 = res

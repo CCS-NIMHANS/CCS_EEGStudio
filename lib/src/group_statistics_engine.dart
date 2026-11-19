@@ -165,6 +165,7 @@ class ErpGroupStatsEngine {
       }
 
       var numCount = 0;
+      var hasDecimal = false;
       var nonEmpty = 0;
       final counts = <String, int>{};
       for (final r in rows) {
@@ -172,14 +173,43 @@ class ErpGroupStatsEngine {
         final v = r[c].trim();
         if (v.isEmpty) continue;
         nonEmpty++;
-        if (double.tryParse(v) != null) numCount++;
+        if (double.tryParse(v) != null) {
+          numCount++;
+          if (v.contains('.') || v.toLowerCase().contains('e')) {
+            hasDecimal = true;
+          }
+        }
         counts[v] = (counts[v] ?? 0) + 1;
       }
 
-      if (nonEmpty > 0 && numCount == nonEmpty && counts.length > 6) {
-        if (hl != 'sl.no.' && hl != 'sno' && hl != 'index') {
-          metricCols.add(h);
-        }
+      const idOrMetaNumeric = {
+        'sl.no.',
+        'sno',
+        'index',
+        'epoch',
+        'bin',
+        'bin_idx',
+        'polarity',
+        'window_start_ms',
+        'window_end_ms',
+        'n_trials',
+      };
+      final looksMetricCol = hl.endsWith('_erp') ||
+          hl.endsWith('_uv') ||
+          hl.endsWith('_uv_s') ||
+          hl.endsWith('_s') ||
+          hl.endsWith('_ms') ||
+          hl.endsWith('_psd') ||
+          hl.endsWith('_fooof') ||
+          hl.endsWith('_irasa') ||
+          hl.contains('amplitude') ||
+          hl.contains('latency') ||
+          hl.contains('auc');
+      if (nonEmpty > 0 &&
+          numCount == nonEmpty &&
+          !idOrMetaNumeric.contains(hl) &&
+          (counts.length > 6 || hasDecimal || looksMetricCol)) {
+        metricCols.add(h);
       } else if (counts.isNotEmpty) {
         factorCols.add(h);
         final levels = counts.keys.toList()..sort();
@@ -241,15 +271,38 @@ class ErpGroupStatsEngine {
 
     final csvKeyIdx = headers.indexOf(csvKey);
     final metaKeyIdx = metaHeaders.indexOf(metaKey);
-    final newCols = metaHeaders
-        .where((h) => h != metaKey && !headers.contains(h))
-        .toList();
-    if (newCols.isEmpty) return (headers: headers, rows: rows);
+    final lowerHeaders = {for (var i = 0; i < headers.length; i++) headers[i].toLowerCase(): i};
+    final replaceCols = <({int csvIdx, int metaIdx})>[];
+    final newCols = <String>[];
+    for (var mi = 0; mi < metaHeaders.length; mi++) {
+      final h = metaHeaders[mi];
+      if (h == metaKey) continue;
+      final existingIdx = lowerHeaders[h.toLowerCase()];
+      if (existingIdx != null) {
+        replaceCols.add((csvIdx: existingIdx, metaIdx: mi));
+      } else {
+        newCols.add(h);
+      }
+    }
+    if (newCols.isEmpty && replaceCols.isEmpty) {
+      return (headers: headers, rows: rows);
+    }
+
+    String normKey(String raw) {
+      var s = raw.trim().toLowerCase();
+      s = s.replaceFirst(RegExp(r'^sub-'), '');
+      s = s.replaceFirst(
+        RegExp(r'(?:[-_]?|(?<=\d))(?:session|ses|visit)[-_]?\d+.*$'),
+        '',
+      );
+      return s;
+    }
 
     final lookup = <String, List<String>>{};
+    final replaceLookup = <String, List<String>>{};
     for (final mr in metaRows) {
       if (metaKeyIdx >= mr.length) continue;
-      final k = mr[metaKeyIdx].trim().toLowerCase();
+      final k = normKey(mr[metaKeyIdx]);
       if (k.isEmpty) continue;
       lookup[k] = [
         for (final col in newCols)
@@ -257,24 +310,61 @@ class ErpGroupStatsEngine {
               ? mr[metaHeaders.indexOf(col)].trim()
               : '',
       ];
+      replaceLookup[k] = [
+        for (final pair in replaceCols)
+          pair.metaIdx < mr.length ? mr[pair.metaIdx].trim() : '',
+      ];
+    }
+
+    final sortedKeys = lookup.keys.toList()
+      ..sort((a, b) => b.length.compareTo(a.length));
+    String? findMatchKey(String k) {
+      if (k.isEmpty) return null;
+      if (lookup.containsKey(k)) return k;
+      for (final cand in sortedKeys) {
+        if (cand.length < 3) continue;
+        if (k.startsWith(cand)) {
+          if (k.length == cand.length ||
+              !RegExp(r'[0-9]').hasMatch(k[cand.length])) {
+            return cand;
+          }
+        }
+        final idx = k.indexOf(cand);
+        if (idx > 0) {
+          final leftOk = !RegExp(r'[a-z0-9]').hasMatch(k[idx - 1]);
+          final end = idx + cand.length;
+          final rightOk = end == k.length || !RegExp(r'[0-9]').hasMatch(k[end]);
+          if (leftOk && rightOk) return cand;
+        }
+      }
+      return null;
     }
 
     final mergedHeaders = [...headers, ...newCols];
     final mergedRows = <List<String>>[];
     for (final r in rows) {
-      final k = csvKeyIdx < r.length ? r[csvKeyIdx].trim().toLowerCase() : '';
-      var hit = lookup[k];
-      if (hit == null && k.isNotEmpty) {
-        for (final e in lookup.entries) {
-          if (e.key.length >= 3 &&
-              (k.startsWith(e.key) || k.contains(e.key))) {
-            hit = e.value;
-            break;
+      final rawK = csvKeyIdx < r.length ? r[csvKeyIdx] : '';
+      final k = normKey(rawK);
+      final matchKey = findMatchKey(k);
+      final rowBase = List<String>.generate(
+        headers.length,
+        (i) => i < r.length ? r[i] : '',
+      );
+      if (matchKey != null) {
+        final repl = replaceLookup[matchKey]!;
+        for (var j = 0; j < replaceCols.length; j++) {
+          final ci = replaceCols[j].csvIdx;
+          final cur = rowBase[ci].trim().toLowerCase();
+          final nextVal = repl[j];
+          if (nextVal.isNotEmpty &&
+              (cur.isEmpty || cur == 'unknown' || cur == 'unassigned')) {
+            rowBase[ci] = nextVal;
           }
         }
       }
+      final hit = matchKey != null ? lookup[matchKey] : null;
       mergedRows.add([
-        ...List.generate(headers.length, (i) => i < r.length ? r[i] : ''),
+        ...rowBase,
         ...(hit ?? List.filled(newCols.length, 'Unknown')),
       ]);
     }
