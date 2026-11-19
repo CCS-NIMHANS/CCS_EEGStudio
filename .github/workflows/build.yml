@@ -360,6 +360,9 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}/dist:/packages:ro" \
             almalinux:9 bash -lc '
+              dnf install -y epel-release dnf-plugins-core &&
+              dnf config-manager --set-enabled crb &&
+              (dnf install -y --nogpgcheck https://download1.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm || dnf install -y --nogpgcheck https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm) &&
               dnf install -y /packages/CCSEEGStudio-linux-x86_64.rpm &&
               test -x /usr/bin/ccseegstudio &&
               test -f /usr/share/applications/ccseegstudio.desktop &&
