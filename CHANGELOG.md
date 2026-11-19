@@ -4,6 +4,17 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.51]
+
+### True Algorithmic Parity Audit, Complete Method References & Permanent Pre-Release CI SOP
+
+- **PREP / `clean_rawdata` Windowed Bad-Channel Detection:** Moved automated bad-channel detection in `preprocessing.rs` onto bandpass/notch-filtered `f64` channels (`detect_bad_channels_f64`) with 2 s windowed robust MAD amplitude, high-frequency noise ratio, and glitch-masked windowed spatial max-correlation (`Bigdely-Shamlo et al., 2015`). Prevents global saturation spikes from masking noisy/uncorrelated electrodes (validated on `Krithika_EEG` recordings and synthetic multi-channel fixtures).
+- **RestingIAF + Klimesch Bands + Cohen (2014) Frequency Sliding:** Upgraded `iaf_and_sliding_features` in `main.rs` to Savitzky–Golay smoothed Welch PSD + 1/f background subtraction (`PAF`/`CoG` per Corcoran et al., 2018), Klimesch individual theta/alpha relative power (`1–40 Hz`), and reflection-padded raised-cosine plateau bandpass + Hilbert instantaneous phase derivative + Cohen (2014) 10-order (`50–400 ms`) temporal median filter.
+- **Neural Speech Tracking (Crosse et al., 2016 mTRF Parity & Constant-Memory WAV Streaming):** Rewrote `speech_tracking.rs` to stream `.wav` files in 65,536-frame chunks with Hilbert + `env^0.3` auditory power-law compression (`Biesmans et al., 2017`), zero-phase `1–15 Hz` anti-aliased EEG and envelope filtering, first-difference Tikhonov smoothness penalty `M` + 5-fold CV `lambda` selection, dense `0–250 ms` causal decoder lags, and a valid one-tailed 200-shift circular-shift permutation null test (eliminating bogus low p-values on negative correlations).
+- **True 3-Shell Domain-Decomposed XPIKAN (`xpikan.rs` & `source_loc.rs`):** Replaced the previous shrinkage stub with a genuine concentric 3-shell (cerebrum/skull/scalp) radial cubic B-spline × real spherical harmonic XPIKAN solver enforcing interior Laplace PDE residuals, interface potential & radial flux continuity, and outer scalp Neumann boundary condition (validated against the exact 3-shell analytical Legendre series to `r > 0.999` and `< 5%` L2 error), integrated into source localization with outer-scalp Neumann-spline manifold regularization.
+- **Mixed-Design Split-Plot ANOVA Within-Subject Error & UI/Reporting Polish:** Separated subject random-intercept variance (`SS_subj`) from within-subject residual (`SS_within - SS_subj`) in `ErpGroupStatsEngine`, wired synced `Audio & Envelope` waveform + cursor ribbon directly into `TopoStatsView`, added single-file publication parameter logs (`analysis_parameters_log.md` + JSON), and added `EegViewer` time-axis progression tests.
+- **Linux `mpv-libs` Packaging & Pre-Release CI SOP:** Added `Recommends: mpv-libs` and `libmpv.so.2 -> libmpv.so.1` symlinks in `scripts/package_linux_rpm.sh`, `scripts/package_linux_deb.sh`, and `scripts/install_linux.sh`, plus `scripts/preflight_release.sh` and `docs/RELEASE_SOP.md`. Restored and expanded peer-reviewed **Method References** across `README.md`, `docs/wiki/`, and `docs/methods_and_validation.md`.
+
 ## [1.2.50]
 
 ### Interactive Batch File Selector, Unbiased Grand Average Localizer, Factor Grouping Designer & Permutation GLM/LMM Plots
@@ -12,12 +23,6 @@ its matching section is missing.
 - **Unbiased Grand Average Localizer (ROI & Time Window):** Added `grand_average_preview` in the Rust engine (`erp_workbench.rs`) and `GrandAverageLocalizerDialog` in ERP Stage 3 (`Grand Average Localizer (ROI & Window)…`). View Grand Averages **Collapsed** across all groups & conditions (unbiased localizer), **By Condition**, **By Group**, or **Group × Condition** in either **ROI Mean** or **Butterfly + GFP** mode; drag or slide to adjust the measurement window with a live-updating **Scalp Topography**, click electrodes or pick the top peak channels, and apply the ROI, time window, and polarity directly to Stage 3.
 - **Factor & Grouping Designer (Folder/BIDS, CSV/Excel `.xlsx`, Interactive Filename Cropper & Grouping Tree):** Added `FactorGroupingDesignerDialog` (`TabularSheetReader` supporting `.xlsx`, `.csv`, and `.tsv` sheets like `Groups.xlsx` in pure Dart) with BIDS/folder auto-detection, an interactive **Filename Factor Cropper** that automatically infers extraction rules (keyword+digits, delimiter tokens, context anchors, or fixed slices) with live preview across all files, user-defined multi-factor management, and an interactive **Grouping Tree** to include or reject factor levels, branches, or individual files.
 - **N-Way Permutation GLM / LMM & Configurable Statistical Plots with Dummy Preview:** Added pure-Dart `ErpGroupStatsEngine` supporting N-way Factorial GLM and Linear Mixed Models (LMM with subject random intercepts) with exchangeable permutation testing (`p_perm`) and FDR/Bonferroni post-hoc contrasts. Added `ConfigurableStatsPlotWidget` allowing users to assign any factor to **X-Axis (Points)**, **Lines/Hue (Series)**, **Subplot Columns**, and **Subplot Rows**, reorder/exclude factor levels, and inspect a live **Sample Dummy Preview** before running analysis.
-
-## [1.2.50]
-
-### Interactive Batch File Selector, Unbiased Grand Average Localizer & Permutation GLM/LMM
-
-- **Interactive Batch File Selector & Unbiased Grand Average Localizer:** Added an interactive batch file selector (`batch_file_selector.dart`), unbiased grand-average localizer, factor grouping designer, permutation GLM/LMM statistics, and configurable ERP/statistics plots.
 - **CI Workflow & Linux Media Build Fix:** Upgraded `actions/upload-artifact` (`v7`) and `actions/download-artifact` (`v8`) for Node.js 24, and added `libmpv-dev` + `mpv` to Linux CI dependencies for `media_kit_video`.
 
 ## [1.2.49]

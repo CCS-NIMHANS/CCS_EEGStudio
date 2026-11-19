@@ -32,3 +32,15 @@ Everything in **Step 2** shares **one accepted-trial set**, **one active electro
 | :---: | :---: |
 | ![rERP & ML](../../screenshots/erp_regression_ml.png) | ![ERP Measurements](../../screenshots/erp_measurements.png) |
 | • Guided **rERP** GLM overlap-correction overlaid against Conventional ERP + Beta topo<br>• **Shrinkage LDA** time-resolved decoding, Peak AUC/latency & spatial pattern topoplot | • Component latency/amplitude tables (`Mean`, `Peak`, `Area`, `50% Fractional Area`)<br>• Publication-ready multi-panel exports (`.csv`, `.ccserp`, `.svg`/`.png`, `.pdf`) |
+
+---
+
+## Method References
+
+| Component / Test | Reference |
+| :--- | :--- |
+| **ERP Waveform, Peak/Area & Trial Rejection** | Luck (2014), *An Introduction to the Event-Related Potential Technique*, MIT Press |
+| **ERPimage, ERSP & Inter-Trial Coherence** | Delorme & Makeig (2004), *J. Neurosci. Methods* 134:9–21, [doi:10.1016/j.jneumeth.2003.10.009](https://doi.org/10.1016/j.jneumeth.2003.10.009) |
+| **Overlap-Corrected Regression ERP (`rERP`)** | Ehinger & Dimigen (2019), *PeerJ* 7:e7838, [doi:10.7717/peerj.7838](https://doi.org/10.7717/peerj.7838) |
+| **Threshold-Free Cluster Enhancement (`e-TFCE`)** | Smith & Nichols (2009), [doi:10.1016/j.neuroimage.2008.03.061](https://doi.org/10.1016/j.neuroimage.2008.03.061); Mensen & Khatami (2013), [doi:10.1016/j.neuroimage.2012.10.027](https://doi.org/10.1016/j.neuroimage.2012.10.027) |
+| **Cluster Permutation & Shrinkage LDA** | Maris & Oostenveld (2007), [doi:10.1016/j.jneumeth.2007.03.024](https://doi.org/10.1016/j.jneumeth.2007.03.024); Blankertz et al. (2011), *NeuroImage* 56(2):814–825 |

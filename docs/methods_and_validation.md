@@ -1,9 +1,12 @@
 # Methods, implementation conventions and validation
 
-This guide accompanies version 1.2.11. Paper citations and original implementation
+This guide accompanies version 1.2.51. Paper citations and original implementation
 links appear in the [README method table](../README.md#-method-references).
-Native ports are integrated by
-[`preprocessing.rs`](../bridge/vendor/ccs_algorithm/src/eeg/preprocessing.rs) and
+Native ports and algorithms are integrated by
+[`preprocessing.rs`](../bridge/vendor/ccs_algorithm/src/eeg/preprocessing.rs),
+[`xpikan.rs`](../bridge/vendor/ccs_algorithm/src/eeg/xpikan.rs),
+[`source_loc.rs`](../bridge/vendor/ccs_algorithm/src/eeg/source_loc.rs),
+[`speech_tracking.rs`](../bridge/src/speech_tracking.rs), and
 [`main.rs`](../bridge/src/main.rs); the vendored ICA library is
 [`ccs_ica`](../bridge/vendor/ccs_ica/README.md).
 
@@ -19,8 +22,10 @@ ICA needs at least eight usable channels with positions in the 10-05 lookup and
 at least 20 seconds. Bad and unlocated channels are excluded from the fit. ASR
 needs at least two good channels. ICA/ASR fit on a 1 Hz high-passed copy unless
 input filtering already provides it; removed/corrected contributions are applied
-to the analysis data. The Studio channel detector is not the complete
-clean_rawdata flatline/correlation/line-noise preprocessing sequence.
+to the analysis data. Bad-channel detection runs on the bandpass/notch-filtered
+`f64` channels using 2 s windowed robust MAD amplitude, high-frequency noise
+ratio, and glitch-masked windowed spatial max-correlation (Bigdely-Shamlo et al.,
+2015), combined with manual exclusions from the UI table before interpolation.
 
 ASR Correct retains sample count. Reject drops burst samples: original markers
 and input waveform comparisons are not copied as though the timeline were
@@ -110,13 +115,17 @@ not net directional GC. Custom PSD bands and references follow the
 for recognized channels; unknown geometry has an explicit identity-reference
 warning and must not be reported as equivalent leadfield-based GEDAI.
 
+## New & audited algorithms (v1.2.49 – v1.2.51)
+
+| Method | Actual implementation | Validation & explicit scope limits |
+| :--- | :--- | :--- |
+| **Windowed Bad Channel Detection** | Bigdely-Shamlo et al. (2015) PREP / `clean_rawdata`-inspired 2 s windowed robust MAD (`1.4826×MAD`), HF ratio, and glitch-masked windowed spatial max-`\|r\|` on filtered `f64` EEG | Verified against synthetic 16-ch EEG with `500,000 µV` global saturation spike and inspected on all 4 `Krithika_EEG/*.vhdr` files (`PB2001_1` flags `TP10`, `Oz`, `O2`, `FC2`, `FT10`, etc.). Not full RANSAC channel-by-channel reconstruction during detection. |
+| **IAF & Individual Bands** | Welch PSD + 5-pt cubic Savitzky–Golay smoothing + log-log 1/f background subtraction; parabolic PAF (`>0.15` peak prominence) or CoG fallback (`IAF_Hz`, Corcoran et al., 2018); Klimesch (1999) `[IAF-6, IAF-2]` & `[IAF-2, IAF+2]` relative PSD (`1–40 Hz`) | Verified on synthetic multi-oscillation epochs (`|IAF - 10.5| < 0.35 Hz`). Single short epochs (`< 2 s`) have coarser `Δf` resolution than multi-minute resting averages. |
+| **Frequency Sliding** | Cohen (2014): reflection-padded raised-cosine plateau bandpass + Hilbert analytic phase derivative + 10-order temporal median filter (`50–400 ms`) with edge trim | Verified on synthetic rhythms and injected phase-slip spikes (`< 0.35 Hz` error). Reported per epoch as median sliding frequency (`Theta/Alpha_FreqSliding_Hz`). |
+| **Neural Speech Tracking (`mTRF`)** | Streamed constant-memory WAV decoder + Hilbert `env^0.3` compression (Biesmans et al., 2017) + zero-phase `1–15 Hz` anti-aliased EEG/envelope + 64 Hz Crosse et al. (2016) mTRF first-difference Tikhonov smoothness `M` + 5-fold CV `λ` search + dense causal decoder (`0–250 ms`) + one-tailed 200-shift circular surrogate null test | Verified on synthetic auditory N1 (`−100 ms`) / P2 (`+200 ms`) convolution recovery (`r > 0.45, p < 0.02`) and uncorrelated pink/white noise (`p > 0.05`, no spurious low p on negative `r`). |
+| **3-Shell XPIKAN (`xpikan.rs` & `source_loc.rs`)** | Domain-decomposed concentric 3-shell (`cerebrum / skull / scalp`) cubic B-spline × real spherical harmonic KAN (`∇²u = 0`, interface potential & normal flux continuity, outer scalp Neumann BC) verified against exact 3-shell Legendre series (`r > 0.995`, rel L2 `< 5%`); inverse operator uses outer-scalp Neumann-spline manifold projector + empirical sensor covariance with sLORETA depth standardization | CPU-native physics-informed solver over canonical concentric head shells + fsaverage 10–05 leadfield; not individualized MRI FEM/BEM or multi-hour GPU neural training. |
+| **Group Statistics (`ErpGroupStatsEngine`)** | Split-plot Mixed-Design Factorial ANOVA (separating `SS_subj` between-subject intercept variance from `SS_within - SS_subj` within-subject residual) paired with exchangeable permutation testing (`p_perm`) and BH-FDR / Bonferroni post-hocs | Verified against exact balanced 2×2 analytical split-plot `F_within` (`640.0` within `1e-4`). Uses ANOVA cell-mean marginal SS rather than full REML `lme4` covariance estimation on unbalanced hierarchical designs. |
+
 ## Release checks
 
-Use `cargo test` in `bridge/`, `flutter analyze`, and `flutter test` at the project
-root. ICA/ASR integration tests cover blink-stage reports, burst correction versus
-rejection lengths, option validation, variant execution/channel limits, muscle
-cleaners, and GEDAI identity warnings. Orbit integration tests cover portable
-handoff through preprocessing and extraction. External-data tests skip absent
-fixtures. Desktop CI builds macOS, Windows and Linux packages, including an
-AlmaLinux RPM installation check. These are correctness/packaging checks, not a
-new benchmark of artifact-removal effectiveness.
+Use `bash scripts/preflight_release.sh` at the project root (runs `cargo test --release --locked`, `flutter analyze --no-fatal-infos`, `flutter test`, version sync, and Linux dependency checks). Documentation and [Release CI SOP](RELEASE_SOP.md) explain CI packaging verification across macOS, Windows, Ubuntu `.deb`, and AlmaLinux 9 `.rpm`.

@@ -27,6 +27,8 @@ import 'topostats_batch.dart'
 import 'topostats_figure.dart';
 import 'topostats_runner.dart';
 import '../state_dynamics/state_dynamics_view.dart';
+import '../media/synced_media_panel.dart'
+    show AudioWaveformEnvelopePainter, MediaSyncController;
 
 // Design tokens (match app.dart)
 const _bg = Color(0xFF0F172A);
@@ -78,6 +80,7 @@ class TopoStatsView extends StatefulWidget {
     this.runLabel = 'Run Plot Generation',
     this.title = 'Plots & Report',
     this.initialSettings = const TopoStatsSettings(),
+    this.mediaController,
   });
 
   /// Seed files. A single file is expanded to all sibling sessions of the
@@ -86,6 +89,7 @@ class TopoStatsView extends StatefulWidget {
   final String runLabel;
   final String title;
   final TopoStatsSettings initialSettings;
+  final MediaSyncController? mediaController;
 
   static String baseName(String p) => p.split(RegExp(r'[\\/]')).last;
 
@@ -114,6 +118,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
 
   bool _fit = true;
   double _ppi = 110;
+  bool _showAudioStrip = true;
   TopoPlotGroup? _hoverGroup;
   TopoHit? _hoverHit;
   Offset _hoverPos = Offset.zero;
@@ -2040,6 +2045,28 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             _running ? null : () => _stepFeature(1),
           ),
           const Spacer(),
+          if (widget.mediaController != null &&
+              widget.mediaController!.segments.isNotEmpty) ...[
+            ActionChip(
+              visualDensity: VisualDensity.compact,
+              avatar: Icon(
+                Icons.graphic_eq,
+                size: 13,
+                color: _showAudioStrip ? Colors.cyanAccent : _muted,
+              ),
+              label: const Text(
+                'Audio & Envelope',
+                style: TextStyle(color: _text, fontSize: 11),
+              ),
+              backgroundColor: _panel,
+              side: BorderSide(
+                color: _showAudioStrip ? Colors.cyanAccent.withValues(alpha: 0.6) : _border,
+              ),
+              onPressed: () =>
+                  setState(() => _showAudioStrip = !_showAudioStrip),
+            ),
+            const SizedBox(width: 8),
+          ],
           Tooltip(
             message: 'Event marker opacity on waveform plots',
             child: Container(
@@ -2252,12 +2279,21 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             },
             child: GestureDetector(
               onTapUp: (d) {
-                final hit = fig.hitTest(d.localPosition / ppi);
+                final figPt = d.localPosition / ppi;
+                final hit = fig.hitTest(figPt);
                 if (hit != null) {
                   if (hit.isTopo) {
                     _openTopoDetail(fig, hit);
+                    return;
                   } else if (hit.stateLabel != null) {
                     _selectState(hit.stateLabel!);
+                  }
+                }
+                final media = widget.mediaController;
+                if (media != null && media.segments.isNotEmpty) {
+                  final tSec = fig.lineAxisTimeSecondsAt(figPt);
+                  if (tSec != null) {
+                    media.seekToEegTime(tSec, notifyExternal: true);
                   }
                 }
               },
@@ -2266,12 +2302,27 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 height: h,
                 child: Stack(
                   children: [
-                    RepaintBoundary(
-                      child: CustomPaint(
-                        size: Size(w, h),
-                        painter: _FigurePainter(fig, ppi),
+                    if (widget.mediaController != null)
+                      ListenableBuilder(
+                        listenable: widget.mediaController!,
+                        builder: (ctx, _) => CustomPaint(
+                          size: Size(w, h),
+                          painter: _FigurePainter(
+                            fig,
+                            ppi,
+                            cursorMinutes: widget.mediaController!.segments.isNotEmpty
+                                ? widget.mediaController!.eegSec / 60.0
+                                : null,
+                          ),
+                        ),
+                      )
+                    else
+                      RepaintBoundary(
+                        child: CustomPaint(
+                          size: Size(w, h),
+                          painter: _FigurePainter(fig, ppi),
+                        ),
                       ),
-                    ),
                     if (isHovered)
                       CustomPaint(
                         size: Size(w, h),
@@ -2442,6 +2493,14 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             children: [
               for (final g in active)
                 _buildGroupCard(g, ppi, active.length > 1),
+              if (_showAudioStrip &&
+                  widget.mediaController != null &&
+                  widget.mediaController!.segments.isNotEmpty)
+                _buildSyncedAudioStrip(
+                  active.isNotEmpty
+                      ? active.first.figure!.widthIn * ppi
+                      : math.max(700.0, c.maxWidth - 40),
+                ),
               if (_activeFiles.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 16),
@@ -2595,6 +2654,95 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     );
   }
 
+  Widget _buildSyncedAudioStrip(double targetWidth) {
+    final ctrl = widget.mediaController!;
+    return ListenableBuilder(
+      listenable: ctrl,
+      builder: (context, _) {
+        final seg = ctrl.activeSegment;
+        if (seg == null || seg.waveformMax.isEmpty) {
+          return const SizedBox.shrink();
+        }
+        return Container(
+          width: targetWidth,
+          margin: const EdgeInsets.only(bottom: 16),
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+          decoration: BoxDecoration(
+            color: _panel,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: _border),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.graphic_eq, size: 14, color: Colors.cyanAccent),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Synced Audio Waveform & Envelope · ${seg.label} '
+                      '(offset ${seg.offsetSeconds.toStringAsFixed(1)} s, cursor ${ctrl.eegSec.toStringAsFixed(1)} s)',
+                      style: const TextStyle(color: _text, fontSize: 11, fontWeight: FontWeight.w600),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(ctrl.playing ? Icons.pause : Icons.play_arrow, size: 16, color: _amber),
+                    visualDensity: VisualDensity.compact,
+                    tooltip: ctrl.playing ? 'Pause media' : 'Play media',
+                    onPressed: ctrl.togglePlay,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Container(
+                height: 76,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF020617),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: LayoutBuilder(
+                  builder: (ctx, box) => GestureDetector(
+                    onTapDown: (d) {
+                      if (box.maxWidth <= 0) return;
+                      final frac = (d.localPosition.dx / box.maxWidth).clamp(0.0, 1.0);
+                      ctrl.seekToEegTime(
+                        seg.offsetSeconds + frac * seg.durationSeconds,
+                        notifyExternal: true,
+                      );
+                    },
+                    onHorizontalDragUpdate: (d) {
+                      if (box.maxWidth <= 0) return;
+                      final frac = (d.localPosition.dx / box.maxWidth).clamp(0.0, 1.0);
+                      ctrl.seekToEegTime(
+                        seg.offsetSeconds + frac * seg.durationSeconds,
+                        notifyExternal: true,
+                      );
+                    },
+                    child: CustomPaint(
+                      painter: AudioWaveformEnvelopePainter(
+                        minBins: seg.waveformMin,
+                        maxBins: seg.waveformMax,
+                        envelope: seg.envelopePreview,
+                        cursorFrac: seg.durationSeconds > 0
+                            ? ((ctrl.eegSec - seg.offsetSeconds) / seg.durationSeconds)
+                                .clamp(0.0, 1.0)
+                            : 0.0,
+                      ),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   void _openTopoDetail(TopoFigure fig, TopoHit hit) {
     showDialog<void>(
       context: context,
@@ -2605,13 +2753,16 @@ class _TopoStatsViewState extends State<TopoStatsView> {
 }
 
 class _FigurePainter extends CustomPainter {
-  _FigurePainter(this.fig, this.ppi);
+  _FigurePainter(this.fig, this.ppi, {this.cursorMinutes});
   final TopoFigure fig;
   final double ppi;
+  final double? cursorMinutes;
   @override
-  void paint(Canvas canvas, Size size) => fig.paint(canvas, ppi);
+  void paint(Canvas canvas, Size size) =>
+      fig.paint(canvas, ppi, cursorMinutes: cursorMinutes);
   @override
-  bool shouldRepaint(_FigurePainter old) => old.fig != fig || old.ppi != ppi;
+  bool shouldRepaint(_FigurePainter old) =>
+      old.fig != fig || old.ppi != ppi || old.cursorMinutes != cursorMinutes;
 }
 
 class _HoverPainter extends CustomPainter {

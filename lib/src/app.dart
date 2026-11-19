@@ -543,6 +543,17 @@ class _FeatureHomeState extends State<FeatureHome>
       _log(
         '✓ Analysis copy ready: $outPath. Epochs, ERP, source analysis and features use this file.',
       );
+      try {
+        await MethodologyReport.writeParameterLogs(
+          outputDir: File(outPath).parent,
+          config: _cfg,
+          inputFiles: [source.path],
+          title: 'Single Recording Preprocessing',
+        );
+        _log('✓ Parameter log written (preprocessing_parameters.json, analysis_parameters_log.md)');
+      } catch (e) {
+        _log('⚠ Parameter log skipped: $e');
+      }
     } catch (e) {
       _log('Could not finalise preprocessing: $e');
     } finally {
@@ -1886,6 +1897,17 @@ class _FeatureHomeState extends State<FeatureHome>
       );
       setState(() => _featuresCsv = path);
       _log('✓ Extraction complete: $path');
+      try {
+        await MethodologyReport.writeParameterLogs(
+          outputDir: File(path).parent,
+          config: _cfg,
+          inputFiles: [input.path],
+          title: 'Single Recording Feature Extraction',
+        );
+        _log('✓ Parameter logs written (preprocessing_parameters.json, feature_parameters.json, analysis_parameters_log.md)');
+      } catch (e) {
+        _log('⚠ Parameter log skipped: $e');
+      }
 
       if (_cfg.generatePdfReport) {
         await _writeReport(
@@ -2081,6 +2103,7 @@ class _FeatureHomeState extends State<FeatureHome>
           ),
           body: TopoStatsView(
             featureFilePaths: candidates,
+            mediaController: _mediaController,
             runLabel: 'Run Plot Generation',
             title: 'Plots & Report',
           ),
@@ -3639,6 +3662,7 @@ class _FeatureHomeState extends State<FeatureHome>
     return TopoStatsView(
       key: const ValueKey('plots-report'),
       featureFilePaths: _featureFilesForTopoStats,
+      mediaController: _mediaController,
       initialSettings: TopoStatsSettings(
         epochSize: _cfg.epochSeconds,
         windowSize: _cfg.smoothingWindow,

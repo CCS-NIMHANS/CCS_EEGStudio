@@ -13,6 +13,43 @@ import 'erp/event_group_editor.dart';
 
 enum TimeAxisMode { elapsedSeconds, hhMmSs, clockTime, epoch }
 
+/// Formats an EEG timeline axis tick [t] (seconds) for the active [mode].
+String formatEegTimeAxisTick({
+  required TimeAxisMode mode,
+  required double t,
+  required double windowSeconds,
+  required bool isEpoched,
+  required double epochDurationSeconds,
+  String? recordingStartIso,
+}) {
+  switch (mode) {
+    case TimeAxisMode.elapsedSeconds:
+      return windowSeconds < 10
+          ? '${t.toStringAsFixed(2)} s'
+          : '${t.toStringAsFixed(0)} s';
+    case TimeAxisMode.hhMmSs:
+      final total = t.round().clamp(0, 86400 * 30);
+      final h = total ~/ 3600;
+      final m = (total % 3600) ~/ 60;
+      final s = total % 60;
+      return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+    case TimeAxisMode.clockTime:
+      final base = (recordingStartIso != null
+              ? DateTime.tryParse(recordingStartIso)
+              : null) ??
+          DateTime(2026, 1, 1);
+      final dt = base.add(Duration(milliseconds: (t * 1000).round()));
+      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+    case TimeAxisMode.epoch:
+      final epLen = isEpoched
+          ? epochDurationSeconds
+          : math.max(1.0, windowSeconds);
+      final epIdx = (t / epLen).floor() + 1;
+      final offset = t - (epIdx - 1) * epLen;
+      return 'Ep$epIdx +${offset.toStringAsFixed(windowSeconds < 10 ? 1 : 0)}s';
+  }
+}
+
 /// EEG waveform viewer styled after ScoringNidra / trainNidra.
 ///
 /// Supports a side-by-side Raw / Processed toggle when [rawRecording] is
@@ -2561,33 +2598,14 @@ class _EegSignalPainter extends CustomPainter {
     return raw;
   }
 
-  String _formatAxisTick(double t) {
-    switch (timeAxisMode) {
-      case TimeAxisMode.elapsedSeconds:
-        return windowSeconds < 10
-            ? '${t.toStringAsFixed(2)} s'
-            : '${t.toStringAsFixed(0)} s';
-      case TimeAxisMode.hhMmSs:
-        final total = t.round().clamp(0, 86400 * 30);
-        final h = total ~/ 3600;
-        final m = (total % 3600) ~/ 60;
-        final s = total % 60;
-        return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
-      case TimeAxisMode.clockTime:
-        final iso = eeg.provenance['recording_start_iso'] as String?;
-        final base = (iso != null ? DateTime.tryParse(iso) : null) ??
-            DateTime(2026, 1, 1);
-        final dt = base.add(Duration(milliseconds: (t * 1000).round()));
-        return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
-      case TimeAxisMode.epoch:
-        final epLen = eeg.isEpoched
-            ? eeg.epochDurationSeconds
-            : math.max(1.0, windowSeconds);
-        final epIdx = (t / epLen).floor() + 1;
-        final offset = t - (epIdx - 1) * epLen;
-        return 'Ep$epIdx +${offset.toStringAsFixed(windowSeconds < 10 ? 1 : 0)}s';
-    }
-  }
+  String _formatAxisTick(double t) => formatEegTimeAxisTick(
+        mode: timeAxisMode,
+        t: t,
+        windowSeconds: windowSeconds,
+        isEpoched: eeg.isEpoched,
+        epochDurationSeconds: eeg.epochDurationSeconds,
+        recordingStartIso: eeg.provenance['recording_start_iso'] as String?,
+      );
 
   @override
   bool shouldRepaint(covariant _EegSignalPainter old) =>

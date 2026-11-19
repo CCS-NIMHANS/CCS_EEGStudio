@@ -66,6 +66,13 @@ if [[ "$IS_RPM" = true ]]; then
     fi
     dnf config-manager --set-enabled crb 2>/dev/null || \
     dnf config-manager --set-enabled powertools 2>/dev/null || true
+    el_ver=$(rpm -E %rhel 2>/dev/null || echo 9)
+    if ! rpm -q rpmfusion-free-release >/dev/null 2>&1; then
+      echo "    Enabling RPMFusion Free repository for mpv-libs..."
+      dnf install -y --nogpgcheck "https://download1.rpmfusion.org/free/el/rpmfusion-free-release-${el_ver}.noarch.rpm" 2>/dev/null || \
+      dnf install -y --nogpgcheck "https://download1.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm" 2>/dev/null || true
+    fi
+    dnf install -y gtk3 xz-libs libstdc++ curl mpv-libs 2>/dev/null || \
     dnf install -y gtk3 xz-libs libstdc++ curl 2>/dev/null || true
   fi
 elif [[ "$IS_DEB" = true ]]; then
@@ -73,6 +80,8 @@ elif [[ "$IS_DEB" = true ]]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
     apt-get install -y --no-install-recommends libgtk-3-0 libblkid1 liblzma5 curl 2>/dev/null || true
+    apt-get install -y --no-install-recommends libmpv2 2>/dev/null || \
+    apt-get install -y --no-install-recommends libmpv1 2>/dev/null || true
   fi
 fi
 
@@ -97,7 +106,7 @@ if [[ "$IS_RPM" = true ]]; then
   fi
 
   if [[ -z "$DOWNLOAD_URL" ]]; then
-    LATEST_TAG="v1.2.5"
+    LATEST_TAG="v1.2.51"
     DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_TAG}/${RPM_ASSET_NAME}"
   fi
 
@@ -110,14 +119,14 @@ elif [[ "$IS_DEB" = true ]]; then
   fi
 
   if [[ -z "$DOWNLOAD_URL" ]]; then
-    LATEST_TAG="v1.2.5"
+    LATEST_TAG="v1.2.51"
     DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_TAG}/${DEB_ASSET_NAME}"
   fi
 
   PKG_TMP="$INSTALL_WORK_DIR/${DEB_ASSET_NAME}"
 fi
 
-echo "--> Latest Release  : ${LATEST_TAG:-v1.2.5}"
+echo "--> Latest Release  : ${LATEST_TAG:-v1.2.51}"
 echo "--> Downloading package from: $DOWNLOAD_URL"
 curl -fSL --progress-bar "$DOWNLOAD_URL" -o "$PKG_TMP"
 

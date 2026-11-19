@@ -90,6 +90,7 @@ License:        Proprietary
 URL:            https://github.com/CCS-NIMHANS/CCS_EEGStudio
 BuildArch:      x86_64
 Requires:       gtk3, glibc, libstdc++, xz-libs
+Recommends:     mpv-libs
 AutoReqProv:    no
 
 %description
@@ -124,6 +125,13 @@ if [ -f "%{_sourcedir}/ccseegstudio.png" ]; then
 fi
 
 %post -p /bin/bash
+# 0. libmpv compatibility symlink for media_kit across EL9 / RPMFusion builds
+for dir in /usr/lib64 /usr/lib; do
+  if [ ! -e "\$dir/libmpv.so.1" ] && [ -e "\$dir/libmpv.so.2" ]; then
+    ln -sf libmpv.so.2 "\$dir/libmpv.so.1" || true
+  fi
+done
+
 # 1. Update desktop database and icon caches
 if which update-desktop-database >/dev/null 2>&1; then
   update-desktop-database /usr/share/applications 2>/dev/null || true
@@ -163,6 +171,11 @@ fi
 
 %postun -p /bin/bash
 if [ "\$1" -eq 0 ]; then
+  for dir in /usr/lib64 /usr/lib; do
+    if [ -L "\$dir/libmpv.so.1" ] && [ "\$(readlink "\$dir/libmpv.so.1")" = "libmpv.so.2" ]; then
+      rm -f "\$dir/libmpv.so.1" || true
+    fi
+  done
   rm -f /etc/skel/Desktop/ccseegstudio.desktop
   if which update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications 2>/dev/null || true

@@ -966,6 +966,75 @@ fn groups_for_onsets(
     }
 }
 
+fn median_val(vals: &mut [f64]) -> f64 {
+    if vals.is_empty() {
+        return 0.0;
+    }
+    vals.sort_by(|a, b| a.total_cmp(b));
+    let m = vals.len();
+    if m % 2 == 0 {
+        0.5 * (vals[m / 2 - 1] + vals[m / 2])
+    } else {
+        vals[m / 2]
+    }
+}
+
+fn savgol5_smooth(vals: &[f64]) -> Vec<f64> {
+    let n = vals.len();
+    if n < 5 {
+        return vals.to_vec();
+    }
+    let mut out = vals.to_vec();
+    for i in 2..(n - 2) {
+        out[i] = (-3.0 * vals[i - 2]
+            + 12.0 * vals[i - 1]
+            + 17.0 * vals[i]
+            + 12.0 * vals[i + 1]
+            - 3.0 * vals[i + 2])
+            / 35.0;
+    }
+    out
+}
+
+fn integrate_psd_trapezoid(freqs: &[f64], psd: &[f64], lo: f64, hi: f64) -> f64 {
+    let pts: Vec<(f64, f64)> = freqs
+        .iter()
+        .copied()
+        .zip(psd.iter().copied())
+        .filter(|&(f, _)| f >= lo && f <= hi)
+        .collect();
+    if pts.len() < 2 {
+        return 0.0;
+    }
+    let mut area = 0.0;
+    for w in pts.windows(2) {
+        let df = w[1].0 - w[0].0;
+        area += 0.5 * (w[0].1 + w[1].1) * df;
+    }
+    area
+}
+
+fn sliding_median_filter(x: &[f64], win_odd: usize) -> Vec<f64> {
+    let n = x.len();
+    if n == 0 || win_odd <= 1 {
+        return x.to_vec();
+    }
+    let half = win_odd / 2;
+    let mut out = Vec::with_capacity(n);
+    let mut buf = Vec::with_capacity(win_odd);
+    for i in 0..n {
+        buf.clear();
+        let a = i.saturating_sub(half);
+        let b = (i + half + 1).min(n);
+        buf.extend_from_slice(&x[a..b]);
+        out.push(median_val(&mut buf));
+    }
+    out
+}
+
+/// Computes IAF (restingIAF Savitzky-Golay + 1/f background PAF/CoG),
+/// Klimesch individual theta/alpha relative PSD, and Cohen (2014) 10-order
+/// median-filtered plateau-bandpass frequency sliding.
 fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f64) {
     use rustfft::{num_complex::Complex, FftPlanner};
     let n = signal.len();
@@ -973,45 +1042,58 @@ fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f
         return (10.0, 0.0, 0.0, 6.0, 10.0);
     }
 
-    let nfft = n.next_power_of_two().max(256);
-    let mut planner = FftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(nfft);
-    let ifft = planner.plan_fft_inverse(nfft);
-
-    let mean = signal.iter().sum::<f64>() / n as f64;
-    let mut buf: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); nfft];
-    for (i, &v) in signal.iter().enumerate() {
-        let w = 0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / (n - 1).max(1) as f64).cos());
-        buf[i] = Complex::new((v - mean) * w, 0.0);
+    // 1. Compute Welch PSD on the exact same density scale as *_PSD
+    let target_seg = ((2.0 * rate).round() as usize).clamp(32, n);
+    let (mut freqs, mut psd) = features::welch_psd_nperseg(signal, rate, target_seg, false);
+    if freqs.len() < 8 {
+        let nfft = n.next_power_of_two().max(((2.0 * rate).round() as usize).next_power_of_two());
+        let mut planner = FftPlanner::<f64>::new();
+        let fft = planner.plan_fft_forward(nfft);
+        let mean = signal.iter().sum::<f64>() / n as f64;
+        let mut buf: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); nfft];
+        let mut win_e = 0.0;
+        for (i, &v) in signal.iter().enumerate() {
+            let w = 0.54 - 0.46 * (2.0 * std::f64::consts::PI * i as f64 / (n - 1).max(1) as f64).cos();
+            win_e += w * w;
+            buf[i] = Complex::new((v - mean) * w, 0.0);
+        }
+        fft.process(&mut buf);
+        let df = rate / nfft as f64;
+        let bins = nfft / 2 + 1;
+        freqs = (0..bins).map(|k| k as f64 * df).collect();
+        psd = (0..bins)
+            .map(|k| {
+                let scale = if k != 0 && (nfft % 2 != 0 || k != nfft / 2) { 2.0 } else { 1.0 };
+                (buf[k].norm_sqr() * scale / (rate * win_e).max(1e-12)).max(1e-20)
+            })
+            .collect();
     }
-    fft.process(&mut buf);
 
-    let df = rate / nfft as f64;
-    let max_bin = ((45.0 / df).floor() as usize).min(nfft / 2);
-    let mut freqs = Vec::new();
-    let mut psd = Vec::new();
-    let norm = rate * n as f64 * 0.375; // Hann window power normalization
-    for k in 1..=max_bin {
-        let f = k as f64 * df;
-        let p = (buf[k].norm_sqr() * 2.0 / norm.max(1e-12)).max(1e-20);
-        freqs.push(f);
-        psd.push(p);
-    }
-
-    // 1/f log-log background fit outside 7..14 Hz for robust IAF peak/CoG
-    let mut sx = 0.0;
-    let mut sy = 0.0;
-    let mut sxx = 0.0;
-    let mut sxy = 0.0;
-    let mut cnt = 0.0;
+    // Limit fit & integration range to [1..45 Hz] matching PSD conventions
+    let mut fit_freqs = Vec::new();
+    let mut fit_psd = Vec::new();
     for (&f, &p) in freqs.iter().zip(&psd) {
-        if f >= 1.5 && (f < 7.0 || f > 14.0) {
+        if (0.5..=45.0).contains(&f) {
+            fit_freqs.push(f);
+            fit_psd.push(p.max(1e-20));
+        }
+    }
+    if fit_freqs.len() < 5 {
+        return (10.0, 0.0, 0.0, 6.0, 10.0);
+    }
+
+    // 2. restingIAF-style 5-pt cubic Savitzky-Golay smooth on log(PSD) + 1/f background fit
+    let log_psd: Vec<f64> = fit_psd.iter().map(|p| p.ln()).collect();
+    let smooth_log = savgol5_smooth(&log_psd);
+
+    let (mut sx, mut sy, mut sxx, mut sxy, mut cnt) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for (&f, &lp) in fit_freqs.iter().zip(&smooth_log) {
+        if f >= 1.5 && (f <= 6.5 || (f >= 14.5 && f <= 40.0)) {
             let lx = f.ln();
-            let ly = p.ln();
             sx += lx;
-            sy += ly;
+            sy += lp;
             sxx += lx * lx;
-            sxy += lx * ly;
+            sxy += lx * lp;
             cnt += 1.0;
         }
     }
@@ -1019,67 +1101,132 @@ fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f
     let slope = if cnt >= 4.0 { (cnt * sxy - sx * sy) / denom } else { 0.0 };
     let intercept = if cnt >= 4.0 { (sy - slope * sx) / cnt } else { 0.0 };
 
+    let alpha_idx: Vec<usize> = fit_freqs
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &f)| (7.0..=14.0).contains(&f).then_some(idx))
+        .collect();
+    let mut res_vals: Vec<(usize, f64)> = Vec::with_capacity(alpha_idx.len());
+    let mut best_pos = None;
+    let mut best_res = f64::NEG_INFINITY;
     let mut weighted_f = 0.0;
     let mut weight_sum = 0.0;
-    let mut best_f = 10.0;
-    let mut best_res = f64::NEG_INFINITY;
-    for (&f, &p) in freqs.iter().zip(&psd) {
-        if (7.0..=14.0).contains(&f) {
-            let res = (p.ln() - (intercept + slope * f.ln())).max(0.0);
-            if res > best_res {
-                best_res = res;
-                best_f = f;
-            }
-            weighted_f += f * res;
-            weight_sum += res;
+    for &idx in &alpha_idx {
+        let f = fit_freqs[idx];
+        let res = (smooth_log[idx] - (intercept + slope * f.ln())).max(0.0);
+        res_vals.push((idx, res));
+        if res > best_res {
+            best_res = res;
+            best_pos = Some(idx);
         }
+        weighted_f += f * res;
+        weight_sum += res;
     }
-    let iaf = if weight_sum > 1e-6 {
-        (0.5 * best_f + 0.5 * (weighted_f / weight_sum)).clamp(7.0, 14.0)
-    } else {
-        best_f.clamp(7.0, 14.0)
-    };
 
+    // Parabolic Peak Alpha Frequency (PAF) if periodic bump is significant, else CoG
+    let paf_cog = if best_res > 0.15 {
+        if let Some(pidx) = best_pos {
+            let mut f_peak = fit_freqs[pidx];
+            if pidx > 0 && pidx + 1 < fit_freqs.len() && fit_freqs[pidx] > 7.2 && fit_freqs[pidx] < 13.8 {
+                let y_l = (smooth_log[pidx - 1] - (intercept + slope * fit_freqs[pidx - 1].ln())).max(0.0);
+                let y_c = best_res;
+                let y_r = (smooth_log[pidx + 1] - (intercept + slope * fit_freqs[pidx + 1].ln())).max(0.0);
+                let den = 2.0 * (y_l - 2.0 * y_c + y_r);
+                if den.abs() > 1e-12 && den < 0.0 {
+                    let delta = ((y_l - y_r) / den).clamp(-0.5, 0.5);
+                    let df = fit_freqs[pidx + 1] - fit_freqs[pidx];
+                    f_peak += delta * df;
+                }
+            }
+            f_peak
+        } else {
+            10.0
+        }
+    } else if weight_sum > 1e-6 {
+        weighted_f / weight_sum
+    } else {
+        10.0
+    };
+    let iaf = paf_cog.clamp(7.0, 14.0);
+
+    // 3. Klimesch (1999) individual bands on matching relative PSD scale [1..40 Hz]
     let alpha_lo = (iaf - 2.0).max(6.0);
     let alpha_hi = (iaf + 2.0).min(16.0);
     let theta_lo = (iaf - 6.0).max(2.0);
     let theta_hi = alpha_lo.max(theta_lo + 1.0);
 
-    let band_sum = |lo: f64, hi: f64| -> f64 {
-        freqs
-            .iter()
-            .zip(&psd)
-            .filter(|&(&f, _)| f >= lo && f <= hi)
-            .map(|(_, &p)| p * df)
-            .sum()
+    let total_1_40 = integrate_psd_trapezoid(&fit_freqs, &fit_psd, 1.0, 40.0);
+    let (ind_theta_psd, ind_alpha_psd) = if total_1_40 > 0.0 {
+        (
+            integrate_psd_trapezoid(&fit_freqs, &fit_psd, theta_lo, theta_hi) / total_1_40,
+            integrate_psd_trapezoid(&fit_freqs, &fit_psd, alpha_lo, alpha_hi) / total_1_40,
+        )
+    } else {
+        (0.0, 0.0)
     };
-    let ind_theta_psd = band_sum(theta_lo, theta_hi);
-    let ind_alpha_psd = band_sum(alpha_lo, alpha_hi);
 
-    // Frequency sliding (Cohen 2014): Hilbert analytic phase derivative inside band
+    // 4. Cohen (2014) Frequency Sliding: reflection-padded raised-cosine plateau bandpass
+    //    + Hilbert analytic phase derivative + 10-order temporal median filter (50..400 ms)
+    let pad = n.min((2.0 * rate).round() as usize);
+    let padded_len = n + 2 * pad;
+    let nfft = padded_len.next_power_of_two().max(256);
+    let mean_sig = signal.iter().sum::<f64>() / n as f64;
+    let mut padded = Vec::with_capacity(padded_len);
+    for k in (1..=pad).rev() {
+        let src = k.min(n - 1);
+        padded.push(signal[src] - mean_sig);
+    }
+    for &v in signal {
+        padded.push(v - mean_sig);
+    }
+    for k in 0..pad {
+        let src = n.saturating_sub(2 + k.min(n.saturating_sub(2)));
+        padded.push(signal[src] - mean_sig);
+    }
+
+    let mut planner = FftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(nfft);
+    let ifft = planner.plan_fft_inverse(nfft);
     let mut raw_buf: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); nfft];
-    for (i, &v) in signal.iter().enumerate() {
-        raw_buf[i] = Complex::new(v - mean, 0.0);
+    for (i, &v) in padded.iter().enumerate() {
+        raw_buf[i] = Complex::new(v, 0.0);
     }
     fft.process(&mut raw_buf);
+    let df_fft = rate / nfft as f64;
 
     let freq_slide = |lo: f64, hi: f64, fallback: f64| -> f64 {
-        let mut analytic = vec![Complex::new(0.0, 0.0); nfft];
-        for k in 1..(nfft / 2) {
-            let f = k as f64 * df;
-            if f >= lo && f <= hi {
-                analytic[k] = raw_buf[k] * 2.0 / nfft as f64;
-            }
-        }
-        ifft.process(&mut analytic);
         if n < 8 {
             return fallback;
         }
-        let mut inst = Vec::with_capacity(n - 1);
+        let trans = (0.15 * (hi - lo)).max(0.75);
+        let lo_edge = (lo - trans).max(0.2);
+        let hi_edge = (hi + trans).min(rate * 0.48);
+
+        let mut analytic = vec![Complex::new(0.0, 0.0); nfft];
+        for k in 1..(nfft / 2) {
+            let f = k as f64 * df_fft;
+            let gain = if f >= lo && f <= hi {
+                1.0
+            } else if f >= lo_edge && f < lo {
+                0.5 * (1.0 - (std::f64::consts::PI * (f - lo_edge) / (lo - lo_edge).max(1e-6)).cos())
+            } else if f > hi && f <= hi_edge {
+                0.5 * (1.0 + (std::f64::consts::PI * (f - hi) / (hi_edge - hi).max(1e-6)).cos())
+            } else {
+                0.0
+            };
+            if gain > 0.0 {
+                analytic[k] = raw_buf[k] * (2.0 * gain / nfft as f64);
+            }
+        }
+        ifft.process(&mut analytic);
+
         let two_pi = 2.0 * std::f64::consts::PI;
+        let mut f_inst = Vec::with_capacity(n - 1);
         for i in 1..n {
-            let p0 = analytic[i - 1].im.atan2(analytic[i - 1].re);
-            let p1 = analytic[i].im.atan2(analytic[i].re);
+            let z0 = analytic[pad + i - 1];
+            let z1 = analytic[pad + i];
+            let p0 = z0.im.atan2(z0.re);
+            let p1 = z1.im.atan2(z1.re);
             let mut dphi = p1 - p0;
             while dphi > std::f64::consts::PI {
                 dphi -= two_pi;
@@ -1087,16 +1234,42 @@ fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f
             while dphi < -std::f64::consts::PI {
                 dphi += two_pi;
             }
-            let f_inst = rate * dphi / two_pi;
-            if f_inst.is_finite() && f_inst >= lo * 0.5 && f_inst <= hi * 1.5 {
-                inst.push(f_inst);
-            }
+            let fi = rate * dphi / two_pi;
+            f_inst.push(if fi.is_finite() { fi } else { fallback });
         }
-        if inst.is_empty() {
+        if f_inst.is_empty() {
             return fallback;
         }
-        inst.sort_by(|a, b| a.total_cmp(b));
-        inst[inst.len() / 2]
+
+        // Cohen (2014) 10-order median filter: 10 windows from 50 ms to 400 ms
+        let max_win = ((f_inst.len() / 2) | 1).max(3);
+        let orders: Vec<Vec<f64>> = (0..10)
+            .map(|o| {
+                let w_sec = 0.050 + (0.350 * o as f64) / 9.0;
+                let w_odd = ((w_sec * rate).round() as usize | 1).clamp(3, max_win);
+                sliding_median_filter(&f_inst, w_odd)
+            })
+            .collect();
+
+        let trim = (f_inst.len() / 10).min((0.1 * rate).round() as usize);
+        let a = trim.min(f_inst.len().saturating_sub(1));
+        let b = f_inst.len().saturating_sub(trim).max(a + 1);
+        let mut cleaned = Vec::with_capacity(b - a);
+        let mut col = [0.0_f64; 10];
+        for t in a..b {
+            for o in 0..10 {
+                col[o] = orders[o][t];
+            }
+            let val = median_val(&mut col);
+            if val.is_finite() && val >= lo * 0.5 && val <= hi * 1.5 {
+                cleaned.push(val);
+            }
+        }
+        if cleaned.is_empty() {
+            fallback
+        } else {
+            median_val(&mut cleaned)
+        }
     };
 
     let theta_fs = freq_slide(theta_lo, theta_hi, (theta_lo + theta_hi) * 0.5);
@@ -2067,5 +2240,41 @@ mod saved_epoch_overlap_regression {
             vec![0, 250, 500]
         );
         assert!(super::analysis_offsets(750, 250, None, 2.0, 250.0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod iaf_sliding_tests {
+    #[test]
+    fn iaf_and_frequency_sliding_recover_synthetic_oscillations_and_reject_phase_slips() {
+        let rate = 250.0;
+        let n = 8 * 250;
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let sig: Vec<f64> = (0..n)
+            .map(|i| {
+                let t = i as f64 / rate;
+                20.0 * (two_pi * 10.5 * t).sin() + 6.0 * (two_pi * 5.8 * t).sin()
+            })
+            .collect();
+        let (iaf, ind_theta, ind_alpha, theta_fs, alpha_fs) =
+            super::iaf_and_sliding_features(&sig, rate);
+        assert!((iaf - 10.5).abs() < 0.35, "expected IAF ~10.5 Hz, got {iaf}");
+        assert!((alpha_fs - 10.5).abs() < 0.25, "expected Alpha_FreqSliding ~10.5 Hz, got {alpha_fs}");
+        assert!((theta_fs - 5.8).abs() < 0.30, "expected Theta_FreqSliding ~5.8 Hz, got {theta_fs}");
+        assert!(ind_alpha > ind_theta, "expected ind_alpha ({ind_alpha}) > ind_theta ({ind_theta})");
+
+        // Inject 3 abrupt phase-slip spikes into a 9.5 Hz oscillation and verify Cohen 10-order median robustness
+        let mut spiky: Vec<f64> = (0..n)
+            .map(|i| 18.0 * (two_pi * 9.5 * (i as f64 / rate)).sin())
+            .collect();
+        for &idx in &[400_usize, 950, 1450] {
+            spiky[idx] += 150.0;
+            spiky[idx + 1] -= 150.0;
+        }
+        let (_, _, _, _, alpha_spiky) = super::iaf_and_sliding_features(&spiky, rate);
+        assert!(
+            (alpha_spiky - 9.5).abs() < 0.35,
+            "10-order median filter failed to reject phase-slip spikes: {alpha_spiky}"
+        );
     }
 }

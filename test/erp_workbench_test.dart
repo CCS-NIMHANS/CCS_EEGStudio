@@ -92,7 +92,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Waveforms'), findsOneWidget);
+    expect(find.text('ERP & Topo'), findsOneWidget);
     expect(tester.takeException(), isNull);
     final boundary =
         key.currentContext!.findRenderObject() as RenderRepaintBoundary;
@@ -139,11 +139,10 @@ void main() {
     );
     await tester.pumpAndSettle();
     for (final tab in [
-      'Models',
-      'Decoding',
-      'Group / topography',
-      'Measurements',
-      'Quality',
+      'ERPimage',
+      'ERSP & ITC',
+      'rERP & ML',
+      'Measurements & Export',
     ]) {
       await tester.tap(find.text(tab));
       await tester.pumpAndSettle();

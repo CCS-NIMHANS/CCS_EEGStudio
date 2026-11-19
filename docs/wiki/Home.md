@@ -45,7 +45,14 @@ flowchart LR
 ## Additional Technical References
 
 - [Method Validation & References](../methods_and_validation.md)
+- [Release & CI Preflight SOP](../RELEASE_SOP.md)
 - [ERP Workbench Guide](../erp_workbench.md)
 - [Microstate Syntax Reference](../microstate_syntax.md)
 - [Source & Information Graph Connectivity](../source_information_graph.md)
 - [Multi-User Linux Server Controls](../server_and_plot_controls.md)
+
+---
+
+## Method References Overview
+
+All signal processing, spectral/fractal parameterization, functional connectivity, microstates, ERP/e-TFCE, 3-shell XPIKAN source modeling, and mTRF speech-tracking algorithms cite peer-reviewed publications and open reference implementations in each guide below and in the [Method References Table](../../README.md#-method-references).

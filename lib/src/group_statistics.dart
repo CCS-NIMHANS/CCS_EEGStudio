@@ -1230,13 +1230,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       DropdownMenuItem(
                         value: 'auto',
                         child: Text(
-                          'Auto (SOTA: LMM for repeated, GLM for single)',
+                          'Auto (Mixed-Design ANOVA/LMM for repeated, GLM for single)',
                         ),
                       ),
                       DropdownMenuItem(
                         value: 'lmm',
                         child: Text(
-                          'Linear Mixed Model (LMM - Random Intercepts)',
+                          'Mixed-Design ANOVA / LMM (Subject Random Intercept)',
                         ),
                       ),
                       DropdownMenuItem(

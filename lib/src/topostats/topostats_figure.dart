@@ -367,8 +367,9 @@ class TopoFigure {
   // ───────────────────────────────────────────────────────────────────────
 
   /// Paints the whole figure at [ppi] pixels per inch onto [canvas]
-  /// (origin = figure top-left).
-  void paint(Canvas canvas, double ppi) {
+  /// (origin = figure top-left). When [cursorMinutes] is supplied, draws a
+  /// vertical time-locked cursor line across matching line plot panels.
+  void paint(Canvas canvas, double ppi, {double? cursorMinutes}) {
     final pt = ppi / 72.0;
     Rect px(Rect inches) => Rect.fromLTRB(
       inches.left * ppi,
@@ -393,13 +394,42 @@ class TopoFigure {
     );
 
     for (var i = 0; i < result.sessions.length; i++) {
-      _paintLineAxes(canvas, i, px(lineAxes[i]), pt);
+      final axPx = px(lineAxes[i]);
+      _paintLineAxes(canvas, i, axPx, pt);
+      final dur = result.sessions[i].durationMin;
+      if (cursorMinutes != null &&
+          dur > 0 &&
+          cursorMinutes >= 0 &&
+          cursorMinutes <= dur) {
+        final cx = axPx.left + (cursorMinutes / dur) * axPx.width;
+        canvas.drawLine(
+          Offset(cx, axPx.top),
+          Offset(cx, axPx.bottom),
+          Paint()
+            ..color = const Color(0xFFEF4444)
+            ..strokeWidth = 1.6 * pt,
+        );
+      }
     }
     if (stateDynamicsResult != null && stateStripAxes.isNotEmpty) {
       _paintStateDynamicsRow(canvas, ppi, pt, px);
     }
     _paintTopoRow(canvas, ppi, pt, px);
     _paintColorbar(canvas, px(colorbarAxes), pt);
+  }
+
+  /// Maps a figure-inch point inside any line plot axes back to EEG seconds.
+  double? lineAxisTimeSecondsAt(Offset pIn) {
+    for (var i = 0; i < lineAxes.length; i++) {
+      final ax = lineAxes[i];
+      if (ax.contains(pIn)) {
+        final dur = result.sessions[i].durationMin;
+        if (dur <= 0 || ax.width <= 0) return null;
+        final frac = ((pIn.dx - ax.left) / ax.width).clamp(0.0, 1.0);
+        return frac * dur * 60.0;
+      }
+    }
+    return null;
   }
 
   Path _polyline(List<Offset?> pts) {

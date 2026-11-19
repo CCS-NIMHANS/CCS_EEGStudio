@@ -23,9 +23,11 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.50</b> ·
+  <b>Current version: 1.2.51</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
+  <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
+  <a href="docs/RELEASE_SOP.md"><b>Release CI SOP</b></a> ·
   <a href="paper/paper.md"><b>JOSS Paper</b></a> ·
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/issues"><b>Report Issue</b></a>
 </p>
@@ -68,13 +70,13 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 
 ---
 
-## ✨ What's New in v1.2.49
+## ✨ What's New in v1.2.51
 
-- **Timestamp-Synced Video/Audio & Neural Speech Tracking:** Floating **Video / Audio** panel (`media_kit`) syncs multiple video or WAV audio files to EEG via metadata/filename timestamps, extracts audio waveforms & speech envelopes, and runs Rust **TRF encoding + backward stimulus-reconstruction decoding**.
-- **IAF, Frequency Sliding & XPIKAN Source Localization:** Added `IAF_Hz`, `IndTheta_PSD`, `IndAlpha_PSD`, `Alpha/Theta_FreqSliding_Hz`, and **XPIKAN** (*Extended Physics-Informed Kolmogorov–Arnold Network*) source localization.
-- **Reliability & Workflow Fixes:** Upgraded bad-channel detection + manual batch/single rejection table, fixed Windows preprocessing stage caching, added `Elapsed (s) | HH:MM:SS | Clock | Epoch` X-axis modes, interactive crop bad-segment marking, asymmetric EDF scaling (fixing DC-offset distortion), per-epoch microstate sequence CSVs, and publication parameter/methodology reports.
+- **Algorithmic Parity Audit & Upgrades:** Windowed PREP-style robust bad-channel detection on filtered EEG, Welch + Savitzky–Golay `restingIAF` / Klimesch bands + reflection-padded Cohen (2014) 10-order median-filtered frequency sliding, Crosse et al. (2016) mTRF Neural Speech Tracking with streaming Hilbert+power-law (`env^0.3`) envelope & circular-shift null testing, concentric 3-shell domain-decomposed radial B-spline × spherical harmonic **XPIKAN** forward/inverse solver (`r > 0.999` vs analytical Legendre series), and split-plot mixed-design ANOVA within-subject error partitioning.
+- **Synced Media Strip Alongside Features & Parameter Logs:** Live **Audio & Envelope** strip + cursor sync directly inside **Plots & Report (TopoStats)**, plus single-file & batch publication parameter logs (`analysis_parameters_log.md` + JSON).
+- **Linux Packaging & Pre-Release CI SOP:** Added `mpv-libs`/`libmpv` packaging parity, RPM/DEB symlinks, and [Pre-Release Preflight SOP](docs/RELEASE_SOP.md) (`scripts/preflight_release.sh`).
 
-See [CHANGELOG.md](CHANGELOG.md) for full release history.
+See [CHANGELOG.md](CHANGELOG.md) for full release history (v1.2.49 synced media, v1.2.50 batch localizer & stats plots, and earlier releases).
 
 ---
 
@@ -146,10 +148,8 @@ cargo build --release --manifest-path bridge/Cargo.toml
 flutter pub get
 flutter run -d macos   # or windows / linux
 
-# 3. Run automated tests
-cargo test --manifest-path bridge/Cargo.toml
-flutter analyze
-flutter test
+# 3. Run mandatory pre-release CI preflight (Rust --release --locked + Flutter tests)
+bash scripts/preflight_release.sh
 ```
 
 <details>
@@ -163,6 +163,38 @@ iscc windows\installer.iss                         # Windows (Inno Setup .exe)
 ```
 
 </details>
+
+---
+
+## 📚 Method References
+
+| Category | App Method | Paper or Original Reference | Studio Convention / Scope |
+| :--- | :--- | :--- | :--- |
+| **Preprocessing** | Bad channel detection (PREP-style) | Bigdely-Shamlo et al. (2015), [doi:10.3389/fninf.2015.00016](https://doi.org/10.3389/fninf.2015.00016) | 2 s windowed robust MAD, HF noise ratio, and windowed spatial correlation on filtered `f64` channels + manual table. |
+| **Preprocessing** | Spherical spline interpolation | Perrin et al. (1989), [doi:10.1016/0013-4694(89)90180-6](https://doi.org/10.1016/0013-4694(89)90180-6) | Legendre spherical spline matrix over 10–05 electrode geometry. |
+| **Preprocessing** | Infomax ICA / `runica` | Bell & Sejnowski (1995), [doi:10.1162/neco.1995.7.6.1129](https://doi.org/10.1162/neco.1995.7.6.1129); [EEGLAB](https://github.com/sccn/eeglab) | Native `runica`/`pop_runica` port; fixed seed; two-stage CCS component selection. |
+| **Preprocessing** | Picard | Ablin, Cardoso & Gramfort (2018), [doi:10.1109/TSP.2018.2844203](https://doi.org/10.1109/TSP.2018.2844203); [code](https://github.com/mind-inria/picard) | Native port of `python-picard` 0.8 (extended & orthogonal). |
+| **Preprocessing** | ICLabel | Pion-Tonachini et al. (2019), [doi:10.1016/j.neuroimage.2019.05.026](https://doi.org/10.1016/j.neuroimage.2019.05.026); [ICLabel](https://github.com/sccn/ICLabel) | Default network; dynamic class thresholds; recognized 10–05 scalp positions. |
+| **Preprocessing** | ASR | Mullen et al. (2015), [doi:10.1109/TBME.2015.2481482](https://doi.org/10.1109/TBME.2015.2481482); Chang et al. (2020), [doi:10.1109/TBME.2019.2930186](https://doi.org/10.1109/TBME.2019.2930186) | Native `clean_rawdata` calibration, reconstruction (`correct`) & window rejection (`reject`). |
+| **Preprocessing** | Riemannian ASR | Blum et al. (2019), [doi:10.3389/fnhum.2019.00141](https://doi.org/10.3389/fnhum.2019.00141) | EEGLAB Riemannian covariance port in 30 s Studio processing blocks. |
+| **Preprocessing** | BSS-CCA | De Clercq et al. (2006), [doi:10.1109/TBME.2006.879459](https://doi.org/10.1109/TBME.2006.879459) | Lagged-signal CCA muscle cleaning with configurable count or `rho` threshold. |
+| **Preprocessing** | iCanClean | Downey & Ferris (2022), [arXiv:2201.11798](https://arxiv.org/abs/2201.11798) | Sliding CCA with pseudo-reference formed by 4th-order zero-phase Butterworth band-stop. |
+| **Preprocessing** | wICA | Gabard-Durnam et al. (2018), [doi:10.3389/fnins.2018.00097](https://doi.org/10.3389/fnins.2018.00097); [HAPPE](https://github.com/lcnhappe/happe) | Extended `runica`, `coif5` SWT, `ddencmp` soft threshold; default 5 levels. |
+| **Preprocessing** | GEDAI | Congedo et al. (2024), [GEDAI code](https://github.com/Marco-Congedo/Gedai); [tutorial](https://neuroimage.usc.edu/brainstorm/Tutorials/Gedai) | MODWT MRA + 10–05 leadfield covariance; warns explicitly on identity fallback. |
+| **Spectral & IAF** | Welch & Multitaper PSD | Welch (1967), [doi:10.1109/TAU.1967.1161901](https://doi.org/10.1109/TAU.1967.1161901); Thomson (1982), [doi:10.1109/PROC.1982.12433](https://doi.org/10.1109/PROC.1982.12433) | 1–40 Hz density integration; DPSS adaptive multitaper (`NW = 3`). |
+| **Spectral & IAF** | Individual Alpha Frequency (`IAF_Hz`, Individual Bands) | Klimesch (1999), [doi:10.1016/S0165-0173(98)00056-3](https://doi.org/10.1016/S0165-0173(98)00056-3); Corcoran et al. (2018), [doi:10.1111/psyp.13064](https://doi.org/10.1111/psyp.13064) | Savitzky–Golay smoothed Welch PSD + 1/f subtraction (`PAF`/`CoG`); Klimesch `[IAF-6, IAF-2]` & `[IAF-2, IAF+2]` relative power. |
+| **Spectral & IAF** | Frequency Sliding (`*_FreqSliding_Hz`) | Cohen (2014), [doi:10.1523/JNEUROSCI.2619-14.2014](https://doi.org/10.1523/JNEUROSCI.2619-14.2014) | Reflection-padded plateau bandpass + Hilbert phase derivative + 10-order (50–400 ms) median filter. |
+| **Spectral & IAF** | FOOOF / `specparam` | Donoghue et al. (2020), [doi:10.1038/s41593-020-00744-x](https://doi.org/10.1038/s41593-020-00744-x) | Native 1–40 Hz aperiodic/periodic Gaussian peak parameterization. |
+| **Spectral & IAF** | IRASA | Wen & Liu (2016), [doi:10.1007/s10548-015-0448-0](https://doi.org/10.1007/s10548-015-0448-0) | Polyphase fractional resampling (`h` factors) separating 1/f fractal and oscillatory spectra. |
+| **Temporal & Complexity** | DFA & fE:I | Hardstone et al. (2012), [doi:10.3389/fphys.2012.00450](https://doi.org/10.3389/fphys.2012.00450); Bruining et al. (2020), [doi:10.1038/s41598-020-65500-4](https://doi.org/10.1038/s41598-020-65500-4) | Band-limited Hilbert envelope DFA exponent & excitation–inhibition ratio (`fE:I`). |
+| **Temporal & Complexity** | ACW & Nonlinear Complexity | Golesorkhi et al. (2021), [doi:10.1038/s42003-021-02483-6](https://doi.org/10.1038/s42003-021-02483-6); Higuchi (1988); Richman & Moorman (2000); Bandt & Pompe (2002); Lempel & Ziv (1976) | ACW-50/0, Higuchi FD, Petrosian FD, Sample Entropy, Permutation Entropy, and LZC. |
+| **Connectivity** | iCOH, PLV, ciPLV, PLI, wPLI, MIC/MIM, GC/GC-TR | Nolte et al. (2004); Lachaux et al. (1999); Bruña et al. (2018); Stam et al. (2007); Vinck et al. (2011); Ewald et al. (2012); Winkler et al. (2016) | 4–40 Hz Morlet & multitaper connectivity + time-reversed Granger contrast (`GC − GC-TR`). |
+| **State Dynamics** | EEG Microstates & Syntax | Lehmann et al. (1987); Pascual-Marqui et al. (1995); Koenig et al. (2002); Michel & Koenig (2018), [doi:10.1016/j.neuroimage.2017.11.062](https://doi.org/10.1016/j.neuroimage.2017.11.062); von Wegner et al. (2017) | Modified k-means, GFP peaks, Microsynt Markov entropy/complexity & per-epoch sequence CSVs. |
+| **ERP & Stats** | ERP, ERSP/ITC, rERP & e-TFCE / FDR | Luck (2014); Delorme & Makeig (2004); Ehinger & Dimigen (2019), [doi:10.7717/peerj.7838](https://doi.org/10.7717/peerj.7838); Mensen & Khatami (2013), [doi:10.1016/j.neuroimage.2012.10.027](https://doi.org/10.1016/j.neuroimage.2012.10.027); Benjamini & Hochberg (1995) | Morlet ERSP/ITC, GLM overlap deconvolution (`rERP`), e-TFCE, and split-plot Mixed-Design ANOVA / Permutation. |
+| **Source Space** | MNE, dSPM, sLORETA, LCMV & XPIKAN | Hämäläinen & Ilmoniemi (1994); Dale et al. (2000); Pascual-Marqui (2002); Van Veen et al. (1997); Liu et al. (2024), [arXiv:2404.19756](https://arxiv.org/abs/2404.19756); Fokas, Aghaei & Hashemzadeh (2026), [XPIKAN](https://github.com/alirezaafzalaghaei/xpikan-forward-eeg) | 68 Desikan–Killiany ROIs (`fsaverage`); 3-shell domain-decomposed cubic B-spline × spherical harmonic XPIKAN solver + scalp Neumann prior. |
+| **Audio & Speech** | Neural Speech Tracking (mTRF) | Ding & Simon (2012), [doi:10.1073/pnas.1205381109](https://doi.org/10.1073/pnas.1205381109); Crosse et al. (2016), [doi:10.3389/fnhum.2016.00604](https://doi.org/10.3389/fnhum.2016.00604); Biesmans et al. (2017), [doi:10.1109/TNSRE.2016.2571900](https://doi.org/10.1109/TNSRE.2016.2571900) | Streamed Hilbert + `env^0.3` loudness envelope, `1–15 Hz` anti-aliased EEG, Tikhonov smoothness `M` + CV, circular-shift permutation null (`N=200`). |
+
+See [Method Validation, Parity & Limitations](docs/methods_and_validation.md) for exact mathematical conventions, fixture comparisons, and known scope limits.
 
 ---
 

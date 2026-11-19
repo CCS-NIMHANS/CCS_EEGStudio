@@ -263,6 +263,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                     child: DropdownButtonFormField<String>(
                       value: _selectedChannel,
                       isDense: true,
+                      isExpanded: true,
                       decoration: const InputDecoration(
                         labelText: 'Channel / ROI',
                         isDense: true,
@@ -271,10 +272,16 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                         if (widget.roiLabels.isNotEmpty)
                           DropdownMenuItem(
                             value: 'ROI',
-                            child: Text('ROI (${widget.roiLabels.join(",")})'),
+                            child: Text(
+                              'ROI (${widget.roiLabels.join(",")})',
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                         for (final ch in widget.labels)
-                          DropdownMenuItem(value: ch, child: Text(ch)),
+                          DropdownMenuItem(
+                            value: ch,
+                            child: Text(ch, overflow: TextOverflow.ellipsis),
+                          ),
                       ],
                       onChanged: (v) {
                         if (v != null) {

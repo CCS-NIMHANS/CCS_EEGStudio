@@ -487,7 +487,7 @@ class ErpGroupStatsEngine {
       metricResults.add({
         'metric': metric,
         'model_type': useLmm
-            ? '${activeFactors.length}-Factor Permutation LMM (Random Subject Intercept, $effectivePerms perms)'
+            ? '${activeFactors.length}-Factor Mixed-Design ANOVA / LMM (Subject Random Intercept + Exchangeable Perm, $effectivePerms perms)'
             : '${activeFactors.length}-Factor Permutation GLM / ANOVA ($effectivePerms perms)',
         'factors': activeFactors,
         'factor_levels': factorLevels,
@@ -550,35 +550,52 @@ class ErpGroupStatsEngine {
     final dfWithin = math.max(1, n - fullCells.length).toDouble();
     final msWithin = ssWithin / dfWithin;
 
-    // Subject random intercept error term for between-subject factors
+    // Subject random intercept error term for mixed-design split-plot F-tests
     var msBetweenErr = msWithin;
     var dfBetweenErr = dfWithin;
+    var ssBetweenErr = ssWithin;
+    var msWithinErr = msWithin;
+    var dfWithinErr = dfWithin;
+    var ssWithinErr = ssWithin;
     if (useLmm) {
       final betweenFactors =
           factors.where((f) => isBetweenFactor[f] == true).toList();
-      final subjMeans = <String, List<double>>{};
+      final subjObs = <String, List<double>>{};
       final subjCellKey = <String, String>{};
       for (final o in obs) {
-        subjMeans.putIfAbsent(o.subject, () => []).add(o.y);
+        subjObs.putIfAbsent(o.subject, () => []).add(o.y);
         subjCellKey[o.subject] =
             betweenFactors.map((f) => o.levels[f]!).join('\u0000');
       }
-      final cellSubjMeans = <String, List<double>>{};
-      for (final e in subjMeans.entries) {
-        final m = e.value.reduce((a, b) => a + b) / e.value.length;
-        cellSubjMeans.putIfAbsent(subjCellKey[e.key]!, () => []).add(m);
+      final cellSum = <String, double>{};
+      final cellCnt = <String, int>{};
+      final cellSubjSet = <String, Set<String>>{};
+      for (final o in obs) {
+        final ck = subjCellKey[o.subject]!;
+        cellSum[ck] = (cellSum[ck] ?? 0.0) + o.y;
+        cellCnt[ck] = (cellCnt[ck] ?? 0) + 1;
+        cellSubjSet.putIfAbsent(ck, () => <String>{}).add(o.subject);
       }
       var ssSubj = 0.0;
-      for (final e in subjMeans.entries) {
+      for (final e in subjObs.entries) {
         final mSubj = e.value.reduce((a, b) => a + b) / e.value.length;
-        final cList = cellSubjMeans[subjCellKey[e.key]!]!;
-        final cMean = cList.reduce((a, b) => a + b) / cList.length;
+        final ck = subjCellKey[e.key]!;
+        final cMean = cellSum[ck]! / math.max(1, cellCnt[ck]!);
         ssSubj += e.value.length * (mSubj - cMean) * (mSubj - cMean);
       }
-      final dfS = math.max(1, subjMeans.length - cellSubjMeans.length)
-          .toDouble();
+      final dfS = math.max(1, subjObs.length - cellSubjSet.length).toDouble();
+      // Partition within-cell residual SS into between-subject intercept variance
+      // (SS_subj) and within-subject residual error (SS_within - SS_subj).
+      ssBetweenErr = math.max(ssSubj, ssWithin > ssSubj ? ssSubj : ssWithin);
       msBetweenErr = math.max(msWithin, ssSubj / dfS);
       dfBetweenErr = dfS;
+      if (dfWithin > dfS && ssWithin >= ssSubj) {
+        ssWithinErr = math.max(0.0, ssWithin - ssSubj);
+        dfWithinErr = math.max(1.0, dfWithin - dfS);
+        msWithinErr = ssWithinErr / dfWithinErr;
+        ssBetweenErr = ssSubj;
+        msBetweenErr = ssSubj / dfS;
+      }
     }
 
     final ssByTerm = <String, double>{};
@@ -624,14 +641,21 @@ class ErpGroupStatsEngine {
       final isPureBetween = term.factors.every(
         (f) => isBetweenFactor[f] == true,
       );
-      final msErr = (useLmm && isPureBetween) ? msBetweenErr : msWithin;
-      final dfDen = (useLmm && isPureBetween) ? dfBetweenErr : dfWithin;
+      final msErr = (useLmm && isPureBetween)
+          ? msBetweenErr
+          : (useLmm ? msWithinErr : msWithin);
+      final dfDen = (useLmm && isPureBetween)
+          ? dfBetweenErr
+          : (useLmm ? dfWithinErr : dfWithin);
+      final ssErr = (useLmm && isPureBetween)
+          ? ssBetweenErr
+          : (useLmm ? ssWithinErr : ssWithin);
       final msTerm = ssTerm / dfNum;
-      final fStat = msErr > 1e-15 ? msTerm / msErr : 0.0;
-      final pVal = StatMath.fDistributionPValue(fStat, dfNum, dfDen);
-      final etaSq = (ssTerm + ssWithin) > 0
-          ? ssTerm / (ssTerm + ssWithin)
+      final fStat = msTerm > 1e-18
+          ? msTerm / math.max(msErr, 1e-12)
           : 0.0;
+      final pVal = StatMath.fDistributionPValue(fStat, dfNum, dfDen);
+      final etaSq = (ssTerm + ssErr) > 0 ? ssTerm / (ssTerm + ssErr) : 0.0;
 
       out[term.label] = _TermStat(
         fStat: fStat,

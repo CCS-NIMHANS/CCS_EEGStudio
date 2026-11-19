@@ -86,5 +86,44 @@ void main() {
       expect(parsed.headers, containsAll(['subject', 'Group']));
       expect(parsed.rows.length, greaterThan(100));
     });
+
+    test('split-plot within-subject error removes subject random-intercept variance', () {
+      final headers = ['subjid', 'group', 'condition', 'amp'];
+      final rows = <List<String>>[];
+      // Balanced 2x2 mixed design: 6 subjects per group, huge +/-99 subject baseline offsets,
+      // reliable +2.0 within-subject condition shift and tiny +/-0.25 within-subject residual.
+      for (var s = 1; s <= 12; s++) {
+        final grp = s <= 6 ? 'A' : 'B';
+        final subjOffset = (s - 6.5) * 18.0; // +/- ~99
+        final err = (s.isEven ? 0.25 : -0.25);
+        final v1 = 10.0 + subjOffset;
+        final v2 = 12.0 + subjOffset + err;
+        rows.add(['S$s', grp, 'C1', v1.toStringAsFixed(6)]);
+        rows.add(['S$s', grp, 'C2', v2.toStringAsFixed(6)]);
+      }
+
+      // Compute exact analytical repeated-measures F_within = SS_cond / MS_{Subj x Cond(within Group)}
+      // Since C2 - C1 = 2.0 + err across 12 subjects split across 2 groups:
+      // Analytical MS_within_err = 0.5 * sum_within_grp((d_{g,i} - d_bar_g)^2) / (12 - 2) = 0.5 * (12 * 0.0625) / 10 = 0.0375
+      // Analytical SS_cond = 12 * 0.5 * (mean_C2 - mean_C1)^2 = 6 * 4.0 = 24.0 => F_cond = 24.0 / 0.0375 = 640.0
+      final res = ErpGroupStatsEngine.runAnalysis(
+        headers: headers,
+        rows: rows,
+        factors: ['group', 'condition'],
+        metrics: ['amp'],
+        subjectCol: 'subjid',
+        preferredModel: 'lmm',
+        nPermutations: 400,
+        seed: 7,
+      );
+
+      final m = (res['results'] as List).first as Map<String, dynamic>;
+      final effects = (m['model_effects'] as List).cast<Map<String, dynamic>>();
+      final condEff = effects.firstWhere((e) => e['term'] == 'condition');
+      expect((condEff['f_stat'] as num).toDouble(), closeTo(640.0, 1e-4));
+      expect((condEff['df_denom'] as num).toInt(), 10);
+      expect((condEff['p_value'] as num).toDouble(), lessThan(1e-6));
+      expect((condEff['p_perm'] as num).toDouble(), lessThan(0.01));
+    });
   });
 }

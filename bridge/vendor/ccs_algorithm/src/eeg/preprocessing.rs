@@ -413,7 +413,7 @@ pub fn run(
     }
 
     let mut bad_channels = if options.badchannel {
-        detect_bad_channels_configured(rec,options.bad_variance_ratio)
+        detect_bad_channels_f64(&f64_channels, &rec.labels, rec.rate, options.bad_variance_ratio)
     } else {
         Vec::new()
     };
@@ -951,62 +951,205 @@ fn reflect_index(index: isize, len: usize) -> usize {
 }
 
 #[cfg(test)]
-fn detect_bad_channels(rec:&Recording)->Vec<String>{detect_bad_channels_configured(rec,25.0)}
-fn detect_bad_channels_configured(rec: &Recording, variance_ratio:f64) -> Vec<String> {
+fn detect_bad_channels(rec: &Recording) -> Vec<String> {
+    detect_bad_channels_configured(rec, 25.0)
+}
+
+#[cfg(test)]
+fn detect_bad_channels_configured(rec: &Recording, variance_ratio: f64) -> Vec<String> {
+    let f64_channels: Vec<Vec<f64>> = rec
+        .channels
+        .iter()
+        .map(|ch| ch.iter().map(|&v| v as f64).collect())
+        .collect();
+    detect_bad_channels_f64(&f64_channels, &rec.labels, rec.rate, variance_ratio)
+}
+
+fn robust_mad_sorted(slice: &[f64]) -> (f64, f64) {
+    if slice.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut sorted = slice.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let mid = sorted[sorted.len() / 2];
+    let range = sorted[sorted.len() - 1] - sorted[0];
+    let mut devs: Vec<f64> = sorted.iter().map(|&v| (v - mid).abs()).collect();
+    devs.sort_by(f64::total_cmp);
+    let mad_sd = 1.4826 * devs[devs.len() / 2];
+    (mad_sd, range)
+}
+
+/// PREP / clean_rawdata-inspired multi-window robust bad-channel detector
+/// (Bigdely-Shamlo et al., 2015). Operates on preprocessed f64 signals so DC
+/// offsets and filtered line noise do not mask noisy electrodes, and brief
+/// global saturation spikes do not blind channel statistics.
+fn detect_bad_channels_f64(
+    channels: &[Vec<f64>],
+    labels: &[String],
+    rate: f64,
+    variance_ratio: f64,
+) -> Vec<String> {
     let mut bad_chs: Vec<String> = Vec::new();
-    let n_ch = rec.channels.len();
+    let n_ch = channels.len().min(labels.len());
     if n_ch == 0 {
         return bad_chs;
     }
 
-    let vars: Vec<f64> = rec.channels.iter().map(|ch| variance_f32(ch)).collect();
-    let med = median(vars.clone());
+    let n_samp = channels.iter().map(Vec::len).min().unwrap_or(0);
+    if n_samp < 4 {
+        return labels[..n_ch].to_vec();
+    }
 
-    // Robust log-variance MAD z-score
-    let log_vars: Vec<f64> = vars.iter().map(|v| (v + 1e-12).log10()).collect();
-    let med_log = median(log_vars.clone());
-    let abs_devs: Vec<f64> = log_vars.iter().map(|lv| (lv - med_log).abs()).collect();
-    let mad_log = (median(abs_devs) * 1.4826).max(0.15);
+    let win_len = if rate >= 10.0 && n_samp as f64 >= 4.0 * rate {
+        ((2.0 * rate).round() as usize).clamp(32, n_samp)
+    } else {
+        n_samp
+    };
+    let total_wins = (n_samp / win_len).max(1);
+    let max_eval_wins = 240_usize;
+    let win_step = (total_wins / max_eval_wins).max(1);
+    let win_starts: Vec<usize> = (0..total_wins)
+        .step_by(win_step)
+        .map(|w| w * win_len)
+        .collect();
+    let n_win = win_starts.len();
 
-    for (i, &var) in vars.iter().enumerate() {
-        let z_log = (log_vars[i] - med_log) / mad_log;
-        let is_flat = !var.is_finite() || var < 1e-12 || (med > 1e-6 && var < med * 0.005);
-        let is_huge = med > 0.0 && (var > med * variance_ratio || z_log > 4.5);
+    let mut ch_mad = vec![0.0_f64; n_ch];
+    let mut ch_hf = vec![0.0_f64; n_ch];
+    let mut ch_flat_frac = vec![0.0_f64; n_ch];
+    let mut ch_all_finite = vec![true; n_ch];
+    let mut win_mads: Vec<Vec<f64>> = vec![vec![0.0; n_win]; n_ch];
+
+    for (i, ch) in channels.iter().take(n_ch).enumerate() {
+        if ch.iter().any(|v| !v.is_finite()) {
+            ch_all_finite[i] = false;
+            continue;
+        }
+        let mut sds = Vec::with_capacity(n_win);
+        let mut hfs = Vec::with_capacity(n_win);
+        let mut flat_cnt = 0_usize;
+        for (wi, &ws) in win_starts.iter().enumerate() {
+            let seg = &ch[ws..(ws + win_len).min(ch.len())];
+            let (mad_sd, range) = robust_mad_sorted(seg);
+            if range < 1e-6 || mad_sd < 1e-8 {
+                flat_cnt += 1;
+            }
+            win_mads[i][wi] = mad_sd;
+            sds.push(mad_sd);
+            if rate >= 100.0 && seg.len() >= 16 {
+                let diff_sq = seg
+                    .windows(2)
+                    .map(|p| {
+                        let d = p[1] - p[0];
+                        d * d
+                    })
+                    .sum::<f64>()
+                    / (seg.len() - 1) as f64;
+                hfs.push(diff_sq.sqrt() / mad_sd.max(1e-12));
+            }
+        }
+        ch_flat_frac[i] = flat_cnt as f64 / n_win as f64;
+        ch_mad[i] = if sds.is_empty() { 0.0 } else { median(sds) };
+        ch_hf[i] = if hfs.is_empty() { 0.0 } else { median(hfs) };
+    }
+
+    let finite_mads: Vec<f64> = (0..n_ch)
+        .filter(|&i| ch_all_finite[i])
+        .map(|i| ch_mad[i])
+        .collect();
+    let pop_mad = if finite_mads.is_empty() {
+        0.0
+    } else {
+        median(finite_mads)
+    };
+    let log_mads: Vec<f64> = ch_mad.iter().map(|&v| (v + 1e-12).log10()).collect();
+    let med_log_mad = median(log_mads.clone());
+    let abs_dev_mad: Vec<f64> = log_mads.iter().map(|&lv| (lv - med_log_mad).abs()).collect();
+    let mad_log_sd = (median(abs_dev_mad) * 1.4826).max(0.12);
+    let amp_ratio = variance_ratio.max(4.0).sqrt();
+
+    let mut flagged = vec![false; n_ch];
+    for i in 0..n_ch {
+        let z_log = (log_mads[i] - med_log_mad) / mad_log_sd;
+        let is_flat = !ch_all_finite[i]
+            || ch_flat_frac[i] >= 0.50
+            || ch_mad[i] < 1e-6
+            || (pop_mad > 1e-3 && ch_mad[i] < pop_mad * 0.05);
+        let is_huge = pop_mad > 0.0
+            && (ch_mad[i] > pop_mad * amp_ratio
+                || z_log > 4.5
+                || (z_log > 3.5 && ch_mad[i] > pop_mad * 3.0));
         if is_flat || is_huge {
-            let label = rec.labels[i].clone();
-            if !bad_chs.contains(&label) {
-                bad_chs.push(label);
+            flagged[i] = true;
+            bad_chs.push(labels[i].clone());
+        }
+    }
+
+    // High-frequency / muscle & line noise ratio criterion (PREP HF noise)
+    let surviving_hf: Vec<usize> = (0..n_ch).filter(|&i| !flagged[i] && rate >= 100.0).collect();
+    if surviving_hf.len() >= 4 {
+        let hf_vals: Vec<f64> = surviving_hf.iter().map(|&i| ch_hf[i]).collect();
+        let pop_hf = median(hf_vals.clone());
+        let log_hf: Vec<f64> = hf_vals.iter().map(|&v| (v + 1e-12).log10()).collect();
+        let med_lhf = median(log_hf.clone());
+        let devs_lhf: Vec<f64> = log_hf.iter().map(|&v| (v - med_lhf).abs()).collect();
+        let mad_lhf = (median(devs_lhf) * 1.4826).max(0.08);
+        for &i in &surviving_hf {
+            let z_hf = ((ch_hf[i] + 1e-12).log10() - med_lhf) / mad_lhf;
+            if z_hf > 5.0 && pop_hf > 0.0 && ch_hf[i] > pop_hf * 3.0 {
+                flagged[i] = true;
+                bad_chs.push(labels[i].clone());
             }
         }
     }
 
-    // Spatial correlation check across strided samples (fast O(C^2 * N_sub))
-    if n_ch >= 6 {
-        let n_samp = rec.channels.iter().map(|c| c.len()).min().unwrap_or(0);
-        if n_samp >= 64 {
-            let stride = (n_samp / 4000).max(1);
-            let sub: Vec<Vec<f64>> = rec
-                .channels
+    // PREP-style windowed spatial max-correlation criterion
+    let good_indices: Vec<usize> = (0..n_ch).filter(|&i| !flagged[i]).collect();
+    if n_ch >= 6 && good_indices.len() >= 4 && win_len >= 16 {
+        let corr_win_step = (n_win / 120).max(1);
+        let corr_wis: Vec<usize> = (0..n_win).step_by(corr_win_step).collect();
+        let in_win_stride = (win_len / 256).max(1);
+
+        let mut max_rs_per_ch: Vec<Vec<f64>> = vec![Vec::with_capacity(corr_wis.len()); n_ch];
+        for &wi in &corr_wis {
+            let ws = win_starts[wi];
+            let we = (ws + win_len).min(n_samp);
+            let sub_win: Vec<Vec<f64>> = good_indices
                 .iter()
-                .map(|ch| ch.iter().step_by(stride).map(|&v| v as f64).collect())
+                .map(|&ci| channels[ci][ws..we].iter().step_by(in_win_stride).copied().collect())
                 .collect();
-            for i in 0..n_ch {
-                if bad_chs.contains(&rec.labels[i]) {
+            for (gi, &ci) in good_indices.iter().enumerate() {
+                // Ignore windows contaminated by extreme transient glitches (>10x median MAD)
+                if ch_mad[ci] > 0.0 && win_mads[ci][wi] > ch_mad[ci] * 10.0 {
                     continue;
                 }
-                let mut max_abs_r = 0.0_f64;
-                for j in 0..n_ch {
-                    if i == j || bad_chs.contains(&rec.labels[j]) {
+                let mut best_r = 0.0_f64;
+                for (gj, &cj) in good_indices.iter().enumerate() {
+                    if gi == gj {
                         continue;
                     }
-                    let r = pearson_f64(&sub[i], &sub[j]).abs();
-                    if r.is_finite() && r > max_abs_r {
-                        max_abs_r = r;
+                    if ch_mad[cj] > 0.0 && win_mads[cj][wi] > ch_mad[cj] * 10.0 {
+                        continue;
+                    }
+                    let r = pearson_f64(&sub_win[gi], &sub_win[gj]).abs();
+                    if r.is_finite() && r > best_r {
+                        best_r = r;
                     }
                 }
-                if max_abs_r < 0.25 {
-                    bad_chs.push(rec.labels[i].clone());
-                }
+                max_rs_per_ch[ci].push(best_r);
+            }
+        }
+
+        let min_corr = if n_win >= 3 { 0.35 } else { 0.25 };
+        for &ci in &good_indices {
+            let vals = &max_rs_per_ch[ci];
+            if vals.is_empty() {
+                continue;
+            }
+            let med_r = median(vals.clone());
+            let low_frac = vals.iter().filter(|&&r| r < 0.35).count() as f64 / vals.len() as f64;
+            if med_r < min_corr || (n_win >= 3 && low_frac > 0.40) {
+                bad_chs.push(labels[ci].clone());
             }
         }
     }
@@ -2106,6 +2249,69 @@ mod tests {
             detect_bad_channels(&rec).is_empty(),
             "a clean recording must yield no bad channels"
         );
+    }
+
+    #[test]
+    fn detect_bad_channels_handles_global_spike_and_finds_noisy_and_uncorrelated_channels() {
+        let rate = 250.0;
+        let n = 30 * 250;
+        let labels: Vec<String> = (0..13)
+            .map(|k| format!("Ch{k}"))
+            .chain(["FLAT", "NOISY", "UNCORR"].into_iter().map(String::from))
+            .collect();
+        let mut channels = Vec::with_capacity(16);
+        let shared: Vec<f64> = (0..n)
+            .map(|s| {
+                let t = s as f64 / rate;
+                18.0 * (2.0 * PI * 10.0 * t).sin() + 6.0 * (2.0 * PI * 5.2 * t).sin()
+            })
+            .collect();
+        for c in 0..13 {
+            let mut sig = vec![0.0_f64; n];
+            let mut state = 1000_u64 + c as u64 * 977;
+            for s in 0..n {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let u = ((state >> 33) as f64 / u32::MAX as f64) - 0.5;
+                let t = s as f64 / rate;
+                sig[s] = shared[s] * (0.85 + 0.02 * c as f64) + 2.5 * (2.0 * PI * 12.0 * t + c as f64 * 0.2).sin() + 4.0 * u;
+            }
+            channels.push(sig);
+        }
+        // Flat channel
+        channels.push(vec![12.0; n]);
+        // 8x noisy channel (above 5x amplitude / 25x variance ratio)
+        let mut noisy = vec![0.0_f64; n];
+        let mut st_n = 42_u64;
+        for s in 0..n {
+            st_n = st_n.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let u = ((st_n >> 33) as f64 / u32::MAX as f64) - 0.5;
+            noisy[s] = 350.0 * u;
+        }
+        channels.push(noisy);
+        // Uncorrelated white noise at normal amplitude
+        let mut uncorr = vec![0.0_f64; n];
+        let mut st_u = 99991_u64;
+        for s in 0..n {
+            st_u = st_u.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let u = ((st_u >> 33) as f64 / u32::MAX as f64) - 0.5;
+            uncorr[s] = 35.0 * u;
+        }
+        channels.push(uncorr);
+
+        // Inject a 0.1 s global saturation spike across all channels (500,000 uV)
+        for ch in &mut channels {
+            for s in 2500..2525 {
+                ch[s] += 500_000.0;
+            }
+        }
+
+        let bad = detect_bad_channels_f64(&channels, &labels, rate, 25.0);
+        assert!(bad.contains(&"FLAT".to_string()), "missed flat channel: {bad:?}");
+        assert!(bad.contains(&"NOISY".to_string()), "missed noisy channel despite spike: {bad:?}");
+        assert!(bad.contains(&"UNCORR".to_string()), "missed uncorrelated channel: {bad:?}");
+        for k in 0..13 {
+            assert!(!bad.contains(&format!("Ch{k}")), "false positive Ch{k}: {bad:?}");
+        }
     }
 
     #[test]

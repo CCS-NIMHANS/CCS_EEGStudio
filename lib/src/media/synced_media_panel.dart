@@ -309,35 +309,36 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                 ),
               // Audio Waveform + Envelope Strip with time-locked cursor
               if (seg != null && seg.waveformMax.isNotEmpty)
-                GestureDetector(
-                  onTapDown: (d) {
-                    final box = context.findRenderObject() as RenderBox?;
-                    if (box == null) return;
-                    final frac = (d.localPosition.dx / box.size.width).clamp(0.0, 1.0);
-                    ctrl.seekToEegTime(
-                      seg.offsetSeconds + frac * seg.durationSeconds,
-                      notifyExternal: true,
-                    );
-                  },
-                  child: Container(
-                    height: 62,
-                    margin: const EdgeInsets.fromLTRB(8, 4, 8, 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF020617),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.white12),
-                    ),
-                    child: CustomPaint(
-                      painter: _AudioWaveformEnvelopePainter(
-                        minBins: seg.waveformMin,
-                        maxBins: seg.waveformMax,
-                        envelope: seg.envelopePreview,
-                        cursorFrac: seg.durationSeconds > 0
-                            ? ((ctrl.eegSec - seg.offsetSeconds) / seg.durationSeconds)
-                                .clamp(0.0, 1.0)
-                            : 0.0,
+                Container(
+                  height: 62,
+                  margin: const EdgeInsets.fromLTRB(8, 4, 8, 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF020617),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: LayoutBuilder(
+                    builder: (ctx, box) => GestureDetector(
+                      onTapDown: (d) {
+                        if (box.maxWidth <= 0) return;
+                        final frac = (d.localPosition.dx / box.maxWidth).clamp(0.0, 1.0);
+                        ctrl.seekToEegTime(
+                          seg.offsetSeconds + frac * seg.durationSeconds,
+                          notifyExternal: true,
+                        );
+                      },
+                      child: CustomPaint(
+                        painter: AudioWaveformEnvelopePainter(
+                          minBins: seg.waveformMin,
+                          maxBins: seg.waveformMax,
+                          envelope: seg.envelopePreview,
+                          cursorFrac: seg.durationSeconds > 0
+                              ? ((ctrl.eegSec - seg.offsetSeconds) / seg.durationSeconds)
+                                  .clamp(0.0, 1.0)
+                              : 0.0,
+                        ),
+                        child: const SizedBox.expand(),
                       ),
-                      child: const SizedBox.expand(),
                     ),
                   ),
                 ),
@@ -435,8 +436,8 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
   }
 }
 
-class _AudioWaveformEnvelopePainter extends CustomPainter {
-  const _AudioWaveformEnvelopePainter({
+class AudioWaveformEnvelopePainter extends CustomPainter {
+  const AudioWaveformEnvelopePainter({
     required this.minBins,
     required this.maxBins,
     required this.envelope,
@@ -502,6 +503,6 @@ class _AudioWaveformEnvelopePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _AudioWaveformEnvelopePainter old) =>
+  bool shouldRepaint(covariant AudioWaveformEnvelopePainter old) =>
       old.cursorFrac != cursorFrac || old.minBins != minBins;
 }

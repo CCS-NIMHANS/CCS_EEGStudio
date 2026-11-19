@@ -87,6 +87,7 @@ Priority: optional
 Architecture: amd64
 Installed-Size: $installed_size
 Depends: libgtk-3-0, libblkid1, liblzma5
+Recommends: libmpv1 | libmpv2
 Maintainer: CCS NIMHANS <noreply@github.com>
 Homepage: https://github.com/CCS-NIMHANS/CCS_EEGStudio
 Description: $description
@@ -113,6 +114,12 @@ EOF
 cat > "$package_root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
+
+for dir in /usr/lib/x86_64-linux-gnu /usr/lib; do
+  if [ ! -e "$dir/libmpv.so.1" ] && [ -e "$dir/libmpv.so.2" ]; then
+    ln -sf libmpv.so.2 "$dir/libmpv.so.1" || true
+  fi
+done
 
 if which update-desktop-database >/dev/null 2>&1; then
   update-desktop-database /usr/share/applications 2>/dev/null || true
@@ -156,6 +163,11 @@ cat > "$package_root/DEBIAN/postrm" <<'EOF'
 #!/bin/sh
 set -e
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+  for dir in /usr/lib/x86_64-linux-gnu /usr/lib; do
+    if [ -L "$dir/libmpv.so.1" ] && [ "$(readlink "$dir/libmpv.so.1")" = "libmpv.so.2" ]; then
+      rm -f "$dir/libmpv.so.1" || true
+    fi
+  done
   rm -f /etc/skel/Desktop/ccseegstudio.desktop
   if which update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications 2>/dev/null || true

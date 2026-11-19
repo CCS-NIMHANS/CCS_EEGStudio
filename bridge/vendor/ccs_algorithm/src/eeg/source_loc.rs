@@ -4,6 +4,9 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use super::montage::STANDARD_1005_POS;
+use super::xpikan::xpikan_inverse_operator;
+
 #[derive(Deserialize)]
 struct RoiData {
     name: String,
@@ -28,12 +31,44 @@ pub fn convert_to_source_space(
     convert_with_model(channels, labels, snr, "mne", "")
 }
 
-/// Fixed-orientation inverse operators; identity sensor noise covariance.
+fn spherical_fallback_coords(l: &DMatrix<f64>) -> Vec<[f64; 3]> {
+    let m = l.nrows();
+    let gram = l * l.transpose();
+    let eig = gram.symmetric_eigen();
+    let mut order: Vec<usize> = (0..eig.eigenvalues.len()).collect();
+    order.sort_by(|&a, &b| eig.eigenvalues[b].total_cmp(&eig.eigenvalues[a]));
+    (0..m)
+        .map(|i| {
+            let x = if !order.is_empty() { eig.eigenvectors[(i, order[0])] } else { 1.0 };
+            let y = if order.len() > 1 { eig.eigenvectors[(i, order[1])] } else { 0.0 };
+            let z = if order.len() > 2 { eig.eigenvectors[(i, order[2])] } else { 0.0 };
+            let n = (x * x + y * y + z * z).sqrt();
+            if n > 1e-9 {
+                [x / n, y / n, z / n]
+            } else {
+                let theta = 2.0 * std::f64::consts::PI * (i as f64 / m.max(1) as f64);
+                [theta.cos(), theta.sin(), 0.25]
+            }
+        })
+        .collect()
+}
+
 pub fn inverse_operator(
     l: &DMatrix<f64>,
     data: &DMatrix<f64>,
     snr: f64,
     method: &str,
+) -> Result<DMatrix<f64>, String> {
+    inverse_operator_with_coords(l, data, snr, method, None)
+}
+
+/// Fixed-orientation inverse operators; optional 3D sensor coordinates for XPIKAN.
+pub fn inverse_operator_with_coords(
+    l: &DMatrix<f64>,
+    data: &DMatrix<f64>,
+    snr: f64,
+    method: &str,
+    sensor_coords: Option<&[[f64; 3]]>,
 ) -> Result<DMatrix<f64>, String> {
     if !snr.is_finite() || snr <= 0.0 {
         return Err("SNR must be positive".into());
@@ -65,61 +100,15 @@ pub fn inverse_operator(
         return Ok(w);
     }
     if method == "xpikan" {
-        // Extended Physics-Informed Kolmogorov-Arnold Network (XPIKAN):
-        // Multi-scale RBF/B-spline KAN basis over leadfield correlation manifold
-        // trained with physics residual ||L*W - I||_F^2 on sensor covariance C_v + L2,1 sparsity.
-        let n_dip = l.ncols();
-        let inv0 = (gram.clone() + DMatrix::identity(m, m) * alpha)
-            .try_inverse()
-            .ok_or("XPIKAN leadfield inverse is singular")?;
-        let mut w = l.transpose() * inv0;
-
-        // Compute normalized sensor covariance sketch C_v (M x M)
-        let stride = (data.ncols() / 2000).max(1);
-        let n_sub = (0..data.ncols()).step_by(stride).count().max(1);
-        let mut cv = DMatrix::zeros(m, m);
-        for c_idx in (0..data.ncols()).step_by(stride) {
-            let col = data.column(c_idx);
-            cv += &col * col.transpose();
-        }
-        cv.scale_mut(1.0 / n_sub as f64);
-        let cv_trace = cv.trace().max(1e-12);
-        cv.scale_mut(m as f64 / cv_trace);
-
-        // Physics-informed KAN spline modulation + proximal L2,1 refinement
-        let mut l_t_cv = l.transpose() * &cv;
-        let step = 0.15 / (gram.norm().max(1.0));
-        let lambda_phys = 1.0;
-        let lambda_kan = alpha * 0.25;
-        let knots = [0.25_f64, 0.5, 0.75, 1.0];
-        for _iter in 0..12 {
-            // Forward physics residual gradient: L^T * (L * W - I) * C_v
-            let lw_minus_i = l * &w - DMatrix::identity(m, m);
-            let grad_phys = (l.transpose() * lw_minus_i) * &cv * lambda_phys;
-            for r in 0..n_dip {
-                let row_norm = w.row(r).norm();
-                // Multi-scale KAN spline basis activation weighting
-                let mut kan_gain = 0.0;
-                for &k in &knots {
-                    let diff = (row_norm / (row_norm + 1.0)) - k;
-                    kan_gain += (-8.0 * diff * diff).exp();
-                }
-                kan_gain /= knots.len() as f64;
-                let shrink = 1.0 / (1.0 + lambda_kan * (1.0 - 0.5 * kan_gain));
-                for c in 0..m {
-                    w[(r, c)] = (w[(r, c)] - step * grad_phys[(r, c)]) * shrink;
-                }
+        let owned_coords;
+        let coords = match sensor_coords {
+            Some(c) if c.len() == m => c,
+            _ => {
+                owned_coords = spherical_fallback_coords(l);
+                &owned_coords
             }
-        }
-        // Standardize dipole variance as in sLORETA for unbiased depth sensitivity
-        let _ = l_t_cv.nrows();
-        for r in 0..w.nrows() {
-            let variance = (w.row(r) * l.column(r))[(0, 0)];
-            if variance > 0.0 {
-                w.row_mut(r).scale_mut(1.0 / variance.sqrt());
-            }
-        }
-        return Ok(w);
+        };
+        return xpikan_inverse_operator(l, data, snr, coords);
     }
     if !["mne", "dspm", "sloreta"].contains(&method) {
         return Err(format!("Unknown inverse method: {method}"));
@@ -225,7 +214,20 @@ pub fn convert_with_model(
 
     eprintln!("PROGRESS 40 Computing regularized inverse operator (MNE / minimum norm)...");
     let data = DMatrix::from_fn(m, samples, |r, c| channels[matched_rec_idx[r]][c]);
-    let w_mat = inverse_operator(&l_mat, &data, snr, method)?;
+    let matched_coords: Vec<[f64; 3]> = matched_rec_idx
+        .iter()
+        .enumerate()
+        .map(|(k, &idx)| {
+            let upper = labels[idx].to_uppercase();
+            if let Some(&pos) = STANDARD_1005_POS.get(upper.as_str()) {
+                pos
+            } else {
+                let theta = 2.0 * std::f64::consts::PI * (k as f64 / m.max(1) as f64);
+                [0.08 * theta.cos(), 0.08 * theta.sin(), 0.03]
+            }
+        })
+        .collect();
+    let w_mat = inverse_operator_with_coords(&l_mat, &data, snr, method, Some(&matched_coords))?;
 
     eprintln!(
         "PROGRESS 60 Projecting {} samples to {} cortical dipoles...",
@@ -334,5 +336,71 @@ mod tests {
             .cloned()
             .fold(0.0f64, |a, b| a.max(b.abs()));
         println!("MAX ROI AMPLITUDE: {}", max_val);
+    }
+
+    #[test]
+    fn xpikan_inverse_localizes_synthetic_dipole_cleanly() {
+        // 16 sensors on unit sphere, 12 synthetic orthogonal-ish dipole columns
+        let m = 16_usize;
+        let n_dip = 12_usize;
+        let coords: Vec<[f64; 3]> = (0..m)
+            .map(|i| {
+                let phi = 2.0 * std::f64::consts::PI * (i as f64 / m as f64);
+                let z = ((i % 4) as f64 - 1.5) * 0.45;
+                let r_xy = (1.0 - z * z).max(0.1).sqrt();
+                [r_xy * phi.cos(), r_xy * phi.sin(), z]
+            })
+            .collect();
+        let dip_pos: Vec<[f64; 3]> = (0..n_dip)
+            .map(|d| {
+                let phi = 2.0 * std::f64::consts::PI * (d as f64 / n_dip as f64);
+                [0.65 * phi.cos(), 0.65 * phi.sin(), if d % 2 == 0 { 0.35 } else { -0.35 }]
+            })
+            .collect();
+        let l = DMatrix::from_fn(m, n_dip, |r, c| {
+            let dx = coords[r][0] - dip_pos[c][0];
+            let dy = coords[r][1] - dip_pos[c][1];
+            let dz = coords[r][2] - dip_pos[c][2];
+            let d2 = (dx * dx + dy * dy + dz * dz).max(0.05);
+            (coords[r][0] * dip_pos[c][0] + coords[r][1] * dip_pos[c][1] + coords[r][2] * dip_pos[c][2])
+                / (d2 * d2.sqrt())
+        });
+
+        let target_dip = 4_usize;
+        let n_samp = 120_usize;
+        let data = DMatrix::from_fn(m, n_samp, |r, t| {
+            let s = (2.0 * std::f64::consts::PI * 10.0 * t as f64 / 200.0).sin();
+            l[(r, target_dip)] * 10.0 * s
+        });
+
+        let w = inverse_operator_with_coords(&l, &data, 5.0, "xpikan", Some(&coords)).unwrap();
+        assert_eq!(w.nrows(), n_dip);
+        assert_eq!(w.ncols(), m);
+        assert!(w.iter().all(|v| v.is_finite()));
+
+        let s_est = &w * &data;
+        let powers: Vec<f64> = (0..n_dip).map(|d| s_est.row(d).norm_squared()).collect();
+        let peak_dip = powers
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .unwrap()
+            .0;
+        assert_eq!(
+            peak_dip, target_dip,
+            "XPIKAN localized peak dipole to {peak_dip} instead of {target_dip}: powers={powers:?}"
+        );
+
+        let eeg: Vec<Vec<f64>> = (0..m).map(|r| data.row(r).iter().copied().collect()).collect();
+        let labels: Vec<String> = vec![
+            "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8", "C3", "Cz", "C4", "P3", "Pz", "P4", "T7", "O1", "O2",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let (rois, roi_labels) = convert_with_model(&eeg, &labels, 3.0, "xpikan", "").unwrap();
+        assert_eq!(rois.len(), 68);
+        assert_eq!(roi_labels.len(), 68);
+        assert!(rois.iter().flat_map(|c| c.iter()).all(|v| v.is_finite()));
     }
 }
