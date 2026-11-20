@@ -4,6 +4,7 @@ import 'ersp_itc_panel.dart';
 import 'interactive_erp_session.dart';
 import 'axis_controls.dart';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -50,6 +51,34 @@ class ErpConditionConfig {
     nameController.dispose();
     codesController.dispose();
   }
+}
+
+/// Top-level worker to read, decode, and merge saved `.ccserp` / `erp_results.json`
+/// files off the UI isolate without capturing Flutter `State` or `BuildContext`.
+Future<({Map<String, dynamic> merged, int loadedFiles})> loadErpFolderInWorker(
+  List<String> candidatePaths,
+) async {
+  final resultsList = <Map<String, dynamic>>[];
+  final multi = candidatePaths.length > 1;
+  for (final p in candidatePaths) {
+    try {
+      final content = await File(p).readAsString();
+      final val = Map<String, dynamic>.from(jsonDecode(content) as Map);
+      if (val['schema'] == 'ccs-erp-workbench-v1') {
+        if (multi) {
+          // mergeErpResults recomputes grand-average groups from `files`, so
+          // dropping per-file `groups` avoids holding duplicate wave arrays.
+          val.remove('groups');
+        }
+        resultsList.add(val);
+      }
+    } catch (_) {}
+  }
+  if (resultsList.isEmpty) {
+    return (merged: <String, dynamic>{}, loadedFiles: 0);
+  }
+  final merged = _ErpWorkbenchViewState.mergeErpResults(resultsList);
+  return (merged: merged, loadedFiles: resultsList.length);
 }
 
 class ErpWorkbenchView extends StatefulWidget {
@@ -1332,6 +1361,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       fallbackFilePath: _paths.firstOrNull,
     );
     if (dirPath == null || !mounted) return;
+    setState(() {
+      _busy = true;
+      _status = 'Scanning $dirPath for saved ERP results…';
+    });
     try {
       final dir = Directory(dirPath);
       final entries = await dir
@@ -1339,11 +1372,15 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           .where((e) => e is File)
           .cast<File>()
           .toList();
-      final candidates = entries.where((f) {
-        final lower = f.path.toLowerCase();
-        return lower.endsWith('.ccserp') ||
-            (lower.endsWith('.json') && lower.contains('erp_results'));
-      }).toList();
+      final candidates = entries
+          .where((f) {
+            final lower = f.path.toLowerCase();
+            return lower.endsWith('.ccserp') ||
+                (lower.endsWith('.json') && lower.contains('erp_results'));
+          })
+          .map((f) => f.path)
+          .toList()
+        ..sort();
 
       if (candidates.isEmpty) {
         if (mounted) {
@@ -1355,40 +1392,47 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         return;
       }
 
-      final resultsList = <Map<String, dynamic>>[];
-      for (final f in candidates) {
-        try {
-          final content = await f.readAsString();
-          final val = Map<String, dynamic>.from(jsonDecode(content) as Map);
-          if (val['schema'] == 'ccs-erp-workbench-v1') {
-            resultsList.add(val);
-          }
-        } catch (_) {}
+      if (mounted) {
+        setState(
+          () => _status =
+              'Loading ${candidates.length} saved ERP file(s) from $dirPath…',
+        );
       }
+      final res = await Isolate.run(() => loadErpFolderInWorker(candidates));
+      if (!mounted) return;
 
-      if (resultsList.isEmpty) {
-        if (mounted) {
-          setState(
-            () => _status = 'No valid ccs-erp-workbench-v1 files in $dirPath',
-          );
-        }
+      if (res.loadedFiles == 0 || res.merged.isEmpty) {
+        setState(
+          () => _status = 'No valid ccs-erp-workbench-v1 files in $dirPath',
+        );
         return;
       }
 
-      final merged = mergeErpResults(resultsList);
-      if (!mounted) return;
+      final merged = res.merged;
+      final loadedPaths = [
+        for (final f in (merged['files'] as List? ?? []))
+          if (f is Map && (f['path']?.toString().isNotEmpty ?? false))
+            f['path'].toString(),
+      ];
       setState(() {
         _result = merged;
         _batchShowResults = true;
         _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
         _file = null;
         _output.text = dirPath;
+        if (_paths.isEmpty && loadedPaths.isNotEmpty) {
+          _paths
+            ..clear()
+            ..addAll(loadedPaths);
+        }
         final nF = (merged['files'] as List? ?? []).length;
         _status =
-            'Loaded $nF recording(s) from ${resultsList.length} ERP file(s) in $dirPath.';
+            'Loaded $nF recording(s) from ${res.loadedFiles} ERP file(s) in $dirPath.';
       });
     } catch (e) {
-      if (mounted) setState(() => _status = '$e');
+      if (mounted) setState(() => _status = 'Error loading ERP folder: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
