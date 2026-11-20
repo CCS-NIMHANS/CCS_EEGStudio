@@ -2844,10 +2844,22 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ])
             else if (showStage1)
               _card(widget.batchMode ? '1  Batch inputs' : '1  Active recording', [
-                TextButton.icon(
-                  onPressed: _busy ? null : _openResult,
-                  icon: const Icon(Icons.history),
-                  label: const Text('Open saved ERP results…'),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    TextButton.icon(
+                      onPressed: _busy ? null : _openResult,
+                      icon: const Icon(Icons.history),
+                      label: const Text('Open saved ERP results…'),
+                    ),
+                    if (widget.batchMode)
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _openResultFolder,
+                        icon: const Icon(Icons.folder_open, size: 16),
+                        label: const Text('Load ERP Results Folder…'),
+                      ),
+                  ],
                 ),
                 if (widget.batchMode) ...[
                   const Text(
