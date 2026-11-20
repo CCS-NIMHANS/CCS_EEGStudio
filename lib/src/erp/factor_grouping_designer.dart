@@ -703,48 +703,57 @@ class _FactorGroupingDesignerDialogState
       ),
       content: SizedBox(
         width: 1040,
-        height: 620,
-        child: Row(
+        height: 640,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Left: Sources (Auto, Sheet, Interactive Filename Cropper)
+            _buildDetectedSummaryBanner(),
+            const SizedBox(height: 8),
             Expanded(
-              flex: 5,
-              child: DefaultTabController(
-                length: 3,
-                child: Column(
-                  children: [
-                    const TabBar(
-                      tabs: [
-                        Tab(text: '1. Filename Cropper'),
-                        Tab(text: '2. CSV / Excel Sheet'),
-                        Tab(text: '3. Factors & Auto'),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Expanded(
-                      child: TabBarView(
+              child: Row(
+                children: [
+                  // Left: Detected Factors, Sheet Import, Filename Extraction
+                  Expanded(
+                    flex: 5,
+                    child: DefaultTabController(
+                      length: 3,
+                      child: Column(
                         children: [
-                          _buildCropperTab(
-                            sampleName,
-                            safeStart,
-                            safeEnd,
-                            rules,
-                            activeRule,
+                          const TabBar(
+                            tabs: [
+                              Tab(text: '1. Detected Factors'),
+                              Tab(text: '2. Load Sheet (.xlsx/.csv)'),
+                              Tab(text: '3. Extract from Filename'),
+                            ],
                           ),
-                          _buildSheetTab(),
-                          _buildFactorsTab(),
+                          const SizedBox(height: 8),
+                          Expanded(
+                            child: TabBarView(
+                              children: [
+                                _buildFactorsTab(),
+                                _buildSheetTab(),
+                                _buildCropperTab(
+                                  sampleName,
+                                  safeStart,
+                                  safeEnd,
+                                  rules,
+                                  activeRule,
+                                ),
+                              ],
+                            ),
+                          ),
                         ],
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                  const VerticalDivider(width: 20),
+                  // Right: Interactive Grouping Tree
+                  Expanded(
+                    flex: 4,
+                    child: _buildGroupingTree(),
+                  ),
+                ],
               ),
-            ),
-            const VerticalDivider(width: 20),
-            // Right: Interactive Grouping Tree
-            Expanded(
-              flex: 4,
-              child: _buildGroupingTree(),
             ),
           ],
         ),
@@ -1279,6 +1288,84 @@ class _FactorGroupingDesignerDialogState
             },
           ),
       ],
+    );
+  }
+
+  Widget _buildDetectedSummaryBanner() {
+    final activeFiles = [
+      for (final p in widget.filePaths)
+        if (!_excludedFiles.contains(p)) p,
+    ];
+    final summaryParts = <Widget>[];
+    for (final factor in _factorNames) {
+      final counts = <String, int>{};
+      for (final p in activeFiles) {
+        final raw = (_fileFactors[p]?[factor] ?? '').trim();
+        final v = raw.isEmpty ? 'Unknown' : raw;
+        counts[v] = (counts[v] ?? 0) + 1;
+      }
+      final sorted = counts.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      final preview = sorted
+          .take(5)
+          .map((e) => '${e.key}: ${e.value}')
+          .join(', ');
+      final extra = sorted.length > 5 ? ', +${sorted.length - 5} more' : '';
+      final hasUnknown = counts.keys.any((k) => k == 'Unknown');
+      summaryParts.add(
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: hasUnknown
+                ? Colors.amber.withValues(alpha: 0.14)
+                : const Color(0xFF0F2744),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: hasUnknown
+                  ? Colors.amber.withValues(alpha: 0.5)
+                  : Colors.cyanAccent.withValues(alpha: 0.35),
+            ),
+          ),
+          child: Text(
+            '$factor (${sorted.length}): $preview$extra',
+            style: TextStyle(
+              fontSize: 11,
+              color: hasUnknown ? Colors.amberAccent : Colors.cyanAccent,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0B1120),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _factorNames.isEmpty ? Icons.info_outline : Icons.check_circle_outline,
+            size: 16,
+            color: _factorNames.isEmpty ? Colors.amber : Colors.greenAccent,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _factorNames.isEmpty
+                ? const Text(
+                    'No factors detected yet — load a sheet (Tab 2) or extract from filenames (Tab 3).',
+                    style: TextStyle(fontSize: 11.5, color: Colors.amberAccent),
+                  )
+                : Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: summaryParts,
+                  ),
+          ),
+        ],
+      ),
     );
   }
 
