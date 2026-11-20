@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -26,7 +27,12 @@ class MediaSyncController extends ChangeNotifier {
     _primaryKey = MediaSyncService.stemKey(eegPath);
     _cursorEpoch = primaryStartEpoch;
     _player = Player();
-    _videoController = VideoController(_player);
+    _videoController = VideoController(
+      _player,
+      configuration: VideoControllerConfiguration(
+        enableHardwareAcceleration: !Platform.isMacOS,
+      ),
+    );
     _posSub = _player.stream.position.listen(_onPlayerPosition);
     _playSub = _player.stream.playing.listen((p) {
       if (_playing != p) {
@@ -317,29 +323,51 @@ class MediaSyncController extends ChangeNotifier {
   Future<void> seekToEegTime(double sec, {bool notifyExternal = false}) =>
       seekToEpoch(primaryStartEpoch + sec, notifyExternal: notifyExternal);
 
+  bool _seeking = false;
+  double? _pendingSeekEpoch;
+
   Future<void> seekToEpoch(double epoch, {bool notifyExternal = false}) async {
     _cursorEpoch = epoch;
     _lastSeek = DateTime.now();
     if (notifyExternal) onTimeChanged?.call(eegSec);
-    final idx = _indexCovering(epoch);
-    if (idx < 0) {
-      _outOfRange = true;
-      if (_playing) await _player.pause();
+    _pendingSeekEpoch = epoch;
+    if (_seeking) {
       notifyListeners();
       return;
     }
-    _outOfRange = false;
-    if (idx != _activeIndex) await _openSegment(idx);
-    final seg = activeSegment;
-    if (seg != null) {
-      final local = (epoch - segmentStartEpoch(seg)).clamp(0.0, seg.durationSeconds);
-      await _player.seek(Duration(microseconds: (local * 1e6).round()));
-      _lastSeek = DateTime.now();
+    _seeking = true;
+    try {
+      while (_pendingSeekEpoch != null) {
+        final target = _pendingSeekEpoch!;
+        _pendingSeekEpoch = null;
+        final idx = _indexCovering(target);
+        if (idx < 0) {
+          _outOfRange = true;
+          if (_playing) await _player.pause();
+          notifyListeners();
+          continue;
+        }
+        _outOfRange = false;
+        if (idx != _activeIndex) await _openSegment(idx);
+        final seg = activeSegment;
+        if (seg != null) {
+          final local = (target - segmentStartEpoch(seg)).clamp(0.0, seg.durationSeconds);
+          await _player.seek(Duration(microseconds: (local * 1e6).round()));
+          _lastSeek = DateTime.now();
+        }
+        notifyListeners();
+      }
+    } finally {
+      _seeking = false;
     }
-    notifyListeners();
   }
 
   Future<void> _openSegment(int idx) async {
+    // Ensure the native video texture / mpv render context is attached before opening.
+    await _videoController.platform.future.timeout(
+      const Duration(seconds: 3),
+      onTimeout: () => throw StateError('VideoController init timeout'),
+    ).catchError((_) => _videoController.platform.future);
     _activeIndex = idx;
     await _player.open(Media(segments[idx].path), play: false);
     // A seek issued before the demuxer reports a duration is silently dropped,
@@ -524,6 +552,7 @@ class SyncedMediaPanel extends StatefulWidget {
 
 class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
   String? _trackingError;
+  double? _windowHalfSec; // null = Full recording, otherwise +/- seconds around cursor
 
   Future<void> _runSpeechTracking() async {
     final ctrl = widget.controller;
@@ -661,22 +690,60 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
               if (seg != null && seg.waveformMax.isNotEmpty) ...[
                 Padding(
                   padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
-                  child: Tooltip(
-                    message: '${seg.path}\n${seg.syncNote}',
-                    child: Row(
-                      children: [
-                        Icon(seg.isVideo ? Icons.movie : Icons.headphones,
-                            size: 12, color: Colors.amberAccent),
-                        const SizedBox(width: 4),
-                        Expanded(
+                  child: Row(
+                    children: [
+                      Icon(seg.isVideo ? Icons.movie : Icons.headphones,
+                          size: 12, color: Colors.amberAccent),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Tooltip(
+                          message: '${seg.path}\n${seg.syncNote}',
                           child: Text(
-                            'Envelope source: ${seg.audioSourceDescription}',
-                            style: const TextStyle(fontSize: 10, color: Colors.amberAccent),
+                            'Blue: waveform · Yellow: speech envelope · ${seg.audioSourceDescription}',
+                            style: const TextStyle(fontSize: 9.5, color: Colors.white70),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(width: 6),
+                      for (final opt in const <(String, double?)>[
+                        ('Full', null),
+                        ('±5m', 300.0),
+                        ('±60s', 60.0),
+                        ('±15s', 15.0),
+                      ])
+                        Padding(
+                          padding: const EdgeInsets.only(left: 3),
+                          child: InkWell(
+                            onTap: () => setState(() => _windowHalfSec = opt.$2),
+                            borderRadius: BorderRadius.circular(4),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: _windowHalfSec == opt.$2
+                                    ? Colors.cyanAccent.withValues(alpha: 0.22)
+                                    : Colors.white10,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: _windowHalfSec == opt.$2
+                                      ? Colors.cyanAccent
+                                      : Colors.white24,
+                                  width: 0.7,
+                                ),
+                              ),
+                              child: Text(
+                                opt.$1,
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  color: _windowHalfSec == opt.$2
+                                      ? Colors.cyanAccent
+                                      : Colors.white70,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
                 Container(
@@ -689,13 +756,43 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   ),
                   child: LayoutBuilder(
                     builder: (ctx, box) {
+                      final dur = seg.durationSeconds;
+                      final segStart = ctrl.segmentStartEpoch(seg);
+                      final cursorLocal = (ctrl.cursorEpoch - segStart).clamp(0.0, dur);
+                      final double winStartSec;
+                      final double winEndSec;
+                      if (_windowHalfSec == null || dur <= _windowHalfSec! * 2) {
+                        winStartSec = 0.0;
+                        winEndSec = dur;
+                      } else {
+                        final half = _windowHalfSec!;
+                        var s0 = cursorLocal - half;
+                        var s1 = cursorLocal + half;
+                        if (s0 < 0) {
+                          s1 = (s1 - s0).clamp(0.0, dur);
+                          s0 = 0.0;
+                        } else if (s1 > dur) {
+                          s0 = (s0 - (s1 - dur)).clamp(0.0, dur);
+                          s1 = dur;
+                        }
+                        winStartSec = s0;
+                        winEndSec = s1;
+                      }
+                      final viewStartFrac = dur > 0 ? (winStartSec / dur).clamp(0.0, 1.0) : 0.0;
+                      final viewEndFrac = dur > 0 ? (winEndSec / dur).clamp(0.0, 1.0) : 1.0;
+
                       double epochAt(double dx) {
                         final frac = (dx / box.maxWidth).clamp(0.0, 1.0);
-                        return ctrl.segmentStartEpoch(seg) + frac * seg.durationSeconds;
+                        return segStart + winStartSec + frac * (winEndSec - winStartSec);
                       }
 
                       return GestureDetector(
                         onTapDown: (d) {
+                          if (box.maxWidth > 0) {
+                            ctrl.seekToEpoch(epochAt(d.localPosition.dx), notifyExternal: true);
+                          }
+                        },
+                        onHorizontalDragUpdate: (d) {
                           if (box.maxWidth > 0) {
                             ctrl.seekToEpoch(epochAt(d.localPosition.dx), notifyExternal: true);
                           }
@@ -705,11 +802,9 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                             minBins: seg.waveformMin,
                             maxBins: seg.waveformMax,
                             envelope: seg.envelopePreview,
-                            cursorFrac: seg.durationSeconds > 0
-                                ? ((ctrl.cursorEpoch - ctrl.segmentStartEpoch(seg)) /
-                                        seg.durationSeconds)
-                                    .clamp(0.0, 1.0)
-                                : 0.0,
+                            cursorFrac: dur > 0 ? (cursorLocal / dur).clamp(0.0, 1.0) : 0.0,
+                            viewStartFrac: viewStartFrac,
+                            viewEndFrac: viewEndFrac,
                           ),
                           child: const SizedBox.expand(),
                         ),
@@ -820,29 +915,10 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                       Text(
                         'TRF Encoding Best: ${tracking.bestChannel} (r=${tracking.bestEncodingR.toStringAsFixed(3)}) · '
                         'Decoder Reconstruction r=${tracking.decoderReconstructionR.toStringAsFixed(3)} '
-                        '(p≈${tracking.decoderPApprox.toStringAsExponential(1)}, ${tracking.overlapSeconds.toStringAsFixed(1)} s overlap)',
+                        '(p≈${tracking.decoderPApprox.toStringAsExponential(1)}, ${tracking.overlapSeconds.toStringAsFixed(1)} s overlap) — '
+                        'time series shown in Plots & Report',
                         style: const TextStyle(fontSize: 10, color: Colors.tealAccent),
                       ),
-                      if (tracking.series != null) ...[
-                        const SizedBox(height: 4),
-                        SizedBox(
-                          height: 46,
-                          child: LayoutBuilder(
-                            builder: (ctx, box) => CustomPaint(
-                              size: Size(box.maxWidth, 46),
-                              painter: TrackingSeriesPainter(
-                                series: tracking.series!,
-                                axisStartSec: 0,
-                                axisEndSec: ctrl.eegDurationSec,
-                                left: 0,
-                                right: box.maxWidth,
-                                cursorSec: ctrl.eegSec,
-                                compact: true,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
                     ],
                   ),
                 ),
@@ -890,16 +966,21 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
     required this.maxBins,
     required this.envelope,
     required this.cursorFrac,
+    this.viewStartFrac = 0.0,
+    this.viewEndFrac = 1.0,
   });
 
   final List<double> minBins;
   final List<double> maxBins;
   final List<double> envelope;
   final double cursorFrac;
+  final double viewStartFrac;
+  final double viewEndFrac;
 
   @override
   void paint(Canvas canvas, Size size) {
     final n = minBins.length;
+    final spanFrac = (viewEndFrac - viewStartFrac).clamp(1e-6, 1.0);
     if (n < 2) return;
     final midY = size.height / 2;
     var maxPeak = 1e-4;
@@ -910,7 +991,9 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
       ..color = Colors.lightBlueAccent.withValues(alpha: 0.45)
       ..strokeWidth = 1.0;
     for (var i = 0; i < n; i++) {
-      final x = i / (n - 1) * size.width;
+      final frac = i / (n - 1);
+      if (frac < viewStartFrac || frac > viewEndFrac) continue;
+      final x = (frac - viewStartFrac) / spanFrac * size.width;
       final y0 = midY - (maxBins[i] / maxPeak).clamp(-1.0, 1.0) * (midY - 4);
       final y1 = midY - (minBins[i] / maxPeak).clamp(-1.0, 1.0) * (midY - 4);
       canvas.drawLine(Offset(x, y0), Offset(x, y1), wavePaint);
@@ -922,11 +1005,15 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
         if (e > envMax) envMax = e;
       }
       final path = Path();
+      var pen = false;
       for (var i = 0; i < envelope.length; i++) {
-        final x = i / (envelope.length - 1) * size.width;
+        final frac = i / (envelope.length - 1);
+        if (frac < viewStartFrac || frac > viewEndFrac) continue;
+        final x = (frac - viewStartFrac) / spanFrac * size.width;
         final y = size.height - 4 - (envelope[i] / envMax).clamp(0.0, 1.0) * (size.height - 10);
-        if (i == 0) {
+        if (!pen) {
           path.moveTo(x, y);
+          pen = true;
         } else {
           path.lineTo(x, y);
         }
@@ -940,7 +1027,7 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
       );
     }
 
-    final cx = cursorFrac.clamp(0.0, 1.0) * size.width;
+    final cx = ((cursorFrac - viewStartFrac) / spanFrac).clamp(0.0, 1.0) * size.width;
     canvas.drawLine(
       Offset(cx, 0),
       Offset(cx, size.height),
@@ -953,6 +1040,8 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant AudioWaveformEnvelopePainter old) =>
       old.cursorFrac != cursorFrac ||
+      old.viewStartFrac != viewStartFrac ||
+      old.viewEndFrac != viewEndFrac ||
       !identical(old.minBins, minBins) ||
       !identical(old.envelope, envelope);
 }
@@ -1184,21 +1273,6 @@ class TrackingSeriesPainter extends CustomPainter {
       );
     }
     canvas.restore();
-    if (!compact) {
-      _paintLabel(
-        canvas,
-        'Neural speech tracking · ${series.windowSeconds.toStringAsFixed(0)} s sliding window',
-        Offset(left + 6, 2),
-        color: Colors.white70,
-        size: 10,
-      );
-      _paintLabel(canvas, '— decoder r (envelope reconstruction)', Offset(left + 6, 14),
-          color: decColor, size: 9.5);
-      _paintLabel(canvas, '— forward TRF r (mean of channels)', Offset(left + 6, 25),
-          color: encColor, size: 9.5);
-      _paintLabel(canvas, '- - 95% chance level', Offset(left + 6, 36),
-          color: Colors.white54, size: 9.5);
-    }
   }
 
   @override

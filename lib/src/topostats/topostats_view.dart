@@ -2731,6 +2731,25 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     });
   }
 
+  Widget _traceLegend(Color color, String text, {bool dashed = false}) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 12,
+            height: 2,
+            decoration: BoxDecoration(
+              color: dashed ? Colors.transparent : color,
+              border: dashed ? Border(bottom: BorderSide(color: color, width: 1.5)) : null,
+            ),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            text,
+            style: const TextStyle(color: _muted, fontSize: 10),
+          ),
+        ],
+      );
+
   String _clockText(double epochSec) {
     final d = DateTime.fromMicrosecondsSinceEpoch((epochSec * 1e6).round());
     String two(int v) => v.toString().padLeft(2, '0');
@@ -2878,6 +2897,25 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                   child: Text(
                     'None of the loaded media overlaps the plotted recordings.',
                     style: TextStyle(color: Colors.amberAccent, fontSize: 10),
+                  ),
+                ),
+              if (lanes.isNotEmpty || haveSeries.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+                  child: Wrap(
+                    spacing: 14,
+                    runSpacing: 4,
+                    children: [
+                      if (lanes.isNotEmpty) ...[
+                        _traceLegend(Colors.lightBlueAccent, 'Audio: raw waveform'),
+                        _traceLegend(Colors.amberAccent, 'Audio: speech envelope'),
+                      ],
+                      if (haveSeries.isNotEmpty) ...[
+                        _traceLegend(Colors.cyanAccent, 'Tracking: decoder r (EEG -> envelope; dots > 95% chance)'),
+                        _traceLegend(Colors.amberAccent, 'Tracking: forward TRF r (mean across channels)'),
+                        _traceLegend(Colors.white54, 'Dashed: 95% chance level', dashed: true),
+                      ],
+                    ],
                   ),
                 ),
               for (final lane in lanes)
