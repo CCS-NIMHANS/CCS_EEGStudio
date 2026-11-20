@@ -711,6 +711,16 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
           input.path.split(RegExp(r'[/\\]')).last,
           style: const TextStyle(fontSize: 11, color: Colors.white60),
         ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : widget.onOpenRecording,
+          icon: const Icon(Icons.folder_open),
+          label: const Text('Open saved epochs / another EEG…'),
+        ),
+        Text(input.isEpoched
+          ? '${input.epochCount} saved trials detected. Trial boundaries and condition labels are restored automatically.'
+          : 'Continuous EEG · ${input.markers.length} events. Create trials below, or open a saved epoch file. Cleaned EEG alone does not contain saved trials.',
+          style: const TextStyle(fontSize: 11, color: Colors.white70)),
         const SizedBox(height: 12),
         stepCard(
           step: 1,
@@ -1315,7 +1325,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                                     )),
                                       ),
                                       Container(
-                                        height: 130,
+                                        height: 250,
                                         margin: const EdgeInsets.fromLTRB(12, 2, 12, 6),
                                         padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
                                         decoration: BoxDecoration(
@@ -1328,7 +1338,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                             Row(
                                               children: [
                                                 Text(
-                                                  'Live ERP Preview (${input.labels[_channel]})',
+                                                  'Live ERP Preview (${input.labels[_channel]}) · negative up',
                                                   style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
                                                 ),
                                                 const SizedBox(width: 14),
@@ -1511,7 +1521,15 @@ class _AveragePainter extends CustomPainter {
     final means = <Float64List?>[
       for (final c in session.conditions) session.mean(c, channel),
     ];
-    final maxV = session.displayLimit(channel);
+    var maxV = session.displayLimit(channel);
+    for (final mean in means) {
+      if (mean != null) for (final value in mean) { maxV = math.max(maxV, value.abs() * 1.1); }
+    }
+    if (means.length >= 2 && means[0] != null && means[1] != null) {
+      for (var i = 0; i < math.min(means[0]!.length, means[1]!.length); i++) {
+        maxV = math.max(maxV, (means[1]![i] - means[0]![i]).abs() * 1.1);
+      }
+    }
     final start = session.epochs.epochTmin ?? 0;
     final duration = (session.points - 1) / session.epochs.sampleRate;
     void text(String value, Offset at) {
@@ -1565,7 +1583,7 @@ class _AveragePainter extends CustomPainter {
       final path = Path();
       for (var j = 0; j < mean.length; j++) {
         final x = box.left + box.width * j / math.max(1, mean.length - 1),
-            y = box.center.dy - mean[j] / maxV * box.height * .45;
+            y = box.center.dy + mean[j] / maxV * box.height * .5;
         if (j == 0) {
           path.moveTo(x, y);
         } else {
@@ -1586,7 +1604,7 @@ class _AveragePainter extends CustomPainter {
       final diffPath = Path();
       for (var j = 0; j < math.min(a.length, b.length); j++) {
         final x = box.left + box.width * j / math.max(1, a.length - 1);
-        final y = box.center.dy - (b[j] - a[j]) / maxV * box.height * .45;
+        final y = box.center.dy + (b[j] - a[j]) / maxV * box.height * .5;
         if (j == 0) {
           diffPath.moveTo(x, y);
         } else {
@@ -1601,9 +1619,9 @@ class _AveragePainter extends CustomPainter {
           ..strokeWidth = 1.6,
       );
     }
-    text('${maxV.toStringAsFixed(1)} µV', Offset(0, box.top));
+    text('-${maxV.toStringAsFixed(1)} µV', Offset(0, box.top));
     text('0', Offset(30, box.center.dy));
-    text('-${maxV.toStringAsFixed(1)} µV', Offset(0, box.bottom - 14));
+    text('${maxV.toStringAsFixed(1)} µV', Offset(0, box.bottom - 14));
     for (var i = 0; i <= 4; i++) {
       text(
         '${((start + duration * i / 4) * 1000).round()} ms',
@@ -1621,5 +1639,6 @@ class _AveragePainter extends CustomPainter {
   bool shouldRepaint(covariant _AveragePainter old) =>
       old.session != session ||
       old.channel != channel ||
-      old.revision != revision;
+      old.revision != revision ||
+      old.windowStartMs != windowStartMs || old.windowEndMs != windowEndMs;
 }

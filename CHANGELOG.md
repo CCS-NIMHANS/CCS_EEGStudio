@@ -4,6 +4,18 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.55]
+
+- ICA review supports autoscaling and a fixed, zero-centered amplitude range retained across components and time windows.
+- Raw and cleaned EEG can be compared side by side with channels matched by name, shared time and amplitude scaling, and independent sample rates. Successfully interpolated channels retain repair history without remaining marked bad.
+- Interactive ERP always offers saved-epoch opening and distinguishes continuous cleaned recordings from saved trials. ERPimage averages have a larger, readable panel with correctly labelled negative-up scaling.
+- Linked ERP measurements retain the live review window. Publication components and selected channels follow shared settings; preview and SVG polarity agree. Exports identify the displayed figure and save a settings sidecar; unsupported topomap SVG export is disabled.
+- rERP and conventional difference waves align by sample time, with a shared amplitude range for rERP waveforms and maps. Model time axes follow epoch bounds; ML scores remain separate from amplitude maps.
+- Measurements offer on-demand per-recording PDF reports with current components, accepted trial counts, source, baseline, waveforms and condition measurements.
+- Feature plotting has a direct video/audio attachment action that works from feature CSVs. Feature gears show their own connectivity, ROI and band settings, without unrelated output-format controls; frequency bands use labelled table fields.
+- Microstate scalp maps correct the MetaMaps angle convention (nose up, subject left at plot left), including legacy results, and align electrode dots with interpolation. Timeline defaults to shorter windows, spaced channel pages and one selected similarity trace; overlays are optional.
+- Microstate syntax shows example state sequences for entropy classes and distinguishes sampled overlapping windows from unique word discovery.
+
 ## [1.2.54]
 
 ### ERP workflow and resuming saved work

@@ -109,6 +109,7 @@ pub struct MicrostateResult {
     pub state_labels: Vec<String>,
     pub channel_labels: Vec<String>,
     pub channel_positions: Vec<ScalpPosition>,
+    pub scalp_orientation: String,
     pub prototypes: Vec<Vec<f64>>,
     pub canonical_correlations: Vec<Option<f64>>,
     pub model_fits: Vec<ModelFit>,
@@ -335,6 +336,7 @@ pub fn analyse(
         state_labels,
         channel_labels: common,
         channel_positions,
+        scalp_orientation: "nose-up-left-is-left-v2".into(),
         prototypes,
         canonical_correlations,
         model_fits: models.into_iter().map(|m| m.1).collect(),
@@ -610,10 +612,10 @@ fn load_metamaps() -> Result<MetaMapsResource, String> {
 fn canonical_label(label: &str) -> String {
     let value = label.trim().to_ascii_uppercase();
     match value.as_str() {
-        "T3" => "T7/T3".into(),
-        "T4" => "T8/T4".into(),
-        "T5" => "P7/T5".into(),
-        "T6" => "P8/T6".into(),
+        "T3" | "T7" => "T7/T3".into(),
+        "T4" | "T8" => "T8/T4".into(),
+        "T5" | "P7" => "P7/T5".into(),
+        "T6" | "P8" => "P8/T6".into(),
         _ => value,
     }
 }
@@ -812,8 +814,8 @@ fn scalp_positions(labels: &[String], meta: &MetaMapsResource) -> Vec<ScalpPosit
                 let theta = channel.theta.to_radians();
                 ScalpPosition {
                     label: label.clone(),
-                    x: (channel.radius * theta.sin() / 0.5).clamp(-1.0, 1.0),
-                    y: (channel.radius * theta.cos() / 0.5).clamp(-1.0, 1.0),
+                    x: (-channel.radius * theta.cos() / 0.5).clamp(-1.0, 1.0),
+                    y: (-channel.radius * theta.sin() / 0.5).clamp(-1.0, 1.0),
                 }
             } else {
                 let (x, y) = channel_xy(label, i, labels.len());
@@ -1287,7 +1289,8 @@ fn write_topographies_svg(
         // Standard EEGLAB-style head outline, nose, ears, and electrodes.
         s.push_str(&format!(r##"<circle cx="{cx}" cy="{cy}" r="{radius}" fill="none" stroke="#e2e8f0" stroke-width="2.2"/><path d="M {} {} L {cx} {} L {} {}" fill="none" stroke="#e2e8f0" stroke-width="2.2" stroke-linejoin="round"/><path d="M {} {} C {} {},{} {},{} {} C {} {},{} {},{} {}" fill="none" stroke="#e2e8f0" stroke-width="2"/><path d="M {} {} C {} {},{} {},{} {} C {} {},{} {},{} {}" fill="none" stroke="#e2e8f0" stroke-width="2"/>"##,cx-14.0,cy-radius+3.0,cy-radius-17.0,cx+14.0,cy-radius+3.0,cx-radius-1.0,cy-20.0,cx-radius-14.0,cy-16.0,cx-radius-14.0,cy+12.0,cx-radius-2.0,cy+22.0,cx-radius-8.0,cy+9.0,cx-radius-7.0,cy-8.0,cx-radius-1.0,cy-20.0,cx+radius+1.0,cy-20.0,cx+radius+14.0,cy-16.0,cx+radius+14.0,cy+12.0,cx+radius+2.0,cy+22.0,cx+radius+8.0,cy+9.0,cx+radius+7.0,cy-8.0,cx+radius+1.0,cy-20.0));
         for position in positions {
-            s.push_str(&format!(r##"<circle cx="{:.2}" cy="{:.2}" r="1.8" fill="#0f172a" stroke="#f8fafc" stroke-width="0.55"/>"##,cx+position.x*radius*0.92,cy-position.y*radius*0.92));
+            if position.x * position.x + position.y * position.y > 1.02 { continue; }
+            s.push_str(&format!(r##"<circle cx="{:.2}" cy="{:.2}" r="1.8" fill="#0f172a" stroke="#f8fafc" stroke-width="0.55"/>"##,cx+position.x*radius,cy-position.y*radius));
         }
         // Symmetric blue-white-red scale communicates polarity explicitly.
         for i in 0..48 {
@@ -1491,6 +1494,21 @@ impl NumpyMt19937 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scalp_landmarks_are_nose_up_and_left_is_left() {
+        let meta = super::load_metamaps().unwrap();
+        let labels = ["Fz", "Cz", "Oz", "C3", "C4", "Fp1", "Fp2"].map(str::to_string);
+        let p = super::scalp_positions(&labels, &meta);
+        assert!(p[0].x.abs() < 0.001 && p[0].y > 0.4);
+        assert!(p[1].x.abs() < 0.001 && p[1].y.abs() < 0.001);
+        assert!(p[2].x.abs() < 0.001 && p[2].y < -0.9);
+        assert!(p[3].x < -0.4 && p[4].x > 0.4);
+        assert!(p[5].x < 0.0 && p[6].x > 0.0 && p[5].y > 0.9 && p[6].y > 0.9);
+        for (modern, legacy) in [("T7", "T3"), ("T8", "T4"), ("P7", "T5"), ("P8", "T6")] {
+            let pair = super::scalp_positions(&[modern.into(), legacy.into()], &meta);
+            assert!((pair[0].x - pair[1].x).abs() < 1e-8 && (pair[0].y - pair[1].y).abs() < 1e-8);
+        }
+    }
     use super::*;
     #[test]
     fn lz_known_values() {

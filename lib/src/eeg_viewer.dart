@@ -167,6 +167,17 @@ class _EegViewerState extends State<EegViewer> {
 
   /// false = show preprocessed recording, true = show raw recording
   bool _showRaw = false;
+  bool _compare = false;
+  EegRecording? get _comparisonRecording {
+    final active = _activeEeg;
+    if (active == null) return null;
+    final candidates = [if (widget.rawRecording != null) widget.rawRecording!, ...?widget.allRecordings];
+    for (final rec in candidates) {
+      if (rec.path != active.path && !rec.isEpoched && !active.isEpoched &&
+          rec.labels.any((l) => active.labels.any((a) => a.toLowerCase() == l.toLowerCase()))) return rec;
+    }
+    return null;
+  }
 
   /// Which channels are visible in stacked mode.
   List<bool> _visible = [];
@@ -571,6 +582,8 @@ class _EegViewerState extends State<EegViewer> {
                 children: [
                   _badge('${eeg.labels.length} ch', const Color(0xFF3B82F6)),
                   const SizedBox(width: 4),
+                  if (eeg.interpolatedChannels.isNotEmpty)
+                    Text('${eeg.interpolatedChannels.length} repaired', style: const TextStyle(color: Colors.tealAccent, fontSize: 11)),
                   if (widget.badChannels.any(eeg.labels.contains)) ...[
                     Tooltip(
                       message: _hideBad
@@ -647,6 +660,12 @@ class _EegViewerState extends State<EegViewer> {
           ),
           onPressed: () => setState(() => _waveformFocus = !_waveformFocus),
         ),
+        if (_comparisonRecording != null)
+          IconButton(
+            tooltip: _compare ? 'Close side-by-side comparison' : 'Compare recordings side by side',
+            icon: Icon(Icons.vertical_split, color: _compare ? Colors.lightBlueAccent : null),
+            onPressed: () => setState(() { _compare = !_compare; if (_compare) _autoscale = false; }),
+          ),
         // Pipeline stage / recording switcher
         if (widget.allRecordings != null &&
             widget.allRecordings!.length > 1) ...[
@@ -825,7 +844,7 @@ class _EegViewerState extends State<EegViewer> {
         FilterChip(
           label: const Text('Autoscale', style: TextStyle(fontSize: 12)),
           selected: _autoscale,
-          onSelected: (v) => setState(() => _autoscale = v),
+          onSelected: _compare ? null : (v) => setState(() => _autoscale = v),
           visualDensity: VisualDensity.compact,
         ),
         if (eeg.isEpoched && !widget.externalEpochNavigation)
@@ -1590,6 +1609,35 @@ class _EegViewerState extends State<EegViewer> {
           child: ClipRect(
             child: LayoutBuilder(builder: (context, box) {
               _waveH = box.maxHeight;
+              final comparison = _compare ? _comparisonRecording : null;
+              if (comparison != null) {
+                final otherIndices = <int>[];
+                final sharedIndices = <int>[];
+                for (final i in channelIndices) {
+                  final j = comparison.labels.indexWhere((l) => l.toLowerCase() == eeg.labels[i].toLowerCase());
+                  if (j >= 0) { sharedIndices.add(i); otherIndices.add(j); }
+                }
+                Widget panel(EegRecording rec, List<int> indices, bool primary) => Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text('${recordingViewerName(rec)} · ${indices.length} matched channels', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+                    Expanded(child: CustomPaint(painter: _EegSignalPainter(
+                      eeg: rec, traceColors: primary ? traceColors : const {},
+                      effectivePreview: primary ? _getEffectivePreview(rec) : rec.preview,
+                      currentEpochIndex: 0, channelIndices: indices,
+                      startSeconds: _startSeconds, windowSeconds: _viewWindow(eeg),
+                      gain: _gain, autoscale: false, stacked: _stacked,
+                      traceSpacing: _traceSpacing, stitchedEpochs: false,
+                      visibleMarkers: _markersForView(rec), epochShades: const [],
+                      timeAxisMode: _timeAxisMode,
+                    ), child: const SizedBox.expand())),
+                  ],
+                ));
+                return Column(children: [
+                  const Text('Shared time and fixed amplitude scale · channels matched by name; unmatched channels omitted', style: TextStyle(fontSize: 10)),
+                  Expanded(child: Row(children: [panel(eeg, sharedIndices, true), const VerticalDivider(width: 8), panel(comparison, otherIndices, false)])),
+                ]);
+              }
               return CustomPaint(
               painter: _EegSignalPainter(
                 eeg: eeg,

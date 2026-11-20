@@ -613,7 +613,8 @@ class _FeatureHomeState extends State<FeatureHome>
     final auto = ((_activeRecording?.provenance['summary'] as Map?)?['bad_channels'] as List?)
             ?.map((e) => e.toString()) ??
         const <String>[];
-    return {...auto, ..._cfg.manualBadChannels};
+    final repaired = _activeRecording?.interpolatedChannels.map((v) => v.toLowerCase()).toSet() ?? <String>{};
+    return {...auto, ..._cfg.manualBadChannels}.where((v) => !repaired.contains(v.toLowerCase())).toSet();
   }
 
   /// Right-click in the waveform: mark / unmark a channel as bad. Manual marks feed the "Detect bad channels" step.
@@ -2582,10 +2583,27 @@ class _FeatureHomeState extends State<FeatureHome>
   double? _mediaCursorSec;
   Rect _mediaPanelRect = const Rect.fromLTWH(24, 24, 420, 340);
 
+  Future<void> _attachFeatureMedia(String path, double duration) async {
+    if (_mediaController == null) {
+      final start = (await MediaSyncService.resolveStartForPath(path)).$1;
+      _mediaController?.dispose();
+      _mediaController = MediaSyncController(eegPath: path, eegDurationSec: duration, eegStartTime: start,
+        onTimeChanged: (sec) { if (mounted) setState(() => _mediaCursorSec = sec); });
+    }
+    if (!mounted) return;
+    await _mediaController!.registerSessionPath(path);
+    setState(() => _showMediaPanel = true);
+    await _pickAndAddMediaFiles();
+  }
+
   Future<void> _toggleMediaPanel() async {
     final rec = _activeRecording ?? _raw;
+    if (rec == null && _mediaController != null) {
+      setState(() => _showMediaPanel = !_showMediaPanel);
+      return;
+    }
     if (rec == null) {
-      _log('Open an EEG recording first to sync video or audio.');
+      _log('Open a recording, or use Add video / audio in Plots & Report.');
       return;
     }
     if (_mediaController == null || _mediaController!.eegPath != rec.path) {
@@ -4133,6 +4151,7 @@ class _FeatureHomeState extends State<FeatureHome>
     // (line plots + e-TFCE topomaps), with PNG/PDF/CSV export.
     return TopoStatsView(
       key: const ValueKey('plots-report'),
+      onAttachMedia: _attachFeatureMedia,
       featureFilePaths: _featureFilesForTopoStats,
       mediaController: _mediaController,
       initialSettings: TopoStatsSettings(
@@ -9483,16 +9502,18 @@ class _FeatureHomeState extends State<FeatureHome>
                             'Autocorrelation window (ACW)' => 'ACW',
                             'Granger Causality' ||
                             'GC-TR' ||
-                            'GC − GC-TR contrast' => 'GC',
+                            'GC − GC-TR contrast' => text,
                             'MIC' ||
-                            'MIM' ||
+                            'MIM' => text,
+
                             'Coherence (COH)' ||
                             'PLV' ||
                             'ciPLV' ||
                             'PLI' ||
-                            'wPLI' => 'Bands',
+                            'wPLI' => text,
                             _ => 'Bad channels',
                           },
+                          availableChannels: _connectivityLabels,
                         );
                         if (mounted) setState(() {});
                       },

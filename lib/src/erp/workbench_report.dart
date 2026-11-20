@@ -6,8 +6,9 @@ import 'workbench_figures.dart';
 
 Future<String> writeErpWorkbenchReport(
   Map<String, dynamic> result,
-  String output,
-) async {
+  String output, {
+  String filename = 'erp_report.pdf',
+}) async {
   final font = pw.Font.ttf(
     await rootBundle.load('assets/fonts/DejaVuSans.ttf'),
   );
@@ -62,11 +63,16 @@ Future<String> writeErpWorkbenchReport(
           style: const pw.TextStyle(fontSize: 13),
         ),
         pw.SizedBox(height: 14),
+        for (final file in files) ...[
+          note('Source: ${file['path']}'),
+          note('Participant: ${file['subject']} | accepted trials: ${file['n_a']} / ${file['n_b']} | condition counts: ${file['condition_counts'] ?? ''}'),
+        ],
+        pw.SizedBox(height: 8),
         table([
           ['Component', 'Participants', 'Recordings', 'Inference'],
           for (final g in groups)
             [
-              '${g['task']}',
+              '${g['component_name'] ?? g['task']}',
               '${g['n_subjects']}',
               '${g['n_files']}',
               (g['n_subjects'] as num? ?? 0) > 1
@@ -137,7 +143,7 @@ Future<String> writeErpWorkbenchReport(
     final profile = erpMap(g['profile']);
     final window = erpNumbers(profile['window']),
         baseline = erpNumbers(profile['baseline']);
-    final taskFiles = files.where((f) => f['task'] == g['task']).toList();
+    final taskFiles = files.where((f) => f['task'] == g['task'] || f['task'] == null).toList();
     doc.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4.landscape,
@@ -167,7 +173,16 @@ Future<String> writeErpWorkbenchReport(
             ),
           ],
           pw.SizedBox(height: 10),
-          table([
+          if (files.length == 1) table([
+            ['Component / condition', 'Accepted trials', 'Mean (µV)', 'Peak (µV)', 'Peak latency (ms)', 'Signed AUC (µV s)'],
+            for (final row in (files.first['component_measurements'] as List? ?? []).map(erpMap))
+              [
+                '${row['component']} / ${row['condition']}', '${row['n_trials']}',
+                f(erpMap(row['measures'])['mean']), f(erpMap(row['measures'])['peak_amplitude']),
+                f(erpMap(row['measures'])['peak_latency'] is num ? (erpMap(row['measures'])['peak_latency'] as num) * 1000 : null, 1),
+                f(erpMap(row['measures'])['signed_auc']),
+              ],
+          ]) else table([
             [
               'Measure (B - A across paired participants)',
               'N',
@@ -203,7 +218,7 @@ Future<String> writeErpWorkbenchReport(
           ]),
           pw.SizedBox(height: 8),
           note(
-            'Topography: component-window B - A; rings indicate max-|t|-corrected p <= .05. TANOVA GMD ${f(g['tanova_gmd'])}, p ${f(g['tanova_p'])}. ${g['permutation_patterns']} sign patterns. ${g['warning']}',
+            files.length == 1 ? 'Topography: mean B - A over the measurement window. Single-recording results are descriptive; no participant-level significance test is reported.' : 'Topography: component-window B - A; rings indicate max-|t|-corrected p <= .05. TANOVA GMD ${f(g['tanova_gmd'])}, p ${f(g['tanova_p'])}. ${g['permutation_patterns'] ?? 0} sign patterns. ${g['warning'] ?? ''}',
           ),
           if (profile['lateralized'] == true)
             note(
@@ -211,7 +226,7 @@ Future<String> writeErpWorkbenchReport(
             ),
           pw.SizedBox(height: 8),
           note(
-            'Accepted event counts by recording: ${taskFiles.take(10).map((f) => '${f['subject']}: ${f['n_a']}/${f['n_b']}').join(' | ')}${taskFiles.length > 10 ? ' | full counts in JSON' : ''}. ${taskFiles.fold<int>(0, (n, f) => n + (f['rejected_behavior'] as int) + (f['rejected_boundary'] as int) + (f['rejected_amplitude'] as int))} events excluded by behavior, boundaries, or amplitude.',
+            'Accepted event counts by recording: ${taskFiles.take(10).map((f) => '${f['subject']}: ${f['n_a']}/${f['n_b']}').join(' | ')}${taskFiles.length > 10 ? ' | full counts in JSON' : ''}. ${taskFiles.fold<int>(0, (n, f) => n + ((f['rejected_behavior'] as num?)?.toInt() ?? 0) + ((f['rejected_boundary'] as num?)?.toInt() ?? 0) + ((f['rejected_amplitude'] as num?)?.toInt() ?? 0))} events excluded by behavior, boundaries, or amplitude.',
           ),
         ],
       ),
@@ -277,9 +292,9 @@ Future<String> writeErpWorkbenchReport(
     }
   }
   final bytes = await doc.save();
-  final file = File('$output/erp_report.pdf');
+  final file = File('$output/$filename');
   await file.writeAsBytes(bytes);
-  if (files.length == 1) {
+  if (files.length == 1 && filename == 'erp_report.pdf') {
     final stem = (files.first['path'] as String? ?? '')
         .split(RegExp(r'[/\\]'))
         .last

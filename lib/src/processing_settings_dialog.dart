@@ -14,6 +14,11 @@ Future<bool> showProcessingSettings(
   String? section,
   List<String> availableChannels = const [],
 }) async {
+  final spectralSettings = ['Coherence (COH)', 'PLV', 'ciPLV', 'PLI', 'wPLI'].contains(section);
+  var spectralGraph = config.spectralGraph;
+  final roiSettings = ['MIC', 'MIM', 'Granger Causality', 'GC-TR', 'GC − GC-TR contrast'].contains(section);
+  var seed = List<String>.from(config.roiSeed);
+  var target = List<String>.from(config.roiTarget);
   final taps = TextEditingController(text: '${config.firTaps}'),
       width = TextEditingController(text: '${config.notchWidthHz}'),
       transition = TextEditingController(text: '${config.notchTransitionHz}'),
@@ -139,6 +144,7 @@ Future<bool> showProcessingSettings(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (stage != 'Feature Extraction') ...[
                 DropdownButtonFormField<RecordingFileFormat>(
                   isExpanded: true,
                   initialValue: outputFormat,
@@ -215,6 +221,7 @@ Future<bool> showProcessingSettings(
                     }
                   },
                 ),
+                ],
                 if (stage == 'Preprocessing') ...[
                   ExpansionTile(
                     title: const Text('Filter and notch'),
@@ -591,6 +598,29 @@ Future<bool> showProcessingSettings(
                   ),
                 ],
                 if (stage == 'Feature Extraction') ...[
+                  if (spectralSettings) ...[
+                    Text('$section · undirected channel connectivity'),
+                    const Text('Computed separately in each frequency band. The bands below are shared by spectral connectivity features.'),
+                    SwitchListTile(title: const Text('Save channel × channel matrices'), subtitle: const Text('Required for graph theory; otherwise save per-channel means.'), value: spectralGraph, onChanged: (v) => setState(() => spectralGraph = v)),
+                  ],
+                  if (roiSettings) ...[
+                    Text('$section · ${section == 'MIC' || section == 'MIM' ? 'undirected' : 'directed seed → target'}'),
+                    const Text('Choose the two channel regions to compare. These settings are shared by MIC, MIM and Granger measures.'),
+                    if (availableChannels.isEmpty) const Text('Open a recording to choose ROI channels. The default remains Frontal → Parieto-occipital.'),
+                    for (final isSeed in [true, false]) ...[
+                      Text(isSeed ? 'Seed region' : 'Target region', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      TextButton(onPressed: availableChannels.isEmpty ? null : () => setState(() {
+                        final selected = availableChannels.where((c) => isSeed ? c.toUpperCase().startsWith('F') : (c.toUpperCase().startsWith('P') || c.toUpperCase().startsWith('O'))).toList();
+                        if (isSeed) { seed = selected; } else { target = selected; }
+                      }), child: Text(isSeed ? 'Use frontal channels' : 'Use parietal / occipital channels')),
+                      Wrap(spacing: 4, children: [for (final ch in availableChannels)
+                        FilterChip(label: Text(ch), selected: (isSeed ? seed : target).contains(ch), onSelected: (selected) => setState(() {
+                          final list = isSeed ? seed : target;
+                          if (selected) { list.add(ch); } else { list.remove(ch); }
+                        })),
+                      ]),
+                    ],
+                  ],
                   if (section == null || section == 'Reference') DropdownButtonFormField<String>(
                     isExpanded: true,
                     initialValue: featureReference,
@@ -682,7 +712,7 @@ Future<bool> showProcessingSettings(
                     ),
                   ],
                   for (final entry in definitions.entries)
-                    if (section == null ||
+                    if (section == null || (entry.key == 'gc_lags' && roiSettings && section != 'MIC' && section != 'MIM') ||
                         section ==
                             (entry.key.startsWith('fooof_')
                                 ? 'FOOOF'
@@ -699,14 +729,8 @@ Future<bool> showProcessingSettings(
                     help:
                         'Empty = standard 17 factors. Custom list between 1 and 2; rounded to two decimals.',
                   ),
-                  if (section == null || section == 'PSD' || section == 'Bands')
-                  field(
-                    bands,
-                    'Frequency bands: label: low-high',
-                    lines: 7,
-                    help:
-                        'One band per line, e.g. Alpha: 8-12. Empty uses standard bands. FOOOF/IRASA support 1-40 Hz; connectivity uses 4-40 Hz (lower bands omitted).',
-                  ),
+                  if (section == null || section == 'PSD' || section == 'Bands' || roiSettings || spectralSettings)
+                    _FrequencyBandEditor(controller: bands),
                 ],
                 if (error != null)
                   Text(error!, style: const TextStyle(color: Colors.redAccent)),
@@ -945,6 +969,13 @@ Future<bool> showProcessingSettings(
                     throw const FormatException(
                       'Choose feature reference channels.',
                     );
+                  if (spectralSettings) config.spectralGraph = spectralGraph;
+                  if (roiSettings) {
+                    if (seed.isNotEmpty && target.isNotEmpty && seed.every(target.contains)) throw const FormatException('Choose at least one target channel outside the seed region.');
+                    config..roiSeed = seed..roiTarget = target
+                      ..roiSeedName = seed.isEmpty ? 'default' : 'Custom'
+                      ..roiTargetName = target.isEmpty ? 'default' : 'Custom';
+                  }
                   config
                     ..featureReferenceMode = featureReference
                     ..featureReferenceChannels = refs
@@ -957,7 +988,7 @@ Future<bool> showProcessingSettings(
                     ..psdBands = parsed
                     ..featureParameters = advancedValues;
                 }
-                await RecordingStorage.setPreferredFormat(outputFormat);
+                if (stage != 'Feature Extraction') await RecordingStorage.setPreferredFormat(outputFormat);
                 if (context.mounted) Navigator.pop(context, true);
               } catch (e) {
                 setState(() => error = '$e');
@@ -1009,4 +1040,41 @@ Future<bool> showProcessingSettings(
     c.dispose();
   }
   return changed == true;
+}
+
+
+class _FrequencyBandEditor extends StatefulWidget {
+  const _FrequencyBandEditor({required this.controller});
+  final TextEditingController controller;
+  @override
+  State<_FrequencyBandEditor> createState() => _FrequencyBandEditorState();
+}
+class _FrequencyBandEditorState extends State<_FrequencyBandEditor> {
+  final List<List<TextEditingController>> rows = [];
+  void add([List<String> values = const ['', '', '']]) {
+    rows.add([for (final value in values) TextEditingController(text: value)]);
+  }
+  @override
+  void initState() {
+    super.initState();
+    for (final line in widget.controller.text.split('\n')) {
+      final parts = RegExp(r'^(.+):\s*([0-9.]+)-([0-9.]+)$').firstMatch(line.trim());
+      if (parts != null) add([parts[1]!.trim(), parts[2]!, parts[3]!]);
+    }
+  }
+  void sync() => widget.controller.text = rows.map((r) => '${r[0].text}: ${r[1].text}-${r[2].text}').join('\n');
+  @override
+  void dispose() { for (final row in rows) { for (final c in row) { c.dispose(); } } super.dispose(); }
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    const Text('Frequency bands (shared by band-based features)', style: TextStyle(fontWeight: FontWeight.bold)),
+    if (rows.isEmpty) const Text('Standard bands (Hz): Delta 1–4 · Theta 4–8 · ThetaAlpha 6–10 · Alpha 8–12 · Beta1 12–18 · Beta2 18–30 · Gamma1 30–40. Add rows to use custom bands instead.'),
+    const Text('Connectivity uses 4–40 Hz; FOOOF / IRASA use 1–40 Hz.'),
+    for (final row in rows) Row(children: [
+      for (var i = 0; i < 3; i++) Expanded(child: Padding(padding: const EdgeInsets.all(4), child: TextField(controller: row[i], decoration: InputDecoration(labelText: ['Band name', 'From (Hz)', 'To (Hz)'][i]), onChanged: (_) => sync()))),
+      IconButton(tooltip: 'Remove band', icon: const Icon(Icons.delete_outline), onPressed: () => setState(() { rows.remove(row); for (final c in row) { c.dispose(); } sync(); })),
+    ]),
+    TextButton.icon(icon: const Icon(Icons.add), label: const Text('Add frequency band'), onPressed: () => setState(() { add(); sync(); })),
+    TextButton(onPressed: () => setState(() { for (final r in rows) { for (final c in r) { c.dispose(); } } rows.clear(); sync(); }), child: const Text('Use standard bands')),
+  ]);
 }

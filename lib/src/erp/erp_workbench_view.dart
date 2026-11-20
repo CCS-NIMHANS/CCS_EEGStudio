@@ -757,6 +757,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       final p = erpMap(_scanFiles.first['profile']);
       _task = p['task'] as String? ?? 'Custom';
       _fillProfile(p);
+      // Inspection defaults must not overwrite the live review's window.
+      if (widget.externalMeasurementWindow case final w?) {
+        _window0.text = '${w.$1.round()}';
+        _window1.text = '${w.$2.round()}';
+        _components.clear();
+      }
       _regroupEpochs = false;
       _reject.text = '0';
       _status = 'Using the accepted trials and condition groups from your review.';
@@ -784,6 +790,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (_window0.text != w0 || _window1.text != w1) {
         _window0.text = w0;
         _window1.text = w1;
+        if (widget.linkedReview) _components.clear();
         if (_canRun && !_busy) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _canRun && !_busy) _run();
@@ -2174,6 +2181,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   }
 
   Future<void> _run() async {
+    final start = double.tryParse(_window0.text), end = double.tryParse(_window1.text);
+    if (start != null && end != null && start < end) {
+      widget.onMeasurementWindowChanged?.call((start, end));
+    }
     final empty = _emptyConditions;
     if (empty.isNotEmpty) {
       final valid = _validConditions;
@@ -2281,6 +2292,29 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (mounted) setState(() => _status = 'Analysis stopped: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _saveFileReport(Map<String, dynamic> file) async {
+    final directory = await pickDirectorySafe(dialogTitle: 'Save report for this recording');
+    if (directory == null || !mounted) return;
+    try {
+      final snapshot = ErpCacheRecompute.recomputeErpResultsFromCache(
+        cachedFiles: [file],
+        task: _component.isEmpty ? 'Custom' : _component,
+        components: _activeComponents(),
+        participantGroups: _participantGroups,
+        excludedFiles: const {},
+        viewEpochStartMs: double.tryParse(_epoch0.text),
+        viewEpochEndMs: double.tryParse(_epoch1.text),
+        baselineStartMs: double.tryParse(_base0.text),
+        baselineEndMs: double.tryParse(_base1.text),
+      );
+      final stem = File('${file['path']}').uri.pathSegments.last.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
+      final path = await writeErpWorkbenchReport(snapshot, directory, filename: '${stem}_report.pdf');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved PDF report: $path')));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save report: $e')));
     }
   }
 
@@ -7708,6 +7742,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                           {
                                             ...dec,
                                             'window': [win0Sec, win1Sec],
+                                            'x_limits': [(double.tryParse(_epoch0.text) ?? (times.first * 1000)) / 1000, (double.tryParse(_epoch1.text) ?? (times.last * 1000)) / 1000],
                                           },
                                           decode: true,
                                         ),
@@ -7732,7 +7767,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                             'profile': erpMap(d['profile']),
                                           },
                                           valuesOverride: topoValues,
-                                          customTitle: 'ML Spatial Pattern @ $peakMs ms (B − A µV)',
+                                          customTitle: 'ML amplitude map (µV; separate from AUC) @ $peakMs ms (B − A µV)',
                                           showPValues: false,
                                         ),
                                         child: const SizedBox.expand(),
@@ -7844,6 +7879,21 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         ),
                       ],
                     ),
+                    ListTile(
+                      dense: true,
+                      leading: const Icon(Icons.picture_as_pdf),
+                      title: const Text('Per-recording PDF report'),
+                      subtitle: const Text('Current accepted trials, baseline and measurement components'),
+                      trailing: PopupMenuButton<Map<String, dynamic>>(
+                        enabled: !_busy,
+                        tooltip: 'Choose a recording and save its report',
+                        onSelected: _saveFileReport,
+                        itemBuilder: (_) => [for (final file in current)
+                          PopupMenuItem(value: file, child: Text(File('${file['path']}').uri.pathSegments.last)),
+                        ],
+                        child: const Padding(padding: EdgeInsets.all(12), child: Text('Save PDF…')),
+                      ),
+                    ),
                     ExpansionTile(
                       title: const Text('Individual ERPs', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                       children: [
@@ -7859,6 +7909,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           child: ErpPublicationPlotsView(
                             files: current,
                             groupData: d,
+                            selectedChannel: effectivePlotChannel,
+
                             profile: erpMap(d['profile']),
                             participantGroups: _participantGroups,
                             fileFactors: _fileFactors,
@@ -7869,7 +7921,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                 _components
                                   ..clear()
                                   ..addAll(comps);
+                                if (comps.length == 1) {
+                                  _window0.text = '${comps.first.windowStartMs.round()}';
+                                  _window1.text = '${comps.first.windowEndMs.round()}';
+                                }
                               });
+                              if (comps.length == 1) widget.onMeasurementWindowChanged?.call((comps.first.windowStartMs, comps.first.windowEndMs));
                               if (_waveformCache != null && _result != null) {
                                 _fastRecomputeFromCache(
                                   reason: 'Updated components in Publication Plots',
@@ -8084,11 +8141,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       ];
                 final convTimes = erpNumbers(file['times']);
                 final modelTimes = erpNumbers(m['times']);
-                final useConv = convDiff.length == modelTimes.length
-                    ? convDiff
-                    : (convTimes.length == modelTimes.length && convA.length == modelTimes.length
-                          ? convA
-                          : <double>[]);
+                // Model bins can differ from conventional sample times. Align by
+                // time rather than suppressing the comparison or plotting class A.
+                final useConv = resampleErpWave(convTimes, convDiff, modelTimes);
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -8151,6 +8206,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               return cnt > 0 ? sum / cnt : 0.0;
                             }(),
                         ];
+                        final sharedLimit = [...beta, ...useConv, ...rErpTopo].where((v) => v.isFinite).fold<double>(0.1, (a, b) => math.max(a, b.abs())) * 1.1;
                         return Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -8165,6 +8221,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                       'a': beta,
                                       'b': useConv,
                                       'model_plot': true,
+                                      'y_limits': [-sharedLimit, sharedLimit],
+                                      'x_limits': [(double.tryParse(_epoch0.text) ?? (modelTimes.first * 1000)) / 1000, (double.tryParse(_epoch1.text) ?? (modelTimes.last * 1000)) / 1000],
+                                      'window': [winStartS, winEndS],
                                       'profile': {
                                         'a_name': 'rERP: $selectedPredictor',
                                         'b_name': 'Conventional ERP (B − A)',
@@ -8193,6 +8252,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                       'profile': erpMap(file['profile']),
                                     },
                                     valuesOverride: rErpTopo,
+                                    scaleOverride: sharedLimit,
                                     customTitle:
                                         'rERP: $selectedPredictor (${(winStartS * 1000).round()}–${(winEndS * 1000).round()} ms)',
                                     showPValues: false,

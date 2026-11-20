@@ -102,6 +102,22 @@ class EegRecording {
   /// epochs. Null for continuous data or fixed-length epochs.
   final double? epochTmin;
 
+  /// Repaired channels retain their detection history, but are no longer bad.
+  Set<String> get interpolatedChannels {
+    final summary = provenance['summary'];
+    if (summary is! Map) return {};
+    final explicit = summary['interpolated_channels'];
+    if (explicit is List) return explicit.map((v) => '$v').toSet();
+    // Older engines did not save a repair list. Only infer repair when the
+    // completed interactive stage and known montage positions both agree.
+    final steps = provenance['interactive_applied_steps'];
+    if (steps is! Map || steps['interpolate'] is! Map ||
+        (steps['interpolate'] as Map)['interpolate'] != true) return {};
+    final bad = (summary['bad_channels'] as List? ?? []).map((v) => '$v').toSet();
+    const standard = {'fp1','fp2','fz','f3','f4','f7','f8','ft9','ft10','fc5','fc6','fc1','fc2','c3','c4','cz','t7','t8','cp5','cp6','cp1','cp2','p3','p4','pz','p7','p8','o1','o2','oz','tp9','tp10'};
+    return bad.where((v) => standard.contains(v.toLowerCase())).toSet();
+  }
+
   double get durationSeconds => sampleCount / sampleRate;
   bool get isEpoched => epochCount >= 1 && (pointsPerEpoch ?? 0) > 0;
   double get epochDurationSeconds =>

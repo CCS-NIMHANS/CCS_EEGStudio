@@ -64,6 +64,7 @@ class _IcaReview extends StatefulWidget {
 class _IcaReviewState extends State<_IcaReview> {
   String stage = 'blink_stage';
   int component = 0;
+  double? fixedLimit;
   @override
   Widget build(BuildContext context) {
     final report = icaReviewReport(widget.recording);
@@ -232,6 +233,8 @@ class _IcaReviewState extends State<_IcaReview> {
                           if (ic < traces.length)
                             _ComponentTimeline(
                               key: ValueKey('$stage-$ic'),
+                              fixedLimit: fixedLimit,
+                              onLimitChanged: (v) => setState(() => fixedLimit = v),
                               values: (traces[ic] as List).cast<num>(),
                               rate:
                                   ((review['trace_sample_rate'] as num?)
@@ -331,12 +334,16 @@ class _ComponentTimeline extends StatefulWidget {
     super.key,
     required this.values,
     required this.rate,
+    required this.fixedLimit,
+    required this.onLimitChanged,
     this.epochDuration,
     this.fullDuration,
     this.tracePointsPerEpoch,
   });
   final List<num> values;
   final double rate;
+  final double? fixedLimit;
+  final ValueChanged<double?> onLimitChanged;
   final double? epochDuration, fullDuration;
   final int? tracePointsPerEpoch;
   @override
@@ -381,6 +388,21 @@ class _ComponentTimelineState extends State<_ComponentTimeline> {
           crossAxisAlignment: WrapCrossAlignment.center,
           spacing: 8,
           children: [
+            FilterChip(
+              label: const Text('Autoscale'),
+              selected: widget.fixedLimit == null,
+              onSelected: (v) => widget.onLimitChanged(v ? null : math.max(1e-9, widget.values.fold<double>(0, (a, b) => math.max(a, b.abs().toDouble())))),
+            ),
+            SizedBox(width: 155, child: TextFormField(
+              key: ValueKey(widget.fixedLimit),
+              initialValue: widget.fixedLimit?.toStringAsPrecision(5) ?? '',
+              decoration: const InputDecoration(labelText: 'Fixed ± amplitude (a.u.)', hintText: 'Enter and press Return'),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              onFieldSubmitted: (text) {
+                final v = double.tryParse(text);
+                if (v != null && v.isFinite && v > 0) widget.onLimitChanged(v);
+              },
+            )),
             const Text('Window'),
             DropdownButton<double>(
               value: window,
@@ -445,7 +467,7 @@ class _ComponentTimelineState extends State<_ComponentTimeline> {
                 : null,
             child: SizedBox(
               height: 150,
-              child: CustomPaint(painter: _TracePainter(values)),
+              child: CustomPaint(painter: _TracePainter(values, widget.fixedLimit)),
             ),
           ),
         ),
@@ -539,12 +561,13 @@ class _MapPainter extends CustomPainter {
 }
 
 class _TracePainter extends CustomPainter {
-  _TracePainter(this.values);
+  _TracePainter(this.values, this.limit);
+  final double? limit;
   final List<double> values;
   @override
   void paint(Canvas canvas, Size size) {
     if (values.length < 2) return;
-    final lo = values.reduce(math.min), hi = values.reduce(math.max);
+    final lo = limit == null ? values.reduce(math.min) : -limit!, hi = limit ?? values.reduce(math.max);
     final span = math.max(hi - lo, 1e-12);
     final path = Path();
     for (var i = 0; i < values.length; i++) {
@@ -556,6 +579,8 @@ class _TracePainter extends CustomPainter {
         path.lineTo(x, y);
       }
     }
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
     canvas.drawPath(
       path,
       Paint()
@@ -563,8 +588,9 @@ class _TracePainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1,
     );
+    canvas.restore();
   }
 
   @override
-  bool shouldRepaint(_TracePainter old) => old.values != values;
+  bool shouldRepaint(_TracePainter old) => old.values != values || old.limit != limit;
 }

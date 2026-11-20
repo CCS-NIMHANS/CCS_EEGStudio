@@ -82,6 +82,7 @@ class TopoStatsView extends StatefulWidget {
     this.title = 'Plots & Report',
     this.initialSettings = const TopoStatsSettings(),
     this.mediaController,
+    this.onAttachMedia,
   });
 
   /// Seed files. A single file is expanded to all sibling sessions of the
@@ -91,6 +92,7 @@ class TopoStatsView extends StatefulWidget {
   final String title;
   final TopoStatsSettings initialSettings;
   final MediaSyncController? mediaController;
+  final Future<void> Function(String path, double durationSeconds)? onAttachMedia;
 
   static String baseName(String p) => p.split(RegExp(r'[\\/]')).last;
 
@@ -201,6 +203,13 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   @override
   void didUpdateWidget(TopoStatsView old) {
     super.didUpdateWidget(old);
+    if (old.mediaController != widget.mediaController && widget.mediaController != null) {
+      for (final group in _groups) {
+        for (final session in group.result?.sessions ?? <TopoSession>[]) {
+          widget.mediaController!.registerSessionPath(session.path);
+        }
+      }
+    }
     if (old.featureFilePaths.join('|') != widget.featureFilePaths.join('|')) {
       _setFiles(widget.featureFilePaths, autoRun: true);
     }
@@ -1983,6 +1992,22 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         visualDensity: VisualDensity.compact,
       );
 
+  Future<void> _attachPlotMedia() async {
+    final group = _currentGroup;
+    if (group == null || group.activeFiles.isEmpty) return;
+    final path = await showDialog<String>(context: context, builder: (context) => SimpleDialog(
+      title: const Text('Attach video / audio to a plotted recording'),
+      children: [
+        const Padding(padding: EdgeInsets.all(16), child: Text('Choose the recording that this media belongs to. Timing and offsets can be adjusted in the media panel.')),
+        for (final path in group.activeFiles)
+          SimpleDialogOption(onPressed: () => Navigator.pop(context, path), child: Text(TopoStatsView.baseName(path))),
+      ],
+    ));
+    if (path == null || !mounted) return;
+    final session = group.result?.sessions.where((s) => s.path == path).firstOrNull;
+    await widget.onAttachMedia?.call(path, (session?.durationMin ?? 1) * 60);
+  }
+
   Widget _buildToolbar() {
     final active = _showAllGroups
         ? _groups.where((g) => g.figure != null).toList()
@@ -1999,6 +2024,9 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       ),
       child: Row(
         children: [
+          if (widget.onAttachMedia != null)
+            TextButton.icon(onPressed: _running || _groups.isEmpty ? null : _attachPlotMedia,
+              icon: const Icon(Icons.video_library_outlined, size: 17), label: const Text('Add video / audio…')),
           const Icon(Icons.stacked_line_chart, size: 16, color: _amber),
           const SizedBox(width: 6),
           Flexible(

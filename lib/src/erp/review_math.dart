@@ -293,3 +293,17 @@ Map<String, dynamic> smoothedErpDisplay(
   if (ms > 0) 'sem_difference': [],
   if (ms > 0) 'condition_sems': {},
 };
+
+
+/// Linear interpolation onto a model's bin times, without changing the data.
+List<double> resampleErpWave(List<double> times, List<double> values, List<double> target) {
+  if (times.length < 2 || times.length != values.length || target.isEmpty) return [];
+  if (target.any((t) => t < times.first || t > times.last)) return [];
+  var j = 0;
+  return [for (final t in target) () {
+    while (j + 1 < times.length - 1 && times[j + 1] < t) { j++; }
+    final dt = times[j + 1] - times[j];
+    if (dt <= 0) return values[j];
+    return values[j] + (values[j + 1] - values[j]) * (t - times[j]) / dt;
+  }()];
+}

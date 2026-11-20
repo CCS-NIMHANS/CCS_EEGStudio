@@ -257,6 +257,7 @@ pub struct PreprocessSummary {
     pub channels: usize,
     pub samples: usize,
     pub bad_channels: Vec<String>,
+    pub interpolated_channels: Vec<String>,
     pub sensai_score: Option<f64>,
     pub thresholds: Vec<f64>,
     pub warnings: Vec<String>,
@@ -634,11 +635,13 @@ pub fn run(
         gedai_reference = if extra["reference"] == "leadfield" { "leadfield" } else if extra["reference"] == "identity" { "identity" } else { "" };
         thresholds = serde_json::from_value(extra["thresholds"].clone()).map_err(err)?;
     }
+    let mut interpolated_channels = Vec::new();
     if options.interpolate && !bad_channels.is_empty() {
-        cache.apply("interpolate", params(&["spline_stiffness","spline_regularization"]), &mut f64_channels, rec, &mut warnings, |data, rec, _| {
-            interpolate_bad_channels(data, &rec.labels, &bad_channels,options.spline_stiffness,options.spline_regularization);
-            Ok(serde_json::Value::Null)
+        let repaired = cache.apply("interpolate", serde_json::json!({"settings": params(&["spline_stiffness","spline_regularization"]), "bad_channels": &bad_channels, "implementation": "interpolation-status-v2"}), &mut f64_channels, rec, &mut warnings, |data, rec, _| {
+            let repaired = interpolate_bad_channels(data, &rec.labels, &bad_channels,options.spline_stiffness,options.spline_regularization);
+            Ok(serde_json::json!(repaired))
         })?;
+        interpolated_channels = serde_json::from_value(repaired).unwrap_or_default();
     }
     if !options.reference_mode.is_empty() && options.reference_mode != "none" {
         cache.apply("reference", params(&["reference_mode","reference_channels"]), &mut f64_channels, rec, &mut warnings, |data, rec, _| {
@@ -683,6 +686,7 @@ pub fn run(
         channels: rec.channels.len(),
         samples: rec.channels.first().map(Vec::len).unwrap_or(0),
         bad_channels,
+        interpolated_channels,
         sensai_score,
         thresholds,
         warnings,
@@ -1231,7 +1235,7 @@ fn pearson_f32_f64(left: &[f32], right: &[f64]) -> f64 {
     numerator / (left_var * right_var).sqrt().max(f64::MIN_POSITIVE)
 }
 
-fn interpolate_bad_channels(channels: &mut [Vec<f64>], labels: &[String], bad: &[String],stiffness:i32,regularization:f64) {
+fn interpolate_bad_channels(channels: &mut [Vec<f64>], labels: &[String], bad: &[String],stiffness:i32,regularization:f64) -> Vec<String> {
     let bad_idx: Vec<usize> = labels
         .iter()
         .enumerate()
@@ -1239,7 +1243,7 @@ fn interpolate_bad_channels(channels: &mut [Vec<f64>], labels: &[String], bad: &
         .map(|(i, _)| i)
         .collect();
     if bad_idx.is_empty() || bad_idx.len() >= channels.len() {
-        return;
+        return Vec::new();
     }
     let good_idx: Vec<usize> = (0..channels.len())
         .filter(|i| !bad_idx.contains(i))
@@ -1278,7 +1282,7 @@ fn interpolate_bad_channels(channels: &mut [Vec<f64>], labels: &[String], bad: &
                 channels[bad_i][s] = sum / good_idx.len() as f64;
             }
         }
-        return;
+        return bad_idx.iter().map(|&i| labels[i].clone()).collect();
     }
 
     let pos_good = DMatrix::from_fn(actual_good_idx.len(), 3, |r, c| good_coords[r][c]);
@@ -1297,6 +1301,7 @@ fn interpolate_bad_channels(channels: &mut [Vec<f64>], labels: &[String], bad: &
             channels[b_global][s] = interp_val;
         }
     }
+    actual_bad_idx.iter().map(|&i| labels[i].clone()).collect()
 }
 
 #[allow(dead_code)]

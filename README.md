@@ -70,7 +70,11 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 
 ---
 
-## ✨ What's New in v1.2.54
+## ✨ What's New in v1.2.55
+
+Readable ICA/ERP scaling, matched-channel raw/clean comparison, per-file PDF reports, feature-plot media attachment, feature-specific settings, and corrected microstate map orientation with clearer sequence views. See [CHANGELOG.md](CHANGELOG.md) for details.
+
+## What's New in v1.2.54
 
 - **ERP workflow:** One stage navigator, direct loading from cleaned EEG / saved epochs / saved results, and a repaired preprocessing handoff. Compact measurement tables open group statistics without loading waveform arrays.
 - **Interactive labels and groups:** No-regex filename setup, explicit label sources, participant/session identity, Excel cohort matching, and guided group-analysis results.

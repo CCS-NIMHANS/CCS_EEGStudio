@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
@@ -84,6 +85,7 @@ class ErpPublicationPlotsView extends StatefulWidget {
     this.initialComponents = const [],
     this.onComponentsChanged,
     this.outputDir,
+    this.selectedChannel,
   });
 
   final List<Map<String, dynamic>> files;
@@ -96,6 +98,7 @@ class ErpPublicationPlotsView extends StatefulWidget {
   final List<ErpComponentSpec> initialComponents;
   final ValueChanged<List<ErpComponentSpec>>? onComponentsChanged;
   final String? outputDir;
+  final String? selectedChannel;
 
   @override
   State<ErpPublicationPlotsView> createState() =>
@@ -240,11 +243,28 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
           );
       }
     }
-    _selectedElectrodes = ['Fz', 'Cz', 'Pz'].where(chans.contains).toList();
+    _selectedElectrodes = widget.selectedChannel != null && chans.contains(widget.selectedChannel) ? [widget.selectedChannel!] : ['Fz', 'Cz', 'Pz'].where(chans.contains).toList();
     if (_selectedElectrodes.isEmpty && chans.isNotEmpty) {
       _selectedElectrodes = chans.take(3).toList();
     }
     _academicMonochrome = _groups.length <= 2 ? false : false;
+  }
+
+  @override
+  void didUpdateWidget(covariant ErpPublicationPlotsView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.selectedChannel != oldWidget.selectedChannel && _availableChannels.contains(widget.selectedChannel)) {
+      _selectedElectrodes = [widget.selectedChannel!];
+    }
+    final next = widget.initialComponents;
+    if (next.isNotEmpty) {
+      final signature = next.map((c) => '${c.name}:${c.windowStartMs}:${c.windowEndMs}:${c.polarity}:${c.roiChannels.join(",")}').join('|');
+      final previous = oldWidget.initialComponents.map((c) => '${c.name}:${c.windowStartMs}:${c.windowEndMs}:${c.polarity}:${c.roiChannels.join(",")}').join('|');
+      if (signature != previous) {
+        _components..clear()..addAll(next.map((c) => ErpComponentDef(name: c.name, startMs: c.windowStartMs, endMs: c.windowEndMs, polarity: c.polarity, calloutElectrode: c.roiChannels.firstOrNull ?? 'Cz')));
+        _selectedComponentIndex = _selectedComponentIndex.clamp(0, _components.length - 1);
+      }
+    }
   }
 
   @override
@@ -355,6 +375,7 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
         runSpacing: 8,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
+          Text('Preview and export: ${_activeFiles.length} recording(s) · ${_selectedElectrodes.join(', ')} · ${_components.map((c) => '${c.name} ${c.startMs.round()}–${c.endMs.round()} ms').join('; ')}', style: const TextStyle(fontSize: 11)),
           SegmentedButton<int>(
             segments: const [
               ButtonSegment(
@@ -388,14 +409,14 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
             ),
           ),
           OutlinedButton.icon(
-            onPressed: _exportSvg,
+            onPressed: _figureMode == 1 ? null : _exportSvg,
             icon: const Icon(Icons.code, size: 17),
-            label: const Text('Export Vector SVG'),
+            label: Text(_figureMode == 1 ? 'Topomaps: use PNG' : 'Save displayed figure · SVG'),
           ),
           OutlinedButton.icon(
             onPressed: _exportPng,
             icon: const Icon(Icons.image, size: 17),
-            label: const Text('Export 300 DPI PNG'),
+            label: const Text('Save displayed figure · PNG'),
           ),
           FilledButton.icon(
             onPressed: _launchAdvancedStats,
@@ -997,7 +1018,17 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
     );
   }
 
+  Future<void> _writeExportContext(String path) => File('$path.settings.json').writeAsString(const JsonEncoder.withIndent('  ').convert({
+    'figure': ['waveform_grid', 'topomaps', 'interaction'][_figureMode],
+    'sources': [for (final f in _activeFiles) {'path': f['path'], 'subject': f['subject'], 'condition_counts': f['condition_counts'], 'profile': f['profile']}],
+    'electrodes': _selectedElectrodes,
+    'components': [for (final c in _components) {'name': c.name, 'start_ms': c.startMs, 'end_ms': c.endMs, 'polarity': c.polarity}],
+    'negative_up': _negativeUp, 'sem': _showSemBands,
+    'x_limits_ms': [_customXMinMs, _customXMaxMs], 'y_limits_uv': [_customYMinUv, _customYMaxUv],
+  })).then((_) {});
+
   Future<void> _exportSvg() async {
+    if (_figureMode == 1) return;
     final savePath = await FilePicker.saveFile(
       dialogTitle: 'Save Publication Figure as SVG',
       fileName:
@@ -1048,11 +1079,11 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
         layoutMode: _interactionLayout.index,
       );
     } else {
-      svgContent =
-          '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><text x="40" y="50" font-family="Arial" font-size="16">Topographic map grid export is available in high-resolution PNG.</text></svg>';
+      return;
     }
 
     await File(savePath).writeAsString(svgContent);
+    await _writeExportContext(savePath);
     if (mounted) {
       ScaffoldMessenger.of(
         context,
@@ -1086,6 +1117,7 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
       if (savePath == null) return;
 
       await File(savePath).writeAsBytes(byteData.buffer.asUint8List());
+      await _writeExportContext(savePath);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Saved 300 DPI PNG to $savePath')),
@@ -1600,8 +1632,8 @@ class PublicationWaveformGridPainter extends CustomPainter {
     );
     final loUv = yMinUv ?? -autoAmp;
     final hiUv = yMaxUv ?? autoAmp;
-    final yTopVal = negativeUp ? hiUv : loUv;
-    final yBotVal = negativeUp ? loUv : hiUv;
+    final yTopVal = negativeUp ? loUv : hiUv;
+    final yBotVal = negativeUp ? hiUv : loUv;
 
     for (var r = 0; r < nRows; r++) {
       final el = electrodes[r];
@@ -2556,8 +2588,8 @@ String generateWaveformGridSvg({
   );
   final loUv = yMinUv ?? -amplitude;
   final hiUv = yMaxUv ?? amplitude;
-  final yTopVal = negativeUp ? hiUv : loUv;
-  final yBotVal = negativeUp ? loUv : hiUv;
+  final yTopVal = negativeUp ? loUv : hiUv;
+  final yBotVal = negativeUp ? hiUv : loUv;
 
   for (var r = 0; r < nRows; r++) {
     final el = electrodes[r];

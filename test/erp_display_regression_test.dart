@@ -3,6 +3,10 @@ import 'package:ccs_eeg_app/src/erp/review_math.dart';
 import 'package:ccs_eeg_app/src/erp/publication_plots.dart';
 
 void main() {
+  test('conventional differences align to rERP bin times', () {
+    expect(resampleErpWave([-.2, 0, .2], [0, 2, 0], [-.1, .1]), [1, 1]);
+    expect(resampleErpWave([0, 1], [2, 3], [-1]), isEmpty);
+  });
   test(
     'smoothing changes every named condition without changing analysis data',
     () {

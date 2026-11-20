@@ -108,7 +108,7 @@ class MicrostateResult {
     ],
     channelPositions: [
       for (final x in json['channel_positions'] as List)
-        MicrostateScalpPosition.fromJson(x as Map<String, dynamic>),
+        MicrostateScalpPosition.fromJson(x as Map<String, dynamic>, legacyOrientation: json['scalp_orientation'] == null),
     ],
     prototypes: [
       for (final row in json['prototypes'] as List)
@@ -129,6 +129,31 @@ class MicrostateResult {
   );
 }
 
+const _legacyMetaLabels = <String>{'T3','T4','T5','T6','NZ','IZ','C3','C4','CZ','F3','F4','F7','F8','FPZ','FP1','FP2','FZ','O1','O2','P3','P4','PZ','T7/T3','T8/T4','P7/T5','P8/T6','OZ','AF7','AF3','AFZ','AF4','AF8','F5','F1','F2','F6','FT7','FC5','FC3','FC1','FCZ','FC2','FC4','FC6','FT8','C5','C1','C2','C6','TP7','CP5','CP3','CP1','CPZ','CP2','CP4','CP6','TP8','P5','P1','P2','P6','PO7','PO3','POZ','PO4','PO8','F9','F10','FT9','FT10','T9','T10','P9','P10'};
+/// One representative sequence per entropy class; adjacent repeats are omitted.
+Map<String, String> microstateSyntaxExamples(int length, {int maxStates = 8}) {
+  final examples = <String, String>{};
+  if (length < 2 || length > 8) return examples;
+  final word = <int>[0];
+  void visit(int highest) {
+    if (word.length == length) {
+      final counts = <int, int>{};
+      for (final state in word) { counts[state] = (counts[state] ?? 0) + 1; }
+      var entropy = 0.0;
+      for (final count in counts.values) { final p = count / length; entropy -= p * math.log(p) / math.ln2; }
+      examples.putIfAbsent(entropy.toStringAsFixed(3), () => word.map((i) => String.fromCharCode(65 + i)).join(' '));
+      return;
+    }
+    for (var state = 0; state <= math.min(highest + 1, maxStates - 1); state++) {
+      if (state == word.last) continue;
+      word.add(state); visit(math.max(highest, state)); word.removeLast();
+    }
+  }
+  visit(0);
+  return examples;
+}
+
+const _legacyAliasPositions = <String, List<double>>{'T7': [-1.0, 0.0],'T8': [1.0, 1.2246467991473532e-16],'P7': [-0.8090556128140002, -0.587840406937045],'P8': [0.8090556128140003, -0.5878404069370448]};
 class MicrostateScalpPosition {
   const MicrostateScalpPosition({
     required this.label,
@@ -139,12 +164,16 @@ class MicrostateScalpPosition {
   final double x;
   final double y;
 
-  factory MicrostateScalpPosition.fromJson(Map<String, dynamic> json) =>
-      MicrostateScalpPosition(
-        label: json['label'] as String,
-        x: (json['x'] as num).toDouble(),
-        y: (json['y'] as num).toDouble(),
-      );
+  factory MicrostateScalpPosition.fromJson(Map<String, dynamic> json, {bool legacyOrientation = false}) {
+    final label = json['label'] as String;
+    final x = (json['x'] as num).toDouble(), y = (json['y'] as num).toDouble();
+    if (legacyOrientation) {
+      final alias = _legacyAliasPositions[label.toUpperCase()];
+      if (alias != null) return MicrostateScalpPosition(label: label, x: alias[0], y: alias[1]);
+      if (_legacyMetaLabels.contains(label.toUpperCase())) return MicrostateScalpPosition(label: label, x: -y, y: -x);
+    }
+    return MicrostateScalpPosition(label: label, x: x, y: y);
+  }
 }
 
 class MicrostateRecordingResult {
@@ -397,7 +426,9 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   List<EegRecording> _analysisInputs = const [];
   double _timelineStartSeconds = 0;
   int _transitionMode = 1; // 0 all samples, 1 leaving a state, 2 versus chance
-  double _timelineWindowSeconds = 20;
+  double _timelineWindowSeconds = 5;
+  bool _similarityOverlay = false;
+  int _similarityState = 0, _timelineChannelOffset = 0;
   int _timelineWaveformChannels = 6;
   final Set<int> _hiddenSimilarityStates = {};
 
@@ -2116,6 +2147,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                 onChanged: (v) => setState(() {
                   _recordingIndex = v ?? 0;
                   _timelineStartSeconds = 0;
+                  _timelineChannelOffset = 0;
                 }),
               ),
           ],
@@ -2137,7 +2169,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         ),
         Text(
           [
-            'Each head is one recurring scalp pattern, seen from above (nose up). Red and blue are opposite polarity relative to the average; the sign is arbitrary, so a map and its mirror image are the same state. Colours are scaled per map (± its own maximum), so compare shapes, not amplitudes. The line under each head gives that state\'s share of the recording, its mean duration, and how often it starts.',
+            'Each head is one recurring scalp pattern, seen from above (nose up). Red and blue are opposite polarity relative to the average; the sign is arbitrary, so a map and its colour-reversed version are the same state. Colours are scaled per map (± its own maximum), so compare shapes, not amplitudes. The line under each head gives that state\'s share of the recording, its mean duration, and how often it starts.',
             if (result.canonicalCorrelations.any((r) => r != null))
               'The r next to a label is its absolute spatial correlation with the matched MetaMaps_2023_06 canonical template.'
             else
@@ -2313,6 +2345,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
     final classes = (syntax['classes'] as List? ?? const []).cast<Map>();
     final len = (syntax['word_length'] as num?)?.toInt() ?? 0;
     final windows = (syntax['windows'] as num?)?.toInt() ?? 0;
+    final examples = microstateSyntaxExamples(len, maxStates: recording.states.length);
     final k = recording.states.length;
     final possible = len > 0 && k > 1 ? k * math.pow(k - 1, len - 1) : 0;
     final share = possible > 0 ? windows / possible : 0.0;
@@ -2331,14 +2364,16 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Microstate syntax · ${len}-state words', style: Theme.of(context).textTheme.titleMedium),
+        Text('State sequences · $len state visits per word', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 4),
         const Text(
           'A “word” is a run of consecutive microstates (staying in a state does not count, so A A A B C → A B C). '
           'Syntax asks whether the recording visits states in more (or less) structured orders than chance. '
-          'Words are grouped by how varied they are: a low entropy word keeps bouncing between a few states, the highest entropy word visits all different states.',
+          'Words are grouped by how varied they are: a low entropy word uses fewer distinct states more often; a highest-entropy word visits all different states. Entropy describes state counts within a word, not its exact order.',
           style: TextStyle(fontSize: 12, color: Color(0xFFCBD5E1), height: 1.4),
         ),
+        const SizedBox(height: 8),
+        Text('Example: ${List.generate(len, (i) => i.isEven ? 'A' : 'B').join(' → ')} repeatedly alternates two maps. ${List.generate(len, (i) => String.fromCharCode(65 + i % k)).join(' → ')} visits different maps. Each sliding word is counted; classes combine many sequences with the same state-count distribution.', style: const TextStyle(fontSize: 12)),
         const SizedBox(height: 8),
         Container(
           width: double.infinity,
@@ -2350,21 +2385,21 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           child: Text(
             windows == 0
                 ? 'No complete $len-state words were found (epochs are never joined). Try a shorter word length.'
-                : 'Evidence: $windows words were observed out of $possible possible ${len}-state words (${(share * 100).toStringAsFixed(share < .01 ? 2 : 1)}%). '
-                      '${share < .1 ? "That is sparse, so the class shares below are noisy. Use a shorter word length (3–4) or fewer states, or analyse more data, before drawing conclusions." : "That is enough for stable class shares."}',
+                : 'Evidence: $windows overlapping word windows were sampled; $possible different $len-visit sequences are possible. This is not the percentage of unique sequences discovered. '
+                      '${share < .1 ? "That is sparse, so the class shares below are noisy. Use a shorter word length (3–4) or fewer states, or analyse more data, before drawing conclusions." : "Compare the observed and reference shares below; this comparison alone does not establish statistical significance."}',
             style: const TextStyle(fontSize: 12, height: 1.4),
           ),
         ),
-        for (final w in warnings)
+        for (final w in warnings.where((w) => !w.startsWith('Only ')))
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(w, style: const TextStyle(color: Colors.orange, fontSize: 11)),
           ),
         const SizedBox(height: 10),
         if (classes.isNotEmpty) ...[
-          const Text('Share of words in each class', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          const Text('Share of words · example sequence for each entropy class', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
-          SizedBox(height: 200, child: CustomPaint(painter: _SyntaxBarsPainter(classes), child: const SizedBox.expand())),
+          SizedBox(height: 200, child: CustomPaint(painter: _SyntaxBarsPainter(classes, examples), child: const SizedBox.expand())),
           Wrap(
             spacing: 14,
             children: const [
@@ -2389,7 +2424,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
             child: DataTable(
               columns: const [
                 DataColumn(
-                  label: Text('Word class (entropy, bits)'),
+                  label: Text('Example sequence · entropy'),
                   tooltip: 'How varied the states within a word are. Low = bouncing between few states; highest = all different.',
                 ),
                 DataColumn(label: Text('Chance'), tooltip: 'TER: share of words in this class if states followed each other at random (no repeats).'),
@@ -2401,7 +2436,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
               rows: [
                 for (final c in classes)
                   DataRow(cells: [
-                    DataCell(Text(_d(c['entropy_bits']).toStringAsFixed(3))),
+                    DataCell(Text('${examples[_d(c['entropy_bits']).toStringAsFixed(3)] ?? '—'}\n${_d(c['entropy_bits']).toStringAsFixed(3)} bits')),
                     DataCell(Text(share2(c['theoretical']))),
                     DataCell(Text(share2(c['empirical']))),
                     DataCell(Text(share2(c['markov']))),
@@ -2630,7 +2665,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                   FilterChip(
                     visualDensity: VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    selected: !_hiddenSimilarityStates.contains(index),
+                    selected: _similarityOverlay ? !_hiddenSimilarityStates.contains(index) : index == _similarityState,
                     selectedColor: _stateColors[index % _stateColors.length]
                         .withValues(alpha: .35),
                     avatar: Container(
@@ -2643,6 +2678,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                     ),
                     label: Text(label, style: const TextStyle(fontSize: 10)),
                     onSelected: (selected) => setState(() {
+                      _similarityState = index;
                       selected
                           ? _hiddenSimilarityStates.remove(index)
                           : _hiddenSimilarityStates.add(index);
@@ -2695,6 +2731,9 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                     ),
                   ),
                   const Spacer(),
+                  IconButton(tooltip: 'Previous channels', onPressed: _timelineChannelOffset > 0 ? () => setState(() => _timelineChannelOffset = math.max(0, _timelineChannelOffset - _timelineWaveformChannels)) : null, icon: const Icon(Icons.chevron_left)),
+                  Text('${_timelineChannelOffset + 1}–${math.min(source.labels.length, _timelineChannelOffset + _timelineWaveformChannels)}'),
+                  IconButton(tooltip: 'Next channels', onPressed: _timelineChannelOffset + _timelineWaveformChannels < source.labels.length ? () => setState(() => _timelineChannelOffset += _timelineWaveformChannels) : null, icon: const Icon(Icons.chevron_right)),
                   const Text(
                     'Visible channels',
                     style: TextStyle(color: Color(0xFF64748B), fontSize: 10),
@@ -2708,18 +2747,19 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                         DropdownMenuItem(value: n, child: Text('$n')),
                     ],
                     onChanged: (value) =>
-                        setState(() => _timelineWaveformChannels = value ?? 6),
+                        setState(() { _timelineWaveformChannels = value ?? 6; _timelineChannelOffset = 0; }),
                   ),
                 ],
               ),
               SizedBox(
-                height: math.max(150, _timelineWaveformChannels * 24),
+                height: math.max(230, _timelineWaveformChannels * 44),
                 child: CustomPaint(
                   painter: _MicrostateWaveformPainter(
                     source,
                     start,
                     window,
                     _timelineWaveformChannels,
+                    _timelineChannelOffset,
                   ),
                   size: Size.infinite,
                 ),
@@ -2727,7 +2767,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
             ],
             const SizedBox(height: 8),
             const Text(
-              'Per-state similarity probability',
+              'Similarity to scalp patterns',
               style: TextStyle(
                 color: Color(0xFF94A3B8),
                 fontSize: 11,
@@ -2735,11 +2775,12 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
               ),
             ),
             const Text(
-              'Squared spatial correlations normalized across states at every sample (the traces sum to 1).',
+              'Select a state chip above to inspect its trace. Values are relative similarity (0–1), not a probability of brain activity. Overlay is optional.',
               style: TextStyle(color: Color(0xFF64748B), fontSize: 10),
             ),
+            SwitchListTile(dense: true, title: const Text('Overlay selected state traces'), value: _similarityOverlay, onChanged: (v) => setState(() => _similarityOverlay = v)),
             SizedBox(
-              height: 150,
+              height: 190,
               child: recording.stateProbabilities.isEmpty
                   ? const Center(
                       child: Text(
@@ -2754,7 +2795,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                         endSample,
                         start,
                         window,
-                        {..._hiddenSimilarityStates},
+                        _similarityOverlay ? {..._hiddenSimilarityStates} : {for (var i = 0; i < recording.stateProbabilities.length; i++) if (i != _similarityState) i},
                       ),
                       size: Size.infinite,
                     ),
@@ -3012,7 +3053,9 @@ class _MicrostateWaveformPainter extends CustomPainter {
     this.startSeconds,
     this.windowSeconds,
     this.channelCount,
+    this.channelOffset,
   );
+  final int channelOffset;
   final EegRecording recording;
   final double startSeconds;
   final double windowSeconds;
@@ -3024,12 +3067,12 @@ class _MicrostateWaveformPainter extends CustomPainter {
     final left = rect.left;
     final width = rect.width;
     canvas.drawRect(Offset.zero & size, Paint()..color = Colors.white);
-    final channels = math.min(channelCount, recording.preview.length);
+    final channels = math.min(channelCount, recording.preview.length - channelOffset);
     if (channels == 0) return;
     final lane = rect.height / channels;
     final duration = recording.durationSeconds;
     for (var channel = 0; channel < channels; channel++) {
-      final values = recording.preview[channel];
+      final values = recording.preview[channel + channelOffset];
       if (values.length < 2 || duration <= 0) continue;
       final a = (startSeconds / duration * values.length).floor().clamp(
         0,
@@ -3063,7 +3106,7 @@ class _MicrostateWaveformPainter extends CustomPainter {
       );
       final label = TextPainter(
         text: TextSpan(
-          text: recording.labels[channel],
+          text: recording.labels[channel + channelOffset],
           style: const TextStyle(
             color: Color(0xFF334155),
             fontSize: 9,
@@ -3097,7 +3140,7 @@ class _MicrostateWaveformPainter extends CustomPainter {
       old.recording != recording ||
       old.startSeconds != startSeconds ||
       old.windowSeconds != windowSeconds ||
-      old.channelCount != channelCount;
+      old.channelCount != channelCount || old.channelOffset != channelOffset;
 }
 
 const _timelineLeft = 58.0;
@@ -3246,7 +3289,7 @@ class _TopographyPainter extends CustomPainter {
         if (position.x * position.x + position.y * position.y > 1.02) continue;
         c.drawCircle(
           center +
-              Offset(position.x * radius * .92, -position.y * radius * .92),
+              Offset(position.x * radius, -position.y * radius),
           math.max(1.2, radius * .022),
           Paint()..color = const Color(0xFFF8FAFC),
         );
@@ -3352,13 +3395,14 @@ class _Swatch extends StatelessWidget {
 
 /// Grouped bars per word class: chance, Markov, observed (percent of words).
 class _SyntaxBarsPainter extends CustomPainter {
-  const _SyntaxBarsPainter(this.classes);
+  const _SyntaxBarsPainter(this.classes, this.examples);
+  final Map<String, String> examples;
   final List<Map> classes;
 
   @override
   void paint(Canvas c, Size z) {
     if (classes.isEmpty) return;
-    final left = 38.0, bottom = 24.0, top = 6.0;
+    final left = 38.0, bottom = 32.0, top = 6.0;
     final plotW = z.width - left - 4, plotH = z.height - bottom - top;
     double v(Map m, String k) => m[k] is num ? (m[k] as num).toDouble() : 0.0;
     var maxV = 0.0;
@@ -3389,7 +3433,7 @@ class _SyntaxBarsPainter extends CustomPainter {
       }
       final t = TextPainter(
         text: TextSpan(
-          text: v(classes[i], 'entropy_bits').toStringAsFixed(2),
+          text: (examples[v(classes[i], 'entropy_bits').toStringAsFixed(3)] ?? v(classes[i], 'entropy_bits').toStringAsFixed(2)),
           style: const TextStyle(fontSize: 9, color: Color(0xFFCBD5E1)),
         ),
         textDirection: TextDirection.ltr,
