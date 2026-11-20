@@ -76,6 +76,19 @@ Future<List<Map<String, dynamic>>> _decodeErpChunkInWorker(
   return out;
 }
 
+/// Top-level `Isolate.run` boundaries prevent Dart closures in Stateful widgets
+/// from capturing `this` (`State` -> `BuildContext` -> `WidgetsFlutterBinding`).
+Future<List<Map<String, dynamic>>> decodeErpChunkInIsolate(
+  List<String> paths,
+  bool stripGroups,
+) => Isolate.run(
+      () => _decodeErpChunkInWorker((paths: paths, stripGroups: stripGroups)),
+    );
+
+Future<Map<String, dynamic>> mergeErpResultsInIsolate(
+  List<Map<String, dynamic>> resultsList,
+) => Isolate.run(() => _ErpWorkbenchViewState.mergeErpResults(resultsList));
+
 /// Top-level worker to read, decode, and merge saved `.ccserp` / `erp_results.json`
 /// files off the UI isolate without capturing Flutter `State` or `BuildContext`.
 Future<({Map<String, dynamic> merged, int loadedFiles})> loadErpFolderInWorker(
@@ -1456,10 +1469,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           chunks.add(batch.sublist(i, math.min(i + subSize, batch.length)));
         }
         final decoded = await Future.wait([
-          for (final c in chunks)
-            Isolate.run(
-              () => _decodeErpChunkInWorker((paths: c, stripGroups: multi)),
-            ),
+          for (final c in chunks) decodeErpChunkInIsolate(c, multi),
         ]);
         for (final d in decoded) {
           resultsList.addAll(d);
@@ -1476,9 +1486,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         _progress = 0.95;
         _status = 'Merging ${resultsList.length} saved ERP recording(s)…';
       });
-      final merged = await Isolate.run(
-        () => _ErpWorkbenchViewState.mergeErpResults(resultsList),
-      );
+      final merged = await mergeErpResultsInIsolate(resultsList);
       if (!mounted) return;
       if (merged.isEmpty) {
         setState(
