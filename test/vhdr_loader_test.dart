@@ -98,8 +98,8 @@ void main() {
   test('resolves unique fuzzy typo even when binary filename differs from vhdr stem', () async {
     final dir = await Directory.systemTemp.createTemp('ccs_vhdr_fuzzy_');
     try {
-      final vhdrPath = '${dir.path}/Sub01_Renamed.vhdr';
-      final eegPath = '${dir.path}/Sub01_TKG01_data.eeg';
+      final vhdrPath = '${dir.path}${Platform.pathSeparator}Sub01_Renamed.vhdr';
+      final eegPath = '${dir.path}${Platform.pathSeparator}Sub01_TKG01_data.eeg';
       await File(vhdrPath).writeAsString(
         '[Common Infos]\n'
         'DataFile=Sub01_TK01_data.eeg\n'
