@@ -501,7 +501,7 @@ class MediaSyncController extends ChangeNotifier {
     }
     final wav = seg.audioPath;
     if (wav == null) throw StateError('No audio is available for ${seg.label}.');
-    final recPath = MediaSyncService.trackingRecordingPath(sessionPath);
+    final recPath = MediaSyncService.trackingRecordingPath(key == _primaryKey ? eegPath : sessionPath);
     _trackingBusy = true;
     _status = 'Neural Speech Tracking (${seg.label})…';
     notifyListeners();
