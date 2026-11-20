@@ -183,30 +183,32 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   static Future<String> _resolveGroupStatsScript() async {
     final currentDir = Directory.current.path;
     final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final sep = Platform.pathSeparator;
     final candidates = [
-      '$currentDir/backend/group_stats.py',
-      '$currentDir/../backend/group_stats.py',
-      '$exeDir/backend/group_stats.py',
-      '$exeDir/../Resources/backend/group_stats.py',
-      '$exeDir/../Resources/group_stats.py',
-      '$exeDir/../lib/ccseegstudio/backend/group_stats.py',
+      '$exeDir/../Frameworks/App.framework/Resources/flutter_assets/assets/group_stats.py',
+      '$exeDir/data/flutter_assets/assets/group_stats.py',
+      '$currentDir${sep}assets${sep}group_stats.py',
+      '$currentDir${sep}backend${sep}group_stats.py',
+      '$currentDir$sep..${sep}backend${sep}group_stats.py',
+      '$exeDir${sep}backend${sep}group_stats.py',
+      '$exeDir$sep..${sep}Resources${sep}backend${sep}group_stats.py',
+      '$exeDir$sep..${sep}Resources${sep}group_stats.py',
+      '$exeDir$sep..${sep}lib${sep}ccseegstudio${sep}backend${sep}group_stats.py',
     ];
     for (final c in candidates) {
       if (File(c).existsSync()) return c;
     }
 
     try {
-      final scriptContent = await rootBundle.loadString(
-        'assets/group_stats.py',
-      );
+      final data = await rootBundle.load('assets/group_stats.py');
       final tempFile = File(
         '${(await _runtimeDirectory).path}${Platform.pathSeparator}group_stats.py',
       );
-      await tempFile.writeAsString(scriptContent);
+      await tempFile.writeAsBytes(data.buffer.asUint8List());
       return tempFile.path;
     } catch (_) {}
 
-    return '$currentDir/backend/group_stats.py';
+    throw StateError('group_stats.py not found in app bundle or workspace');
   }
 
   Future<void> _pickCsvFile() async {
@@ -819,12 +821,32 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: ThemeData.light(useMaterial3: true).copyWith(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1F4E79)),
+      data: ThemeData.dark(useMaterial3: true).copyWith(
+        scaffoldBackgroundColor: const Color(0xFF0B1120),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF38BDF8),
+          brightness: Brightness.dark,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFF0F172A),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF334155)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF334155)),
+          ),
+        ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+      child: Container(
+        color: const Color(0xFF0B1120),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
           _buildHeaderCard(),
           const SizedBox(height: 12),
           _buildDataSourceCard(),
@@ -836,26 +858,26 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             const SizedBox(height: 12),
             Card(
               elevation: 0,
-              color: Colors.white,
+              color: const Color(0xFF111827),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: Colors.grey.shade300),
+                side: BorderSide(color: const Color(0xFF334155)),
               ),
               child: ExpansionTile(
                 tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
                 initiallyExpanded:
                     !((_inspectionData?['has_composite_roi'] == true) ||
                         ((_inspectionData?['channel_count'] as num? ?? 0) <= 1)),
-                leading: const Icon(Icons.sensors, size: 20, color: Color(0xFF1F4E79)),
+                leading: const Icon(Icons.sensors, size: 20, color: Color(0xFF38BDF8)),
                 title: const Text(
                   'Advanced: EEG Channel Scope & Filtering',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Colors.white),
                 ),
                 subtitle: Text(
                   _inspectionData?['has_composite_roi'] == true
                       ? 'Composite ERP ROIs detected — keeping CSV ROI rows intact (scope: $_channelScope)'
                       : 'Channel aggregation scope: $_channelScope',
-                  style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700),
+                  style: TextStyle(fontSize: 11.5, color: Colors.white70),
                 ),
                 children: [
                   Padding(
@@ -958,7 +980,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             _buildResultsCard(),
             const SizedBox(height: 12),
           ],
-        ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -966,10 +990,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget _buildHeaderCard() {
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(color: const Color(0xFF334155)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -979,12 +1003,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: const Color(0xFF1F4E79).withOpacity(0.1),
+                color: const Color(0xFF38BDF8).withOpacity(0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Icon(
                 Icons.analytics_outlined,
-                color: Color(0xFF1F4E79),
+                color: Color(0xFF38BDF8),
                 size: 26,
               ),
             ),
@@ -998,13 +1022,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFF1F4E79),
+                      color: Color(0xFF38BDF8),
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     '1. Load feature files or a results folder. 2. Review metadata and subject/state factors. 3. Select outcomes and run. Plots, tables and reports are saved together.',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                    style: TextStyle(fontSize: 12, color: Colors.white70),
                   ),
                 ],
               ),
@@ -1018,10 +1042,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget _buildDataSourceCard() {
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(color: const Color(0xFF334155)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1033,7 +1057,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 const Icon(
                   Icons.table_chart_outlined,
                   size: 20,
-                  color: Color(0xFF1F4E79),
+                  color: Color(0xFF38BDF8),
                 ),
                 const SizedBox(width: 8),
                 const Text(
@@ -1186,7 +1210,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 _statusMessage,
                 style: TextStyle(
                   fontSize: 12,
-                  color: Colors.grey.shade700,
+                  color: Colors.white70,
                   fontStyle: FontStyle.italic,
                 ),
               ),
@@ -1212,10 +1236,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(color: const Color(0xFF334155)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1224,7 +1248,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           children: [
             const Row(
               children: [
-                Icon(Icons.tune, size: 20, color: Color(0xFF1F4E79)),
+                Icon(Icons.tune, size: 20, color: Color(0xFF38BDF8)),
                 SizedBox(width: 8),
                 Text(
                   'Model Specification & Factors',
@@ -1450,10 +1474,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(color: const Color(0xFF334155)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1465,7 +1489,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 const Icon(
                   Icons.check_box_outlined,
                   size: 20,
-                  color: Color(0xFF1F4E79),
+                  color: Color(0xFF38BDF8),
                 ),
                 const SizedBox(width: 8),
                 Text(
@@ -1498,7 +1522,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                           ? Icons.check_circle
                           : Icons.add_circle_outline,
                       size: 16,
-                      color: const Color(0xFF1F4E79),
+                      color: const Color(0xFF38BDF8),
                     ),
                     label: Text('${entry.key} (${entry.value.length})'),
                     onPressed: () {
@@ -1520,9 +1544,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             Container(
               height: 150,
               decoration: BoxDecoration(
-                border: Border.all(color: Colors.grey.shade300),
+                border: Border.all(color: const Color(0xFF334155)),
                 borderRadius: BorderRadius.circular(8),
-                color: Colors.grey.shade50,
+                color: Colors.white,
               ),
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(8),
@@ -1617,10 +1641,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(color: const Color(0xFF334155)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1637,7 +1661,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     style: TextStyle(
                       fontSize: 14.5,
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFF0F172A),
+                      color: Colors.white,
                     ),
                   ),
                 ),
@@ -1913,7 +1937,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: Colors.teal.shade300),
@@ -1933,7 +1957,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFF0F172A),
+                      color: Colors.white,
                     ),
                   ),
                 ),
@@ -2082,10 +2106,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget _buildActionRunCard() {
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(color: const Color(0xFF334155)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -2147,7 +2171,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 child: LinearProgressIndicator(
                   value: _analysisProgress > 0 ? _analysisProgress : null,
                   minHeight: 8,
-                  backgroundColor: Colors.grey.shade200,
+                  backgroundColor: const Color(0xFF1E293B),
                   valueColor: const AlwaysStoppedAnimation<Color>(
                     Color(0xFF1F4E79),
                   ),
@@ -2225,10 +2249,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(color: const Color(0xFF334155)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -2240,7 +2264,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               children: [
                 const Icon(
                   Icons.folder_special_outlined,
-                  color: Color(0xFF1F4E79),
+                  color: Color(0xFF38BDF8),
                   size: 24,
                 ),
                 const SizedBox(width: 8),
@@ -2259,7 +2283,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                         'Saved to: $outputDir',
                         style: TextStyle(
                           fontSize: 11,
-                          color: Colors.grey.shade600,
+                          color: Colors.white60,
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -2379,9 +2403,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: Colors.grey.shade50,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade300),
+        border: Border.all(color: const Color(0xFF334155)),
       ),
       padding: const EdgeInsets.all(12),
       child: Column(
@@ -2400,7 +2424,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 13,
-                        color: Color(0xFF1F4E79),
+                        color: Color(0xFF38BDF8),
                       ),
                     ),
                     if (isMacro)
@@ -2708,10 +2732,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: isSig ? Colors.green.shade50 : Colors.grey.shade100,
+        color: isSig ? Colors.green.shade50 : const Color(0xFF0F172A),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isSig ? Colors.green.shade400 : Colors.grey.shade300,
+          color: isSig ? Colors.green.shade400 : const Color(0xFF334155),
         ),
       ),
       child: Text(
@@ -2719,7 +2743,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         style: TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.bold,
-          color: isSig ? Colors.green.shade800 : Colors.grey.shade600,
+          color: isSig ? Colors.green.shade800 : Colors.white60,
         ),
       ),
     );
