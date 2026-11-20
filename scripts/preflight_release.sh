@@ -113,7 +113,38 @@ else
   fi
 fi
 
-echo "[4/5] Flutter static analysis & Dart test suite..."
+echo "[4/5] Flutter static analysis, Windows path-separator guard & Dart test suite..."
+if python3 - <<'PY'
+import glob, re, sys
+bad = []
+assign_slash_re = re.compile(r"""(?:final|var|const|String)\s+(\w+)\s*=\s*['"][^'"]*\$\{[^}]*\.path\}/""")
+assign_any_re = re.compile(r"""(?:final|var|const|String)\s+(\w+)\s*=""")
+direct_re = re.compile(r"""expect\([^;]*['"][^'"]*\$\{[^}]*\.path\}/""")
+for path in sorted(glob.glob("test/**/*.dart", recursive=True)):
+    lines = open(path, encoding="utf-8").read().splitlines()
+    vars_with_slash = set()
+    for idx, line in enumerate(lines, 1):
+        m_slash = assign_slash_re.search(line)
+        if m_slash:
+            vars_with_slash.add(m_slash.group(1))
+        else:
+            m_any = assign_any_re.search(line)
+            if m_any:
+                vars_with_slash.discard(m_any.group(1))
+        if direct_re.search(line) and "File(" not in line and "Directory(" not in line and "Link(" not in line:
+            bad.append(f"{path}:{idx}: {line.strip()}")
+        elif "expect(" in line and any(re.search(rf"\bexpect\([^,]+,\s*{re.escape(v)}\b", line) for v in vars_with_slash):
+            bad.append(f"{path}:{idx}: {line.strip()} (uses variable with hardcoded '/' after .path)")
+if bad:
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+PY
+then
+  pass_msg "No unportable '/' path-string assertions found in test/ (Windows-safe)"
+else
+  fail_msg "Found hardcoded '/' after .path in test/ assertion — use \${Platform.pathSeparator} so Windows CI passes"
+fi
+
 if flutter analyze --no-fatal-infos; then
   pass_msg "flutter analyze --no-fatal-infos passed cleanly"
 else
