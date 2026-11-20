@@ -34,7 +34,7 @@ void main() {
       components: [const ErpComponentSpec(name:'P3',windowStartMs:300,windowEndMs:600,polarity:1,roiChannels:['Pz'])],
       participantGroups: {}, excludedFiles: {}, baselineStartMs:-200,baselineEndMs:0,
     );
-    final output = Directory('/private/tmp/ccs-report-review')..createSync(recursive:true);
+    final output = Directory('${Directory.systemTemp.path}/ccs-report-review')..createSync(recursive:true);
     final path = await tester.runAsync(() => writeErpWorkbenchReport(snapshot, output.path, filename:'example_report.pdf'));
     expect(File(path!).readAsBytesSync().take(4), [37,80,68,70]);
     expect(File(path).lengthSync(), greaterThan(5000));
