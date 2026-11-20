@@ -5,9 +5,37 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ccs_eeg_app/src/media/media_sync_service.dart';
 import 'package:ccs_eeg_app/src/media/synced_media_panel.dart';
 import 'package:ccs_eeg_app/src/topostats/topostats_view.dart';
+import 'package:ccs_eeg_app/src/state_dynamics/state_dynamics_view.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets('tracking method explains held-out moving windows and silence', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: SingleChildScrollView(child: SpeechTrackingMethod()))));
+    await tester.tap(find.text('How speech tracking is computed'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('20-second moving windows'), findsOneWidget);
+    expect(find.textContaining('Silence is included'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('six state chips do not collapse feature mapping heading', (tester) async {
+    tester.view.physicalSize = const Size(1100, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final result = StateDynamicsResult.fromJson({
+      'feature_set': 'paper', 'chosen_k': 6,
+      'metrics': ['power'], 'rois': ['Fz'],
+      'states': [for (final label in ['A','B','C','D','E','F']) {
+        'label': label, 'centroid_z': [[0.0]], 'sig_dots': [[false]], 'iv_values': [[0.0]],
+      }],
+    });
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: SingleChildScrollView(child: StateDynamicsView(featureFilePaths: const [], result: result, hideTimeline: true)))));
+    await tester.pumpAndSettle();
+    final heading = find.textContaining('pooled states: State Feature Mapping');
+    expect(tester.getSize(heading).width, greaterThan(700));
+    expect(tester.getSize(heading).height, lessThan(80));
+    expect(tester.takeException(), isNull);
+  });
   test('speech tracking resolves a controller primary feature CSV to EEG samples', () {
     final dir = Directory.systemTemp.createTempSync('tracking-source-');
     addTearDown(() => dir.deleteSync(recursive:true));

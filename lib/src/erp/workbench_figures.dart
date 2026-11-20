@@ -407,8 +407,10 @@ class ErpButterflyPainter extends CustomPainter {
     this.windowSec,
     this.hoverX,
     this.showGfp = true,
+    this.title = 'Butterfly',
   });
 
+  final String title;
   final List<double> times;
   final Map<String, List<double>> channelWaves;
   final String? highlightedChannel;
@@ -716,7 +718,7 @@ class ErpButterflyPainter extends CustomPainter {
 
     erpText(
       canvas,
-      'Butterfly (${channelWaves.length} ch)${highlightedChannel != null ? ' · Highlighted: $highlightedChannel' : ''}',
+      '$title (${channelWaves.length} ch)${highlightedChannel != null ? ' · Highlighted: $highlightedChannel' : ''}',
       const Offset(60, 6),
       size: 11,
       color: const Color(0xFF0F172A),

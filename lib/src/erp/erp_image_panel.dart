@@ -18,8 +18,10 @@ class ErpImagePanel extends StatefulWidget {
     this.windowEndMs = 600.0,
     this.onTopoWindowChanged,
     this.activeTrialIndex,
+    this.average,
   });
 
+  final Widget? average;
   final InteractiveErpSession session;
   final int channelIndex;
   final List<int> trialIndices;
@@ -262,7 +264,7 @@ class _ErpImagePanelState extends State<ErpImagePanel> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Expanded(
-                  child: LayoutBuilder(
+                  child: Column(children: [Expanded(child: LayoutBuilder(
                     builder: (context, constraints) {
                 final h = constraints.maxHeight;
                 return MouseRegion(
@@ -334,7 +336,9 @@ class _ErpImagePanelState extends State<ErpImagePanel> {
                   ),
                 );
                 },
-              ),
+              )),
+                if (widget.average != null) widget.average!,
+              ]),
                 ),
                 if (s.epochs.labels.length >= 4) ...[
                   const SizedBox(width: 10),

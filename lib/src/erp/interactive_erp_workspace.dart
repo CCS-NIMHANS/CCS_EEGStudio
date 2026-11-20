@@ -54,6 +54,7 @@ class InteractiveErpWorkspace extends StatefulWidget {
 class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
   InteractiveErpSession? _session;
   String _preset = 'Custom', _mode = 'epochs', _trialSubView = 'erpimage', _status = '';
+  String? _butterflySource; // null defaults to the first condition average
   String _epochPreviewMode = 'distributed'; // 'distributed' | 'butterfly'
   int _activeStep = 1; // 1 = Protocol & Epoching, 2 = Review & Multi-Stream, 3 = Measurements & Export
   int _workbenchTab = 0; // 0=ERP & Topo, 1=ERPimage, 2=ERSP & ITC, 3=rERP & ML, 4=Measurements & Export
@@ -365,6 +366,83 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
           ],
     };
   }
+
+  Widget _buildLiveAverage(InteractiveErpSession session, EegRecording input, {bool imageAligned = false}) => Container(
+                                        height: 250,
+                                        margin: imageAligned ? EdgeInsets.zero : const EdgeInsets.fromLTRB(12, 2, 12, 6),
+                                        padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF0F172A),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: Colors.white12),
+                                        ),
+                                        child: Column(
+                                          children: [
+                                            Wrap(
+                                              spacing: 8, runSpacing: 4,
+                                              children: [
+                                                Text(
+                                                  'Live ERP Preview (${input.labels[_channel]}) · negative up',
+                                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                                ),
+                                                const SizedBox(width: 14),
+                                                for (var i = 0; i < session.conditions.length; i++)
+                                                  Padding(
+                                                    padding: const EdgeInsets.only(right: 12),
+                                                    child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Container(
+                                                          width: 12,
+                                                          height: 3,
+                                                          color: _erpCondColors[i % _erpCondColors.length],
+                                                        ),
+                                                        const SizedBox(width: 4),
+                                                        Text(
+                                                          '${session.conditions[i]} (n=${session.counts[session.conditions[i]]})',
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            color: _erpCondColors[i % _erpCondColors.length],
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                if (session.conditions.length >= 2)
+                                                  const Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      SizedBox(
+                                                        width: 12,
+                                                        height: 3,
+                                                        child: ColoredBox(color: Colors.white70),
+                                                      ),
+                                                      SizedBox(width: 4),
+                                                      Text(
+                                                        'Difference (B − A)',
+                                                        style: TextStyle(fontSize: 11, color: Colors.white70),
+                                                      ),
+                                                    ],
+                                                  ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Expanded(
+                                              child: CustomPaint(
+                                                painter: _AveragePainter(
+                                                  session,
+                                                  _channel,
+                                                  session.revision,
+                                                  imageAligned: imageAligned,
+                                                  windowStartMs: _winStartMs,
+                                                  windowEndMs: _winEndMs,
+                                                ),
+                                                child: const SizedBox.expand(),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      );
 
   void _persist() {
     final file = _reviewFile, session = _session;
@@ -1233,6 +1311,16 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                     );
                                   },
                                 ),
+                                if (_trialSubView == 'trial' && _epochPreviewMode == 'butterfly')
+                                  DropdownButton<String>(
+                                    value: _butterflySource == 'trial' ? 'trial'
+                                        : (session.conditions.contains(_butterflySource) ? _butterflySource : session.conditions.first),
+                                    items: [
+                                      for (final c in session.conditions) DropdownMenuItem(value: c, child: Text('Average: $c (n=${session.counts[c]})')),
+                                      const DropdownMenuItem(value: 'trial', child: Text('Selected single trial')),
+                                    ],
+                                    onChanged: (value) => setState(() => _butterflySource = value),
+                                  ),
                                 const Text('Baseline (ms):', style: TextStyle(fontSize: 11, color: Colors.white70)),
                                 SizedBox(
                                   width: 62,
@@ -1270,6 +1358,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                         child: _trialSubView == 'erpimage'
                                             ? ErpImagePanel(
                                                 session: session,
+                                                average: _buildLiveAverage(session, input, imageAligned: true),
                                                 channelIndex: _channel,
                                                 trialIndices: filtered,
                                                 windowStartMs: _winStartMs,
@@ -1294,12 +1383,19 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                                       ),
                                                       child: CustomPaint(
                                                         painter: ErpButterflyPainter(
+                                                          title: _butterflySource == 'trial' ? 'Single-trial butterfly' : 'ERP average butterfly · ${session.conditions.contains(_butterflySource) ? _butterflySource : session.conditions.first}',
                                                           times: [
                                                             for (var s = 0; s < session.points; s++)
                                                               (session.epochs.epochTmin ?? -0.2) +
                                                                   s / session.epochs.sampleRate,
                                                           ],
-                                                          channelWaves: _buildEpochButterflyWaves(session, _trial),
+                                                          channelWaves: _butterflySource == 'trial'
+                                                              ? _buildEpochButterflyWaves(session, _trial)
+                                                              : session.averageChannelWaves(
+                                                                  _butterflySource != null && session.conditions.contains(_butterflySource)
+                                                                      ? _butterflySource! : session.conditions.first,
+                                                                  includedChannels: _includedChannels,
+                                                                ),
                                                           highlightedChannel: input.labels[_channel],
                                                           negativeUp: true,
                                                           windowSec: [_winStartMs / 1000.0, _winEndMs / 1000.0],
@@ -1324,80 +1420,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                                       autoscaleByDefault: true,
                                                     )),
                                       ),
-                                      Container(
-                                        height: 250,
-                                        margin: const EdgeInsets.fromLTRB(12, 2, 12, 6),
-                                        padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF0F172A),
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(color: Colors.white12),
-                                        ),
-                                        child: Column(
-                                          children: [
-                                            Row(
-                                              children: [
-                                                Text(
-                                                  'Live ERP Preview (${input.labels[_channel]}) · negative up',
-                                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                                                ),
-                                                const SizedBox(width: 14),
-                                                for (var i = 0; i < session.conditions.length; i++)
-                                                  Padding(
-                                                    padding: const EdgeInsets.only(right: 12),
-                                                    child: Row(
-                                                      mainAxisSize: MainAxisSize.min,
-                                                      children: [
-                                                        Container(
-                                                          width: 12,
-                                                          height: 3,
-                                                          color: _erpCondColors[i % _erpCondColors.length],
-                                                        ),
-                                                        const SizedBox(width: 4),
-                                                        Text(
-                                                          '${session.conditions[i]} (n=${session.counts[session.conditions[i]]})',
-                                                          style: TextStyle(
-                                                            fontSize: 11,
-                                                            color: _erpCondColors[i % _erpCondColors.length],
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                if (session.conditions.length >= 2)
-                                                  const Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      SizedBox(
-                                                        width: 12,
-                                                        height: 3,
-                                                        child: ColoredBox(color: Colors.white70),
-                                                      ),
-                                                      SizedBox(width: 4),
-                                                      Text(
-                                                        'Difference (B − A)',
-                                                        style: TextStyle(fontSize: 11, color: Colors.white70),
-                                                      ),
-                                                    ],
-                                                  ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Expanded(
-                                              child: CustomPaint(
-                                                painter: _AveragePainter(
-                                                  session,
-                                                  _channel,
-                                                  session.revision,
-                                                  windowStartMs: _winStartMs,
-                                                  windowEndMs: _winEndMs,
-                                                ),
-                                                child: const SizedBox.expand(),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
+                                      if (_trialSubView != 'erpimage') _buildLiveAverage(session, input),
                                     ],
                                   ),
                                 ),
@@ -1506,16 +1529,18 @@ class _AveragePainter extends CustomPainter {
     this.revision, {
     this.windowStartMs = 300.0,
     this.windowEndMs = 600.0,
+    this.imageAligned = false,
   });
+  final bool imageAligned;
   final InteractiveErpSession session;
   final int channel, revision;
   final double windowStartMs, windowEndMs;
   @override
   void paint(Canvas canvas, Size size) {
     final box = Rect.fromLTRB(
-      60,
+      imageAligned ? 46 : 60,
       20,
-      math.max(80, size.width - 15),
+      math.max(80, size.width - (imageAligned ? 42 : 15)),
       math.max(60, size.height - 45),
     );
     final means = <Float64List?>[
@@ -1530,7 +1555,7 @@ class _AveragePainter extends CustomPainter {
         maxV = math.max(maxV, (means[1]![i] - means[0]![i]).abs() * 1.1);
       }
     }
-    final start = session.epochs.epochTmin ?? 0;
+    final start = session.epochs.epochTmin ?? -0.2;
     final duration = (session.points - 1) / session.epochs.sampleRate;
     void text(String value, Offset at) {
       final p = TextPainter(

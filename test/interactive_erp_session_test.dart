@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ccs_eeg_app/src/models.dart';
 import 'package:ccs_eeg_app/src/erp/interactive_erp_session.dart';
 import 'package:ccs_eeg_app/src/erp/interactive_erp_workspace.dart';
+import 'package:ccs_eeg_app/src/erp/workbench_figures.dart';
 
 EegRecording fixture(String path) => EegRecording(
   path: path,
@@ -54,6 +55,45 @@ void main() {
     await (FontLoader(
       'DejaVuSans',
     )..addFont(rootBundle.load('assets/fonts/DejaVuSans.ttf'))).load();
+  });
+  testWidgets('ERPimage and average share x bounds; butterfly defaults to accepted condition means', (tester) async {
+    tester.view.physicalSize = const Size(1800, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final dir = Directory.systemTemp.createTempSync('erp-axis-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final input = EegRecording(
+      path: '${dir.path}${Platform.pathSeparator}test.ccseeg', sampleRate: 10,
+      labels: const ['Fz','Cz','Pz','Oz'], sampleCount: 12, format: 'ccseeg',
+      epochCount: 3, pointsPerEpoch: 4, epochTmin: -.1,
+      epochLabels: const ['Correct','Correct','Error'],
+      preview: [for (var i=0; i<4; i++) Float32List.fromList([1,2,3,4,5,6,7,8,10,20,30,40])],
+      completedStages: const ['preprocessing'],
+    );
+    File(input.path).writeAsStringSync('fixture');
+    await tester.runAsync(() async {
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: InteractiveErpWorkspace(
+        recording: input, config: AnalysisConfig(), onOpenRecording: () {}, onUseReviewed: (_) {},
+      ))));
+      await tester.pump();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    });
+    await tester.pumpAndSettle();
+    final image = find.byWidgetPredicate((w) => w is CustomPaint && w.painter.runtimeType.toString() == '_ErpImagePainter');
+    final average = find.byWidgetPredicate((w) => w is CustomPaint && w.painter.runtimeType.toString() == '_AveragePainter');
+    expect(image, findsOneWidget); expect(average, findsOneWidget);
+    // Image insets 56/52; average canvas has 10 px padding, then 46/42.
+    expect(tester.getTopLeft(image).dx + 56, closeTo(tester.getTopLeft(average).dx + 46, 1));
+    expect(tester.getTopRight(image).dx - 52, closeTo(tester.getTopRight(average).dx - 42, 1));
+    await tester.tap(find.text('Butterfly')); await tester.pumpAndSettle();
+    ErpButterflyPainter butterfly() => tester.widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((w) => w.painter).whereType<ErpButterflyPainter>().single;
+    expect(butterfly().channelWaves['Cz'], [3,4,5,6]);
+    await tester.tap(find.text('Exclude trial')); await tester.pumpAndSettle();
+    expect(butterfly().channelWaves['Cz'], [5,6,7,8]);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
   });
   test(
     'rejection and reinstatement update the correct average without changing samples',

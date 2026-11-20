@@ -4,6 +4,14 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.57]
+
+- ERPimage and its live condition averages share one plot column with matching time-axis boundaries. Butterfly defaults to accepted-trial condition averages, offers condition selection, and retains an explicit single-trial option.
+
+- Paused video scrubbing decodes a frame at the requested media time, coalesces rapid timeline seeks, and hides the previous frame while decoding. Restore the native accelerated video texture for playback.
+- Speech tracking explains five-fold recording-wide training, held-out predictions evaluated in 20-second windows every 5 seconds, decoder/forward models, circular-shift thresholds, and the absence of speech or silence detection. Curves are not labelled as evidence of attention.
+- State Dynamics feature mapping places the heading above wrapping state chips, preventing six-state controls from collapsing the heading into a vertical column of characters.
+
 ## [1.2.56]
 
 - Feature plots have a persistent Start fresh action that clears loaded plot files, figures, grouping, baseline selection, tracking status and attached media without deleting source files. The empty workspace offers a direct CSV loader.

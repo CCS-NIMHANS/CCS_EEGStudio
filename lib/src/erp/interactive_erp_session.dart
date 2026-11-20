@@ -89,6 +89,13 @@ class InteractiveErpSession {
     ]);
   }
 
+  /// Per-channel condition means from the same accepted trials as the live ERP.
+  Map<String, List<double>> averageChannelWaves(String condition, {Set<String> includedChannels = const {}}) => {
+    for (var c = 0; c < epochs.labels.length; c++)
+      if ((includedChannels.isEmpty || includedChannels.contains(epochs.labels[c])) && (counts[condition] ?? 0) > 0)
+        epochs.labels[c]: mean(condition, c)!.toList(),
+  };
+
   double trialSample(int trialIndex, int channel, int sample) =>
       epochs.preview[channel][trialIndex * points + sample];
 

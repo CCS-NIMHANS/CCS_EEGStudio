@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:typed_data';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -7,6 +7,38 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import 'media_sync_service.dart';
+
+/// Describes the actual engine evaluation, including its interpretation limits.
+class SpeechTrackingMethod extends StatelessWidget {
+  const SpeechTrackingMethod({super.key});
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+    icon: const Icon(Icons.info_outline, size: 16),
+    label: const Text('How speech tracking is computed', style: TextStyle(fontSize: 12)),
+    onPressed: () => showDialog<void>(context: context, builder: (context) => AlertDialog(
+      title: const Text('How speech tracking is computed'),
+      scrollable: true,
+      content: const SizedBox(width: 620, child: Text(
+      'Training: the overlapping EEG/audio recording is divided into 5 contiguous folds. '
+      'Each fold is predicted using ridge/TRF weights trained on the other four. '
+      'The decoder reconstructs the amplitude envelope from up to 16 EEG channels (0–250 ms lags); '
+      'the forward TRF predicts each EEG channel from the envelope (−100 to 450 ms lags). '
+      'Signals are resampled to 64 Hz (or the available lower EEG rate).\n\n'
+      'Time course: Pearson r is evaluated in 20-second moving windows, every 5 seconds, '
+      'using these held-out predictions. The model is not retrained in each moving window. '
+      'The forward curve averages channel correlations. Dashed lines are pooled 95th-percentile '
+      'circular-shift null thresholds, not correction for testing many windows.\n\n'
+      'Silence is included: there is no speech detector or voice-activity mask. '
+      'Near-constant audio makes correlations unstable; background noise, movement and shared '
+      'slow trends can also affect r. A peak is not evidence of speech presence or attention, '
+      'and a drop does not establish loss of attention or explain delta power. '
+      'Check audio, alignment and EEG artifacts before interpreting either curve.',
+      style: TextStyle(fontSize: 12),
+    )),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+    )),
+  );
+}
 
 /// Master controller syncing timestamped video/audio files, the extracted
 /// audio waveform + envelope, Neural Speech Tracking and the EEG/feature plots.
@@ -30,7 +62,7 @@ class MediaSyncController extends ChangeNotifier {
     _videoController = VideoController(
       _player,
       configuration: VideoControllerConfiguration(
-        enableHardwareAcceleration: !Platform.isMacOS,
+        enableHardwareAcceleration: true,
       ),
     );
     _posSub = _player.stream.position.listen(_onPlayerPosition);
@@ -329,11 +361,16 @@ class MediaSyncController extends ChangeNotifier {
   Future<void> seekToEegTime(double sec, {bool notifyExternal = false}) =>
       seekToEpoch(primaryStartEpoch + sec, notifyExternal: notifyExternal);
 
+  Uint8List? previewFrame;
+  bool previewLoading = false;
   bool _seeking = false;
   double? _pendingSeekEpoch;
 
   Future<void> seekToEpoch(double epoch, {bool notifyExternal = false}) async {
+    previewFrame = null;
+    previewLoading = true;
     _cursorEpoch = epoch;
+    notifyListeners();
     _lastSeek = DateTime.now();
     if (notifyExternal) onTimeChanged?.call(eegSec);
     _pendingSeekEpoch = epoch;
@@ -357,8 +394,19 @@ class MediaSyncController extends ChangeNotifier {
         if (idx != _activeIndex) await _openSegment(idx);
         final seg = activeSegment;
         if (seg != null) {
-          final local = (target - segmentStartEpoch(seg)).clamp(0.0, seg.durationSeconds);
-          await _player.seek(Duration(microseconds: (local * 1e6).round()));
+          final local = (target - segmentStartEpoch(seg)).clamp(0.0, math.max(0.0, seg.durationSeconds - 0.05)).toDouble();
+          if (seg.isVideo && !_playing && _pendingSeekEpoch == null) {
+            // Render first: a blocked native seek must not leave an old frame
+            // under the newly updated EEG cursor.
+            final frame = await MediaSyncService.videoFrame(seg.path, local);
+            if (_pendingSeekEpoch == null && !_disposed && !_playing) {
+              previewFrame = frame;
+              previewLoading = false;
+              notifyListeners();
+            }
+          }
+          await _player.seek(Duration(microseconds: (local * 1e6).round()))
+              .timeout(const Duration(seconds: 5));
           _lastSeek = DateTime.now();
         }
         notifyListeners();
@@ -368,6 +416,8 @@ class MediaSyncController extends ChangeNotifier {
       notifyListeners();
     } finally {
       _seeking = false;
+      previewLoading = false;
+      notifyListeners();
     }
   }
 
@@ -423,7 +473,14 @@ class MediaSyncController extends ChangeNotifier {
     try {
       if (_activeIndex < 0 || _outOfRange) await seekToEpoch(_cursorEpoch);
       if (_outOfRange || _activeIndex < 0) return;
-      if (_playing) { await _player.pause(); } else { await _player.play(); }
+      if (_playing) {
+        await _player.pause();
+        _playing = false;
+        await seekToEpoch(_cursorEpoch);
+      } else {
+        previewFrame = null;
+        await _player.play();
+      }
     } catch (e) {
       _status = 'Playback error: $e';
       notifyListeners();
@@ -677,6 +734,10 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                         color: Colors.black,
                         child: Video(controller: ctrl.videoController),
                       ),
+                      if (!ctrl.playing && ctrl.previewFrame != null)
+                        Container(color: Colors.black, child: Image.memory(ctrl.previewFrame!, fit: BoxFit.contain, gaplessPlayback: false)),
+                      if (!ctrl.playing && ctrl.previewLoading)
+                        const ColoredBox(color: Colors.black, child: Center(child: Text('Loading video frame…'))),
                       if (ctrl.outOfRange)
                         Container(
                           color: Colors.black87,
@@ -949,6 +1010,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                     ],
                   ),
                 ),
+              if (tracking != null) const SpeechTrackingMethod(),
               // Bottom-right resize handle
               Align(
                 alignment: Alignment.bottomRight,
@@ -1196,9 +1258,8 @@ class SessionAlignedAudioPainter extends CustomPainter {
 }
 
 /// Sliding-window Neural Speech Tracking drawn on a session's time axis, in the
-/// same horizontal span as the feature plot. Rises above the dashed chance
-/// line mark moments when the brain followed the speech more closely (an
-/// attention / engagement proxy); drops mark loss of tracking.
+/// same horizontal span as the feature plot. Correlation measures envelope
+/// prediction, not speech presence or attention; inspect silence and artifacts.
 class TrackingSeriesPainter extends CustomPainter {
   const TrackingSeriesPainter({
     required this.series,

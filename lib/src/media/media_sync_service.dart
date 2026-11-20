@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../extraction_service.dart';
 import '../models.dart';
@@ -136,6 +137,29 @@ class MediaSyncService {
     'mp4', 'mov', 'mkv', 'avi', 'webm', 'm2t', 'ts', 'mts', 'm2ts', 'mpg', 'mpeg', 'wmv',
   };
   static const audioExtensions = {'wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg'};
+
+  /// Decode a paused scrub frame independently of the native video texture.
+  /// Input seeking is accurate with ffmpeg's default transcoding behaviour.
+  static Future<Uint8List> videoFrame(String path, double seconds) async {
+    final exe = findTool('ffmpeg');
+    if (exe == null) throw StateError('ffmpeg is required for video frame previews.');
+    final process = await Process.start(exe, [
+      '-v', 'error', '-ss', seconds.toStringAsFixed(6), '-i', path,
+      '-frames:v', '1', '-vf', 'scale=960:-2', '-f', 'image2pipe',
+      '-vcodec', 'mjpeg', 'pipe:1',
+    ]);
+    final output = process.stdout.fold<BytesBuilder>(BytesBuilder(), (b, bytes) => b..add(bytes));
+    final errors = process.stderr.transform(utf8.decoder).join();
+    try {
+      final code = await process.exitCode.timeout(const Duration(seconds: 15));
+      final bytes = (await output).takeBytes();
+      final error = await errors;
+      if (code != 0 || bytes.isEmpty) throw StateError('Video frame unavailable: $error');
+      return bytes;
+    } finally {
+      process.kill();
+    }
+  }
 
   static bool isVideoPath(String path) {
     final ext = path.split('.').last.toLowerCase();

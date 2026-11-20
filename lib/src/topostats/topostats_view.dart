@@ -29,7 +29,7 @@ import 'topostats_runner.dart';
 import '../state_dynamics/state_dynamics_view.dart';
 import '../media/media_sync_service.dart' show SyncedMediaSegment;
 import '../media/synced_media_panel.dart'
-    show MediaSyncController, SessionAlignedAudioPainter, TrackingSeriesPainter;
+    show MediaSyncController, SessionAlignedAudioPainter, TrackingSeriesPainter, SpeechTrackingMethod;
 
 // Design tokens (match app.dart)
 const _bg = Color(0xFF0F172A);
@@ -2999,6 +2999,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                   ),
                 ),
               ...trackingRows,
+              if (haveSeries.isNotEmpty && _showTracking) const SpeechTrackingMethod(),
               if (_showTracking && haveSeries.isEmpty && lanes.isNotEmpty)
                 const Padding(
                   padding: EdgeInsets.fromLTRB(12, 2, 12, 0),

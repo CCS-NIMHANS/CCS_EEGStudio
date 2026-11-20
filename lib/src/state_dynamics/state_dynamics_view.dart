@@ -1042,16 +1042,14 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: Text(
+            Text(
                 '${res.featureSet} features, ${res.chosenK} pooled states: State Feature Mapping (dot = sig vs rest & |r|>=0.5 or IV>=${res.ivThreshold})',
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-              ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(height: 8),
             // State selector chips + All-States comparison toggle
             Wrap(
               spacing: 4,
