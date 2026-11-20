@@ -70,7 +70,11 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 
 ---
 
-## ✨ What's New in v1.2.55
+## ✨ What's New in v1.2.56
+
+Persistent **Start fresh**, independent audio/envelope/tracking visibility, accessible video playback controls, and corrected speech-tracking input resolution for feature CSVs.
+
+## What's New in v1.2.55
 
 Readable ICA/ERP scaling, matched-channel raw/clean comparison, per-file PDF reports, feature-plot media attachment, feature-specific settings, and corrected microstate map orientation with clearer sequence views. See [CHANGELOG.md](CHANGELOG.md) for details.
 

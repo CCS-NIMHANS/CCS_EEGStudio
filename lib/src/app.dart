@@ -2580,8 +2580,9 @@ class _FeatureHomeState extends State<FeatureHome>
 
   MediaSyncController? _mediaController;
   bool _showMediaPanel = false;
+  String? _clearedPlotSeeds;
   double? _mediaCursorSec;
-  Rect _mediaPanelRect = const Rect.fromLTWH(24, 24, 420, 340);
+  Rect _mediaPanelRect = const Rect.fromLTWH(24, 24, 560, 520);
 
   Future<void> _attachFeatureMedia(String path, double duration) async {
     if (_mediaController == null) {
@@ -2664,11 +2665,11 @@ class _FeatureHomeState extends State<FeatureHome>
                       Positioned(
                         left: _mediaPanelRect.left.clamp(
                           0.0,
-                          (area.maxWidth - 280).clamp(0.0, area.maxWidth),
+                          (area.maxWidth - _mediaPanelRect.width.clamp(280.0, area.maxWidth)).clamp(0.0, area.maxWidth),
                         ),
                         top: _mediaPanelRect.top.clamp(
                           0.0,
-                          (area.maxHeight - 220).clamp(0.0, area.maxHeight),
+                          (area.maxHeight - _mediaPanelRect.height.clamp(220.0, area.maxHeight)).clamp(0.0, area.maxHeight),
                         ),
                         width: _mediaPanelRect.width.clamp(280.0, area.maxWidth),
                         height: _mediaPanelRect.height.clamp(220.0, area.maxHeight),
@@ -4152,7 +4153,14 @@ class _FeatureHomeState extends State<FeatureHome>
     return TopoStatsView(
       key: const ValueKey('plots-report'),
       onAttachMedia: _attachFeatureMedia,
-      featureFilePaths: _featureFilesForTopoStats,
+      featureFilePaths: _clearedPlotSeeds == _featureFilesForTopoStats.join('|') ? const [] : _featureFilesForTopoStats,
+      onStartFresh: () => setState(() {
+        _clearedPlotSeeds = _featureFilesForTopoStats.join('|');
+        _mediaController?.dispose();
+        _mediaController = null;
+        _showMediaPanel = false;
+        _mediaCursorSec = null;
+      }),
       mediaController: _mediaController,
       initialSettings: TopoStatsSettings(
         epochSize: _cfg.epochSeconds,

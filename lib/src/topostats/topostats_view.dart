@@ -83,6 +83,7 @@ class TopoStatsView extends StatefulWidget {
     this.initialSettings = const TopoStatsSettings(),
     this.mediaController,
     this.onAttachMedia,
+    this.onStartFresh,
   });
 
   /// Seed files. A single file is expanded to all sibling sessions of the
@@ -93,6 +94,7 @@ class TopoStatsView extends StatefulWidget {
   final TopoStatsSettings initialSettings;
   final MediaSyncController? mediaController;
   final Future<void> Function(String path, double durationSeconds)? onAttachMedia;
+  final VoidCallback? onStartFresh;
 
   static String baseName(String p) => p.split(RegExp(r'[\\/]')).last;
 
@@ -122,6 +124,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   bool _fit = true;
   double _ppi = 110;
   bool _showAudioStrip = true;
+  bool _showWaveform = false, _showEnvelope = true, _showTracking = true;
+  final List<String> _trackingDetails = [];
   bool _trackingRunning = false;
   String? _trackingMsg;
   TopoPlotGroup? _hoverGroup;
@@ -523,11 +527,23 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     if (g.activeFiles.isNotEmpty) _run();
   }
 
+  void _startFresh() {
+    if (_running || _trackingRunning || widget.mediaController?.busy == true || widget.mediaController?.trackingBusy == true) return;
+    _clearAll();
+    widget.onStartFresh?.call();
+  }
+
   void _clearAll() {
     setState(() {
       _groups.clear();
       _selectedGroupIndex = 0;
       _cache.clear();
+      _sourceFigures.clear();
+      _sourceDir = null;
+      _trackingDetails.clear();
+      _trackingMsg = null;
+      _recId.clear();
+      _s = _s.copyWith(recId: '', baselineSession: '');
       _features = [];
       _stateDynamicsResult = null;
       _selectedStateLabel = null;
@@ -1396,7 +1412,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: _running ? null : _clearAll,
+                onPressed: _running || _trackingRunning || widget.mediaController?.busy == true || widget.mediaController?.trackingBusy == true ? null : _startFresh,
                 icon: const Icon(
                   Icons.delete_sweep_outlined,
                   size: 14,
@@ -2016,30 +2032,26 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               : <TopoPlotGroup>[]);
     final hasFig = active.isNotEmpty && !_running;
     return Container(
-      height: 44,
+      constraints: const BoxConstraints(minHeight: 44),
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: const BoxDecoration(
         color: _card,
         border: Border(bottom: BorderSide(color: _border)),
       ),
-      child: Row(
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 4,
+        runSpacing: 4,
         children: [
+          TextButton.icon(onPressed: _running || _trackingRunning || widget.mediaController?.busy == true || widget.mediaController?.trackingBusy == true ? null : _startFresh,
+            icon: const Icon(Icons.restart_alt, size: 17), label: const Text('Start fresh')),
+          if (_groups.isEmpty) TextButton.icon(onPressed: _running ? null : () => _pickFiles(append: false), icon: const Icon(Icons.folder_open), label: const Text('Load feature CSVs…')),
           if (widget.onAttachMedia != null)
             TextButton.icon(onPressed: _running || _groups.isEmpty ? null : _attachPlotMedia,
               icon: const Icon(Icons.video_library_outlined, size: 17), label: const Text('Add video / audio…')),
           const Icon(Icons.stacked_line_chart, size: 16, color: _amber),
           const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              widget.title,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: _text,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
-            ),
-          ),
+          Text(widget.title, style: const TextStyle(color: _text, fontWeight: FontWeight.bold, fontSize: 13)),
           if (_groups.length > 1) ...[
             const SizedBox(width: 8),
             ActionChip(
@@ -2083,26 +2095,23 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             'Next feature',
             _running ? null : () => _stepFeature(1),
           ),
-          const Spacer(),
           if (widget.mediaController != null &&
               widget.mediaController!.segments.isNotEmpty) ...[
-            ActionChip(
-              visualDensity: VisualDensity.compact,
-              avatar: Icon(
-                Icons.graphic_eq,
-                size: 13,
-                color: _showAudioStrip ? Colors.cyanAccent : _muted,
-              ),
-              label: const Text(
-                'Audio & Envelope',
-                style: TextStyle(color: _text, fontSize: 11),
-              ),
-              backgroundColor: _panel,
-              side: BorderSide(
-                color: _showAudioStrip ? Colors.cyanAccent.withValues(alpha: 0.6) : _border,
-              ),
-              onPressed: () =>
-                  setState(() => _showAudioStrip = !_showAudioStrip),
+            PopupMenuButton<String>(
+              tooltip: 'Show or hide audio and speech layers',
+              onSelected: (layer) => setState(() {
+                if (layer == 'all') _showAudioStrip = !_showAudioStrip;
+                if (layer == 'waveform') _showWaveform = !_showWaveform;
+                if (layer == 'envelope') _showEnvelope = !_showEnvelope;
+                if (layer == 'tracking') _showTracking = !_showTracking;
+              }),
+              itemBuilder: (_) => [
+                CheckedPopupMenuItem(value: 'all', checked: _showAudioStrip, child: const Text('Show media strips')),
+                CheckedPopupMenuItem(value: 'waveform', checked: _showWaveform, child: const Text('Raw audio waveform')),
+                CheckedPopupMenuItem(value: 'envelope', checked: _showEnvelope, child: const Text('Audio amplitude envelope')),
+                CheckedPopupMenuItem(value: 'tracking', checked: _showTracking, child: const Text('Neural speech tracking')),
+              ],
+              child: const Padding(padding: EdgeInsets.all(8), child: Text('Show / hide media layers ▾')),
             ),
             const SizedBox(width: 8),
             Tooltip(
@@ -2736,8 +2745,15 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       _trackingMsg = null;
     });
     final notes = <String>[];
-    var done = 0;
+    var done = 0, skipped = 0, failed = 0;
     for (final s in sessions) {
+      await ctrl.registerSessionPath(s.path);
+      final overlap = ctrl.trackingOverlap(s.path, s.durationMin * 60);
+      if (overlap == null || overlap < 4) {
+        skipped++;
+        notes.add('${s.name}: skipped — ${overlap == null ? 'recording clock unknown' : 'no overlapping audio (at least 4 seconds required)'}.');
+        continue;
+      }
       try {
         await ctrl.runTracking(
           sessionPath: s.path,
@@ -2745,17 +2761,15 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         );
         done++;
       } catch (e) {
+        failed++;
         notes.add('${s.name}: ${'$e'.replaceFirst('Bad state: ', '')}');
       }
     }
     if (!mounted) return;
     setState(() {
       _trackingRunning = false;
-      _trackingMsg = done == 0
-          ? 'Speech tracking not computed. ${notes.join(' | ')}'
-          : (notes.isEmpty
-                ? null
-                : 'Computed for $done session(s); skipped: ${notes.join(' | ')}');
+      _trackingDetails..clear()..addAll(notes);
+      _trackingMsg = 'Tracking: $done computed · $skipped skipped (no matching audio/clock) · $failed failed.';
     });
   }
 
@@ -2836,7 +2850,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
           for (final s in sessions)
             if (ctrl.trackingFor(s.path)?.series != null) s,
         ];
-        if (haveSeries.isNotEmpty) {
+        if (_showTracking && haveSeries.isNotEmpty) {
           trackingRows.add(
             GestureDetector(
               onTapDown: (d) => seekAt(d.localPosition.dx),
@@ -2935,10 +2949,10 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     runSpacing: 4,
                     children: [
                       if (lanes.isNotEmpty) ...[
-                        _traceLegend(Colors.lightBlueAccent, 'Audio: raw waveform'),
-                        _traceLegend(Colors.amberAccent, 'Audio: speech envelope'),
+                        if (_showWaveform) _traceLegend(Colors.lightBlueAccent, 'Audio waveform (normalized)'),
+                        if (_showEnvelope) _traceLegend(Colors.amberAccent, 'Audio amplitude envelope (normalized)'),
                       ],
-                      if (haveSeries.isNotEmpty) ...[
+                      if (_showTracking && haveSeries.isNotEmpty) ...[
                         _traceLegend(Colors.cyanAccent, 'Tracking: decoder r (EEG -> envelope; dots > 95% chance)'),
                         _traceLegend(Colors.amberAccent, 'Tracking: forward TRF r (mean across channels)'),
                         _traceLegend(Colors.white54, 'Dashed: 95% chance level', dashed: true),
@@ -2946,7 +2960,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     ],
                   ),
                 ),
-              for (final lane in lanes)
+              if (_showWaveform || _showEnvelope) for (final lane in lanes)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4),
                   child: GestureDetector(
@@ -2962,6 +2976,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                               Positioned.fill(
                                 child: CustomPaint(
                                   painter: SessionAlignedAudioPainter(
+                                    showWaveform: _showWaveform,
+                                    showEnvelope: _showEnvelope,
                                     minBins: lane[i]!.seg.waveformMin,
                                     maxBins: lane[i]!.seg.waveformMax,
                                     envelope: lane[i]!.seg.envelopePreview,
@@ -2973,8 +2989,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                                     cursorSec: ctrl.sessionLocalSec(sessions[i].path),
                                     label:
                                         '${lane[i]!.seg.isVideo ? '🎬' : '🎧'} '
-                                        '${lane[i]!.seg.audioSourceDescription} · '
-                                        '${lane[i]!.seg.alignmentSource}',
+                                        '${lane[i]!.seg.label}',
                                   ),
                                 ),
                               ),
@@ -2984,7 +2999,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                   ),
                 ),
               ...trackingRows,
-              if (haveSeries.isEmpty && lanes.isNotEmpty)
+              if (_showTracking && haveSeries.isEmpty && lanes.isNotEmpty)
                 const Padding(
                   padding: EdgeInsets.fromLTRB(12, 2, 12, 0),
                   child: Text(
@@ -2992,6 +3007,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     style: TextStyle(color: _muted, fontSize: 10),
                   ),
                 ),
+              if (_trackingDetails.isNotEmpty)
+                ExpansionTile(title: const Text('Tracking details'), children: [for (final note in _trackingDetails) Padding(padding: const EdgeInsets.all(6), child: Text(note, style: const TextStyle(fontSize: 11)))]),
               if (_trackingMsg != null)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 2, 12, 0),

@@ -4,6 +4,13 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.56]
+
+- Feature plots have a persistent Start fresh action that clears loaded plot files, figures, grouping, baseline selection, tracking status and attached media without deleting source files. The empty workspace offers a direct CSV loader.
+- Media waveform, amplitude envelope and neural tracking layers can be shown or hidden separately. Envelope-only display is the default; long source captions are clipped to their own session axes.
+- Media windows stay entirely inside the workspace when moved or resized, and expose playback in the title bar. Opening another segment preserves playback intent; initialization has a bounded wait and playback errors are visible.
+- Neural speech tracking resolves the EEG recording behind a feature CSV even when that CSV initialized the media controller. Non-overlapping sessions are counted as skipped, with detailed per-session messages collapsed.
+
 ## [1.2.55]
 
 - ICA review supports autoscaling and a fixed, zero-centered amplitude range retained across components and time windows.

@@ -43,7 +43,12 @@ class MediaSyncController extends ChangeNotifier {
     _doneSub = _player.stream.completed.listen((done) {
       if (done) unawaited(_onCompleted());
     });
+    _errorSub = _player.stream.error.listen((error) { _status = 'Playback error: $error'; notifyListeners(); });
   }
+
+  bool _disposed = false;
+  @override
+  void notifyListeners() { if (!_disposed) super.notifyListeners(); }
 
   final String eegPath;
   final double eegDurationSec;
@@ -56,6 +61,7 @@ class MediaSyncController extends ChangeNotifier {
   StreamSubscription<Duration>? _posSub;
   StreamSubscription<bool>? _playSub;
   StreamSubscription<bool>? _doneSub;
+  StreamSubscription<String>? _errorSub;
 
   final List<SyncedMediaSegment> segments = [];
   final Map<String, double> _sessionStart = {};
@@ -357,18 +363,22 @@ class MediaSyncController extends ChangeNotifier {
         }
         notifyListeners();
       }
+    } catch (e) {
+      _status = 'Playback error: $e';
+      notifyListeners();
     } finally {
       _seeking = false;
     }
   }
 
   Future<void> _openSegment(int idx) async {
-    // Ensure the native video texture / mpv render context is attached before opening.
-    await _videoController.platform.future.timeout(
-      const Duration(seconds: 3),
-      onTimeout: () => throw StateError('VideoController init timeout'),
-    ).catchError((_) => _videoController.platform.future);
+    final resumePlayback = _playing;
     _activeIndex = idx;
+    notifyListeners(); // Mount the video surface before waiting for its texture.
+    if (segments[idx].isVideo) {
+      await _videoController.platform.future.timeout(const Duration(seconds: 10),
+        onTimeout: () => throw StateError('Video display did not initialize. Close and reopen the media panel.'));
+    }
     await _player.open(Media(segments[idx].path), play: false);
     // A seek issued before the demuxer reports a duration is silently dropped,
     // which left the video at 0:00 instead of the cursor.
@@ -378,7 +388,7 @@ class MediaSyncController extends ChangeNotifier {
     }
     await _player.setRate(_rate);
     await _player.setVolume(_muted ? 0 : 100);
-    if (_playing) await _player.play();
+    if (resumePlayback) await _player.play();
   }
 
   void _onPlayerPosition(Duration pos) {
@@ -409,13 +419,14 @@ class MediaSyncController extends ChangeNotifier {
   }
 
   Future<void> togglePlay() async {
-    if (segments.isEmpty) return;
-    if (_activeIndex < 0 || _outOfRange) await seekToEpoch(_cursorEpoch);
-    if (_outOfRange) return;
-    if (_playing) {
-      await _player.pause();
-    } else {
-      await _player.play();
+    if (segments.isEmpty || _busy) return;
+    try {
+      if (_activeIndex < 0 || _outOfRange) await seekToEpoch(_cursorEpoch);
+      if (_outOfRange || _activeIndex < 0) return;
+      if (_playing) { await _player.pause(); } else { await _player.play(); }
+    } catch (e) {
+      _status = 'Playback error: $e';
+      notifyListeners();
     }
   }
 
@@ -446,6 +457,16 @@ class MediaSyncController extends ChangeNotifier {
   /// Runs Neural Speech Tracking for the EEG session behind [sessionPath] against
   /// the media segment that overlaps it most (or [segment]). The result — including
   /// the sliding-window time series — is stored for the plots.
+  double? trackingOverlap(String path, double duration) {
+    final start = sessionStartEpoch(path);
+    if (start == null) return null;
+    var overlap = 0.0;
+    for (final segment in segments.where((s) => s.audioPath != null)) {
+      overlap = math.max(overlap, math.min(start + duration, segmentEndEpoch(segment)) - math.max(start, segmentStartEpoch(segment)));
+    }
+    return overlap;
+  }
+
   Future<SpeechTrackingSummary> runTracking({
     required String sessionPath,
     required double sessionDurationSec,
@@ -480,15 +501,7 @@ class MediaSyncController extends ChangeNotifier {
     }
     final wav = seg.audioPath;
     if (wav == null) throw StateError('No audio is available for ${seg.label}.');
-    final recPath = key == _primaryKey
-        ? eegPath
-        : MediaSyncService.findRecordingForFeatures(sessionPath);
-    if (recPath == null) {
-      throw StateError(
-        'Could not find the cleaned recording for '
-        '${sessionPath.split(RegExp(r'[\\/]')).last} next to its feature file.',
-      );
-    }
+    final recPath = MediaSyncService.trackingRecordingPath(sessionPath);
     _trackingBusy = true;
     _status = 'Neural Speech Tracking (${seg.label})…';
     notifyListeners();
@@ -509,9 +522,11 @@ class MediaSyncController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _posSub?.cancel();
     _playSub?.cancel();
     _doneSub?.cancel();
+    _errorSub?.cancel();
     unawaited(_player.dispose());
     super.dispose();
   }
@@ -552,6 +567,7 @@ class SyncedMediaPanel extends StatefulWidget {
 
 class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
   String? _trackingError;
+  bool _showWaveform = false, _showEnvelope = true;
   double? _windowHalfSec; // null = Full recording, otherwise +/- seconds around cursor
 
   Future<void> _runSpeechTracking() async {
@@ -630,6 +646,9 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                               ),
                           ],
                         ),
+                      IconButton(tooltip: ctrl.playing ? 'Pause media' : 'Play media',
+                        icon: Icon(ctrl.playing ? Icons.pause : Icons.play_arrow),
+                        onPressed: seg == null ? null : ctrl.togglePlay),
                       TextButton.icon(
                         onPressed: widget.onAddFiles,
                         icon: const Icon(Icons.add, size: 14),
@@ -646,6 +665,8 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                 ),
               ),
               if (ctrl.busy || ctrl.trackingBusy) const LinearProgressIndicator(minHeight: 2),
+              if (ctrl.status?.startsWith('Playback error:') == true)
+                Padding(padding: const EdgeInsets.all(6), child: Text(ctrl.status!, style: const TextStyle(color: Colors.orange, fontSize: 11))),
               if (seg != null && seg.isVideo)
                 Expanded(
                   flex: 3,
@@ -686,8 +707,12 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                     ),
                   ),
                 ),
-              // Audio source caption + waveform/envelope strip with time-locked cursor
-              if (seg != null && seg.waveformMax.isNotEmpty) ...[
+              if (seg != null) Wrap(spacing: 4, children: [
+                FilterChip(label: const Text('Waveform'), selected: _showWaveform, onSelected: (v) => setState(() => _showWaveform = v)),
+                FilterChip(label: const Text('Envelope'), selected: _showEnvelope, onSelected: (v) => setState(() => _showEnvelope = v)),
+              ]),
+              // Audio layers can be hidden independently.
+              if (seg != null && seg.waveformMax.isNotEmpty && (_showWaveform || _showEnvelope)) ...[
                 Padding(
                   padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
                   child: Row(
@@ -802,6 +827,8 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                             minBins: seg.waveformMin,
                             maxBins: seg.waveformMax,
                             envelope: seg.envelopePreview,
+                            showWaveform: _showWaveform,
+                            showEnvelope: _showEnvelope,
                             cursorFrac: dur > 0 ? (cursorLocal / dur).clamp(0.0, 1.0) : 0.0,
                             viewStartFrac: viewStartFrac,
                             viewEndFrac: viewEndFrac,
@@ -941,13 +968,13 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
   }
 }
 
-void _paintLabel(Canvas canvas, String text, Offset at, {Color color = Colors.white70, double size = 10}) {
+void _paintLabel(Canvas canvas, String text, Offset at, {Color color = Colors.white70, double size = 10, double maxWidth = 900}) {
   final tp = TextPainter(
     text: TextSpan(text: text, style: TextStyle(color: color, fontSize: size)),
     textDirection: TextDirection.ltr,
     maxLines: 1,
     ellipsis: '…',
-  )..layout(maxWidth: 900);
+  )..layout(maxWidth: maxWidth);
   tp.paint(canvas, at);
 }
 
@@ -966,10 +993,13 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
     required this.maxBins,
     required this.envelope,
     required this.cursorFrac,
+    this.showWaveform = true,
+    this.showEnvelope = true,
     this.viewStartFrac = 0.0,
     this.viewEndFrac = 1.0,
   });
 
+  final bool showWaveform, showEnvelope;
   final List<double> minBins;
   final List<double> maxBins;
   final List<double> envelope;
@@ -990,7 +1020,7 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
     final wavePaint = Paint()
       ..color = Colors.lightBlueAccent.withValues(alpha: 0.45)
       ..strokeWidth = 1.0;
-    for (var i = 0; i < n; i++) {
+    for (var i = 0; showWaveform && i < n; i++) {
       final frac = i / (n - 1);
       if (frac < viewStartFrac || frac > viewEndFrac) continue;
       final x = (frac - viewStartFrac) / spanFrac * size.width;
@@ -999,7 +1029,7 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
       canvas.drawLine(Offset(x, y0), Offset(x, y1), wavePaint);
     }
 
-    if (envelope.length >= 2) {
+    if (showEnvelope && envelope.length >= 2) {
       var envMax = 1e-4;
       for (final e in envelope) {
         if (e > envMax) envMax = e;
@@ -1039,7 +1069,7 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant AudioWaveformEnvelopePainter old) =>
-      old.cursorFrac != cursorFrac ||
+      old.showWaveform != showWaveform || old.showEnvelope != showEnvelope || old.cursorFrac != cursorFrac ||
       old.viewStartFrac != viewStartFrac ||
       old.viewEndFrac != viewEndFrac ||
       !identical(old.minBins, minBins) ||
@@ -1062,8 +1092,11 @@ class SessionAlignedAudioPainter extends CustomPainter {
     required this.right,
     required this.label,
     this.cursorSec,
+    this.showWaveform = true,
+    this.showEnvelope = true,
   });
 
+  final bool showWaveform, showEnvelope;
   final List<double> minBins;
   final List<double> maxBins;
   final List<double> envelope;
@@ -1098,7 +1131,7 @@ class SessionAlignedAudioPainter extends CustomPainter {
       final wave = Paint()
         ..color = Colors.lightBlueAccent.withValues(alpha: 0.5)
         ..strokeWidth = 1.0;
-      for (var i = 0; i < n; i++) {
+      for (var i = 0; showWaveform && i < n; i++) {
         final t = segStartSec + i / (n - 1) * segDurationSec;
         if (t < 0 || t > axisEndSec) continue;
         final x = _x(t);
@@ -1106,7 +1139,7 @@ class SessionAlignedAudioPainter extends CustomPainter {
         final y1 = midY - (minBins[i] / maxPeak).clamp(-1.0, 1.0) * (midY - 4);
         canvas.drawLine(Offset(x, y0), Offset(x, y1), wave);
       }
-      if (envelope.length >= 2) {
+      if (showEnvelope && envelope.length >= 2) {
         var envMax = 1e-4;
         for (final e in envelope) {
           if (e > envMax) envMax = e;
@@ -1147,13 +1180,13 @@ class SessionAlignedAudioPainter extends CustomPainter {
           ..strokeWidth = 1.6,
       );
     }
+    _paintLabel(canvas, label, Offset(left + 6, 3), color: Colors.amberAccent, size: 10, maxWidth: math.max(1, right - left - 12));
     canvas.restore();
-    _paintLabel(canvas, label, Offset(left + 6, 3), color: Colors.amberAccent, size: 10);
   }
 
   @override
   bool shouldRepaint(covariant SessionAlignedAudioPainter old) =>
-      old.cursorSec != cursorSec ||
+      old.showWaveform != showWaveform || old.showEnvelope != showEnvelope || old.cursorSec != cursorSec ||
       old.segStartSec != segStartSec ||
       old.axisEndSec != axisEndSec ||
       old.left != left ||

@@ -203,6 +203,15 @@ class MediaSyncService {
     return null;
   }
 
+  /// Tracking requires EEG samples, including for a controller seeded by a CSV.
+  static String trackingRecordingPath(String path) {
+    final recording = findRecordingForFeatures(path);
+    if (recording == null || recording.toLowerCase().endsWith('.csv')) {
+      throw StateError('EEG samples are required for speech tracking. Keep the cleaned recording next to its feature CSV, or open the EEG recording first.');
+    }
+    return recording;
+  }
+
   /// Resolves the absolute (local wall-clock) start time of an EEG recording,
   /// its cleaned copy, or a feature CSV. Follows `.ccshistory` `source_path`
   /// links back to the original BrainVision file. Returns the time and how it
@@ -523,7 +532,7 @@ class MediaSyncService {
       final jobFile = File('${temp.path}${Platform.pathSeparator}trf.json');
       await jobFile.writeAsString(jsonEncode({
         'job_type': 'speech_tracking',
-        'eeg_path': eegPath,
+        'eeg_path': trackingRecordingPath(eegPath),
         'audio_wav_path': wavPath,
         'audio_offset_seconds': audioOffsetSeconds,
         'tmin_ms': tminMs,
