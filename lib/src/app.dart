@@ -6682,8 +6682,9 @@ class _FeatureHomeState extends State<FeatureHome>
       erp: ErpWorkbenchView(
         key: const ValueKey('erp-batch-profile'),
         config: _cfg,
-        stage1Builder: ({VoidCallback? onNext}) => _buildBatchStage1Card(
+        stage1Builder: ({VoidCallback? onNext, Future<void> Function()? onRun}) => _buildBatchStage1Card(
           onNext: onNext,
+          onRunOverride: onRun,
           folderButtonLabel: 'Add Folder',
         ),
         onRunPreprocessing: _runBatchPreprocessing,
@@ -7238,13 +7239,14 @@ class _FeatureHomeState extends State<FeatureHome>
 
   Widget _buildBatchStage1Card({
     VoidCallback? onNext,
+    Future<void> Function()? onRunOverride,
     String folderButtonLabel = 'Folder',
   }) => _batchStageCard(
     title: 'Stage 1: Preprocessing',
     icon: Icons.cleaning_services,
     color: _accentPurple,
-    stageEnabled: _batchStage1Enabled,
-    onStageEnabledChanged: (v) => setState(() => _batchStage1Enabled = v),
+    stageEnabled: onRunOverride != null || _batchStage1Enabled,
+    onStageEnabledChanged: onRunOverride != null ? null : (v) => setState(() => _batchStage1Enabled = v),
     folderButtonLabel: folderButtonLabel,
     headerActions: [
       Tooltip(
@@ -7326,7 +7328,7 @@ class _FeatureHomeState extends State<FeatureHome>
     onRemove: (i) => setState(() => _batchPrepFiles.removeAt(i)),
     options: _buildPreprocessingOptions(),
     runLabel: 'Run Preprocessing Only',
-    onRun: _runBatchPreprocessing,
+    onRun: onRunOverride ?? _runBatchPreprocessing,
     runEnabled: _batchPrepFiles.isNotEmpty,
     onNext: onNext,
   );

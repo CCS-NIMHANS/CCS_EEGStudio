@@ -396,6 +396,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   EegRecording? _interactiveRecording;
   List<EegRecording> _analysisInputs = const [];
   double _timelineStartSeconds = 0;
+  int _transitionMode = 1; // 0 all samples, 1 leaving a state, 2 versus chance
   double _timelineWindowSeconds = 20;
   int _timelineWaveformChannels = 6;
   final Set<int> _hiddenSimilarityStates = {};
@@ -2120,21 +2121,30 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           ],
         ),
         const SizedBox(height: 10),
+        _howToRead(result, recording),
+        const SizedBox(height: 12),
         SizedBox(
-          height: 220.0 * (result.prototypes.length / 4).ceil(),
+          height: 250.0 * (result.prototypes.length / 4).ceil(),
           child: CustomPaint(
             painter: _TopographyPainter(
               result.channelPositions,
               result.prototypes,
               result.canonicalCorrelations,
               result.stateLabels,
+              _mapSubtitles(result, recording),
             ),
           ),
         ),
         Text(
-          result.stateLabels.any((label) => label.startsWith('U'))
-              ? 'Canonical labels are assigned A-first using the accs_CompareTemplateMaps |r| > 0.5 rule. U states did not meet the remaining template threshold.'
-              : 'The r above each headmap is its absolute spatial correlation with the matched MetaMaps_2023_06 canonical template. States are polarity-aligned and assigned A-first using MATLAB-parity spherical-spline remapping.',
+          [
+            'Each head is one recurring scalp pattern, seen from above (nose up). Red and blue are opposite polarity relative to the average; the sign is arbitrary, so a map and its mirror image are the same state. Colours are scaled per map (± its own maximum), so compare shapes, not amplitudes. The line under each head gives that state\'s share of the recording, its mean duration, and how often it starts.',
+            if (result.canonicalCorrelations.any((r) => r != null))
+              'The r next to a label is its absolute spatial correlation with the matched MetaMaps_2023_06 canonical template.'
+            else
+              'No canonical template exists for a ${result.prototypes.length}-state solution, so these states are labelled in order (A, B, …) and carry no established functional meaning. Use 4–7 states if you want canonical labels and r values.',
+            if (result.stateLabels.any((label) => label.startsWith('U')))
+              'U = unmatched: this state did not reach |r| > 0.5 with the remaining template maps.',
+          ].join(' '),
           textAlign: TextAlign.center,
           style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
         ),
@@ -2158,12 +2168,30 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           child: DataTable(
             columns: const [
               DataColumn(label: Text('State')),
-              DataColumn(label: Text('GFP (normalized)')),
-              DataColumn(label: Text('Occurrence/s')),
-              DataColumn(label: Text('Duration ms')),
-              DataColumn(label: Text('Coverage')),
-              DataColumn(label: Text('GEV')),
-              DataColumn(label: Text('Mean assigned-state r')),
+              DataColumn(
+                label: Text('GFP (normalized)'),
+                tooltip: 'Global field power: how strong the scalp pattern is while this state is active (relative to the recording average)',
+              ),
+              DataColumn(
+                label: Text('Occurrence/s'),
+                tooltip: 'How many times per second this state starts',
+              ),
+              DataColumn(
+                label: Text('Duration ms'),
+                tooltip: 'Average time the state lasts each time it appears',
+              ),
+              DataColumn(
+                label: Text('Coverage'),
+                tooltip: 'Fraction of the recording spent in this state (all states add to 1)',
+              ),
+              DataColumn(
+                label: Text('GEV'),
+                tooltip: 'Global explained variance: share of the signal variance this state accounts for',
+              ),
+              DataColumn(
+                label: Text('Mean assigned-state r'),
+                tooltip: 'Average spatial correlation between the state map and the EEG samples assigned to it (closer to 1 = better fit)',
+              ),
             ],
             rows: [
               for (final s in recording.states)
@@ -2182,119 +2210,331 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           ),
         ),
         const SizedBox(height: 14),
-        if ((recording.syntax['windows'] as num? ?? 0) == 0 &&
-            recording.syntax.isNotEmpty)
-          const Text(
-            'No complete syntax words at this length. Review the sequence and try a shorter word length; epochs are not joined.',
-          ),
-        if (recording.syntax['dictionary_discovery'] is List)
-          ExpansionTile(
-            title: const Text(
-              'Syntax dictionary discovery (word lengths 1–10)',
+        _syntaxSection(result, recording),
+        const SizedBox(height: 18),
+        _transitionSection(result, recording),
+        const SizedBox(height: 12),
+        Text(
+          'Exports: MicrostateDictionaryDiscovery.csv, MicrostateSyntax.csv, per-recording samples.csv (labels/GFP/fit), microstates.json, MicrostateAnalysisResults.csv, MicrostateSequenceMetrics.csv, MicrostateTransitions.csv, template topographies SVG, and per-recording sequence SVG in ${result.outputDirectory}',
+          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+        ),
+      ],
+    );
+  }
+
+  // ── Result interpretation helpers ───────────────────────────────────────
+
+  static double _d(Object? x) => x is num ? x.toDouble() : double.nan;
+
+  /// Coverage may be stored as a fraction (0–1) or a percentage; return a fraction.
+  static double _coverageFraction(MicrostateRecordingResult r, Map<String, dynamic> state) {
+    final total = r.states.fold<double>(0, (a, e) => a + (_d(e['coverage']).isNaN ? 0 : _d(e['coverage'])));
+    final v = _d(state['coverage']);
+    return total > 1.5 ? v / 100 : v;
+  }
+
+  List<String> _mapSubtitles(MicrostateResult result, MicrostateRecordingResult r) {
+    return [
+      for (final label in result.stateLabels)
+        () {
+          final matches = r.states.where((e) => '${e['label']}' == label);
+          if (matches.isEmpty) return '';
+          final st = matches.first;
+          final cov = _coverageFraction(r, st);
+          return '${(cov * 100).toStringAsFixed(1)}% of time · ${_d(st['mean_duration_ms']).toStringAsFixed(0)} ms · ${_d(st['occurrence_hz']).toStringAsFixed(1)}/s';
+        }(),
+    ];
+  }
+
+  Widget _howToRead(MicrostateResult result, MicrostateRecordingResult r) {
+    final states = [...r.states]..sort((a, b) => _coverageFraction(r, b).compareTo(_coverageFraction(r, a)));
+    final dur = [for (final e in r.states) _d(e['mean_duration_ms'])].where((v) => !v.isNaN).toList();
+    final meanDur = dur.isEmpty ? double.nan : dur.reduce((a, b) => a + b) / dur.length;
+    String pct(double v) => '${(v * 100).toStringAsFixed(0)}%';
+    final top = states.take(3).map((e) => '${e['label']} (${pct(_coverageFraction(r, e))})').join(', ');
+    final lz = _d(r.sequenceMetrics['normalized_lz']);
+    final ep = _d(r.sequenceMetrics['entropy_production']);
+    final gev = r.gevTotal;
+    final lines = <(String, String)>[
+      (
+        'Fit',
+        'The ${result.selectedStates} states together explain ${(gev * 100).toStringAsFixed(1)}% of the variance of the EEG topography. '
+            '${gev < .5 ? "That is modest: the patterns capture the main recurring topographies but a lot of variance remains (more states raise it, but small states are harder to interpret)." : "That is a good fit for this number of states."}',
+      ),
+      (
+        'Time spent',
+        'Most of the recording is in $top. Each state lasts ${meanDur.isNaN ? "—" : meanDur.toStringAsFixed(0)} ms on average '
+            '${meanDur.isNaN ? "" : (meanDur < 40 ? "(very short: the labels flip quickly, which can mean noisy fitting or too many states)" : meanDur <= 140 ? "(in the range usually reported for resting EEG, roughly 60–120 ms)" : "(longer than usually reported; check smoothing)")}.',
+      ),
+      (
+        'Sequence regularity',
+        'Lempel-Ziv complexity ${lz.isNaN ? "—" : lz.toStringAsFixed(2)} (0 = the same pattern repeating, 1 = random order). '
+            'Entropy production ${ep.isNaN ? "—" : ep.toStringAsFixed(4)} (0 = the sequence looks the same played forwards or backwards; larger = a preferred cyclic order of states).',
+      ),
+    ];
+    return Card(
+      color: const Color(0xFF101B30),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('How to read this result', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
+            const Text(
+              'Microstates: the scalp pattern of the EEG at every moment is assigned to one of a few recurring patterns. '
+              'This page shows the patterns (heads), how the recording moves between them over time, and how regular that sequence is.',
+              style: TextStyle(fontSize: 12, color: Color(0xFFCBD5E1), height: 1.4),
             ),
+            const SizedBox(height: 8),
+            for (final (title, text) in lines)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 118,
+                      child: Text(title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF38BDF8))),
+                    ),
+                    Expanded(child: Text(text, style: const TextStyle(fontSize: 12, height: 1.4))),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _syntaxSection(MicrostateResult result, MicrostateRecordingResult recording) {
+    final syntax = recording.syntax;
+    if (syntax.isEmpty) return const SizedBox.shrink();
+    final classes = (syntax['classes'] as List? ?? const []).cast<Map>();
+    final len = (syntax['word_length'] as num?)?.toInt() ?? 0;
+    final windows = (syntax['windows'] as num?)?.toInt() ?? 0;
+    final k = recording.states.length;
+    final possible = len > 0 && k > 1 ? k * math.pow(k - 1, len - 1) : 0;
+    final share = possible > 0 ? windows / possible : 0.0;
+    final warnings = [for (final w in syntax['warnings'] as List? ?? const []) '$w'];
+    String share2(Object? v) => v is num ? '${(v * 100).toStringAsFixed(2)}%' : '—';
+    String ratio(Object? v) => v is num ? v.toStringAsFixed(2) : '—';
+    Map? biggest;
+    var gap = 0.0;
+    for (final c in classes) {
+      final e = _d(c['empirical']), t = _d(c['theoretical']);
+      if (!e.isNaN && !t.isNaN && (e - t).abs() > gap) {
+        gap = (e - t).abs();
+        biggest = c;
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Microstate syntax · ${len}-state words', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 4),
+        const Text(
+          'A “word” is a run of consecutive microstates (staying in a state does not count, so A A A B C → A B C). '
+          'Syntax asks whether the recording visits states in more (or less) structured orders than chance. '
+          'Words are grouped by how varied they are: a low entropy word keeps bouncing between a few states, the highest entropy word visits all different states.',
+          style: TextStyle(fontSize: 12, color: Color(0xFFCBD5E1), height: 1.4),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: (share < .1 ? const Color(0x33F59E0B) : const Color(0x3322C55E)),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            windows == 0
+                ? 'No complete $len-state words were found (epochs are never joined). Try a shorter word length.'
+                : 'Evidence: $windows words were observed out of $possible possible ${len}-state words (${(share * 100).toStringAsFixed(share < .01 ? 2 : 1)}%). '
+                      '${share < .1 ? "That is sparse, so the class shares below are noisy. Use a shorter word length (3–4) or fewer states, or analyse more data, before drawing conclusions." : "That is enough for stable class shares."}',
+            style: const TextStyle(fontSize: 12, height: 1.4),
+          ),
+        ),
+        for (final w in warnings)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(w, style: const TextStyle(color: Colors.orange, fontSize: 11)),
+          ),
+        const SizedBox(height: 10),
+        if (classes.isNotEmpty) ...[
+          const Text('Share of words in each class', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          SizedBox(height: 200, child: CustomPaint(painter: _SyntaxBarsPainter(classes), child: const SizedBox.expand())),
+          Wrap(
+            spacing: 14,
+            children: const [
+              _Swatch(Color(0xFF64748B), 'Chance (random states)'),
+              _Swatch(Color(0xFFF59E0B), 'Markov (each state depends on the previous one)'),
+              _Swatch(Color(0xFF22D3EE), 'Observed'),
+            ],
+          ),
+          if (biggest != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'Largest difference from chance: words with entropy ${_d(biggest['entropy_bits']).toStringAsFixed(2)} bits are '
+                '${share2(biggest['empirical'])} of the observed words versus ${share2(biggest['theoretical'])} expected by chance '
+                '(×${ratio(biggest['ratio_theoretical'])}). Ratios are descriptive, not significance tests.',
+                style: const TextStyle(fontSize: 12, height: 1.4),
+              ),
+            ),
+          const SizedBox(height: 6),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              columns: const [
+                DataColumn(
+                  label: Text('Word class (entropy, bits)'),
+                  tooltip: 'How varied the states within a word are. Low = bouncing between few states; highest = all different.',
+                ),
+                DataColumn(label: Text('Chance'), tooltip: 'TER: share of words in this class if states followed each other at random (no repeats).'),
+                DataColumn(label: Text('Observed'), tooltip: 'EER: share of the words actually seen in the recording.'),
+                DataColumn(label: Text('Markov'), tooltip: 'MER: share expected if the next state depended only on the current state, using your observed transition probabilities.'),
+                DataColumn(label: Text('Observed ÷ chance'), tooltip: 'EER/TER. Above 1 = more words of this class than random.'),
+                DataColumn(label: Text('Observed ÷ Markov'), tooltip: 'EER/MER. Above 1 = more than a one-step-memory process would give, i.e. longer-range structure.'),
+              ],
+              rows: [
+                for (final c in classes)
+                  DataRow(cells: [
+                    DataCell(Text(_d(c['entropy_bits']).toStringAsFixed(3))),
+                    DataCell(Text(share2(c['theoretical']))),
+                    DataCell(Text(share2(c['empirical']))),
+                    DataCell(Text(share2(c['markov']))),
+                    DataCell(Text(ratio(c['ratio_theoretical']))),
+                    DataCell(Text(ratio(c['ratio_markov']))),
+                  ]),
+              ],
+            ),
+          ),
+        ],
+        if (syntax['dictionary_discovery'] is List)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('How many different words appear at each word length?', style: TextStyle(fontSize: 13)),
             subtitle: const Text(
-              'Observed versus three seeded uniform no-repeat random sequences. Review across subjects; no automatic optimum or significance claim.',
+              'Compares your recording with random state sequences. Use it to choose a word length that is neither empty nor saturated.',
+              style: TextStyle(fontSize: 11),
             ),
             children: [
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: DataTable(
-                  columns: [
-                    for (final label in [
-                      'Length',
-                      'Theoretical',
-                      'Observed',
-                      'Random mean',
-                      'Random min',
-                      'Random max',
-                    ])
-                      DataColumn(label: Text(label)),
+                  columns: const [
+                    DataColumn(label: Text('Word length')),
+                    DataColumn(label: Text('Possible words')),
+                    DataColumn(label: Text('Observed words')),
+                    DataColumn(label: Text('Random mean')),
+                    DataColumn(label: Text('Random min')),
+                    DataColumn(label: Text('Random max')),
                   ],
                   rows: [
-                    for (final row
-                        in recording.syntax['dictionary_discovery'] as List)
-                      DataRow(
-                        cells: [
-                          for (final key in [
-                            'word_length',
-                            'theoretical_words',
-                            'observed_words',
-                            'random_words_mean',
-                            'random_words_min',
-                            'random_words_max',
-                          ])
-                            DataCell(Text('${row[key]}')),
-                        ],
-                      ),
+                    for (final row in syntax['dictionary_discovery'] as List)
+                      DataRow(cells: [
+                        for (final key in ['word_length', 'theoretical_words', 'observed_words', 'random_words_mean', 'random_words_min', 'random_words_max'])
+                          DataCell(Text(row[key] is double ? (row[key] as double).toStringAsFixed(1) : '${row[key]}')),
+                      ]),
                   ],
                 ),
               ),
             ],
           ),
-        if (recording.syntax.isNotEmpty) ...[
-          for (final warning in recording.syntax['warnings'] as List? ?? [])
-            Text('$warning', style: const TextStyle(color: Colors.orange)),
-          Text(
-            'Microstate syntax · ${recording.syntax['word_length']}-symbol words · ${recording.syntax['windows']} within-epoch windows',
-          ),
-          const Text(
-            'No-permanence sequences; TER = theoretical, EER = empirical, MER = first-order Markov. Ratios are descriptive, not significance tests.',
-          ),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: DataTable(
-              columns: [
-                for (final name in [
-                  'Entropy bits',
-                  'TER',
-                  'EER',
-                  'MER',
-                  'EER/TER',
-                  'EER/MER',
-                ])
-                  DataColumn(label: Text(name)),
-              ],
-              rows: [
-                for (final row in recording.syntax['classes'] as List? ?? [])
-                  DataRow(
-                    cells: [
-                      for (final key in [
-                        'entropy_bits',
-                        'theoretical',
-                        'empirical',
-                        'markov',
-                        'ratio_theoretical',
-                        'ratio_markov',
-                      ])
-                        DataCell(
-                          Text(
-                            row[key] == null
-                                ? '—'
-                                : (row[key] as num).toStringAsFixed(4),
-                          ),
-                        ),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-          Text('Sample labels, GFP and fit: ${recording.sampleCsv}'),
+        Text('Sample labels, GFP and fit: ${recording.sampleCsv}', style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
+      ],
+    );
+  }
+
+  /// P(next = j | the sequence leaves state i): self-transitions removed, rows add to 1.
+  static List<List<double>> _leaveMatrix(List<List<double>> t) {
+    final n = t.length;
+    return [
+      for (var i = 0; i < n; i++)
+        () {
+          var sum = 0.0;
+          for (var j = 0; j < n; j++) {
+            if (j != i) sum += t[i][j];
+          }
+          return [for (var j = 0; j < n; j++) i == j || sum <= 0 ? 0.0 : t[i][j] / sum];
+        }(),
+    ];
+  }
+
+  /// Share of state entries that go into each state (self-transitions removed).
+  static List<double> _entryShare(List<List<double>> t) {
+    final n = t.length;
+    final entries = [
+      for (var j = 0; j < n; j++) [for (var i = 0; i < n; i++) if (i != j) t[i][j]].fold<double>(0, (a, b) => a + b),
+    ];
+    final total = entries.fold<double>(0, (a, b) => a + b);
+    return [for (final e in entries) total > 0 ? e / total : 0.0];
+  }
+
+  Widget _transitionSection(MicrostateResult result, MicrostateRecordingResult recording) {
+    final raw = recording.transitions;
+    if (raw.isEmpty) return const SizedBox.shrink();
+    final n = raw.length;
+    final labels = [for (var i = 0; i < n; i++) i < result.stateLabels.length ? result.stateLabels[i] : String.fromCharCode(65 + i)];
+    final leave = _leaveMatrix(raw);
+    final entry = _entryShare(raw);
+    final ratio = [
+      for (var i = 0; i < n; i++)
+        [
+          for (var j = 0; j < n; j++)
+            () {
+              if (i == j) return 0.0;
+              final expected = (1 - entry[i]) <= 0 ? 0.0 : entry[j] / (1 - entry[i]);
+              return expected <= 0 ? 0.0 : leave[i][j] / expected;
+            }(),
         ],
-        Text(
-          'Transition probability matrix',
-          style: Theme.of(context).textTheme.titleMedium,
+    ];
+    final total = raw.fold<double>(0, (a, r) => a + r.fold<double>(0, (x, y) => x + y));
+    final stay = total > 0 ? [for (var i = 0; i < n; i++) raw[i][i]].fold<double>(0, (a, b) => a + b) / total : double.nan;
+    final preferred = <(int, int, double)>[];
+    for (var i = 0; i < n; i++) {
+      for (var j = 0; j < n; j++) {
+        if (i != j && leave[i][j] >= .05) preferred.add((i, j, ratio[i][j]));
+      }
+    }
+    preferred.sort((a, b) => b.$3.compareTo(a.$3));
+    final matrix = _transitionMode == 0 ? raw : (_transitionMode == 1 ? leave : ratio);
+    const blurbs = [
+      'Share of all consecutive EEG samples that go from the row state to the column state. The diagonal (staying in the same state) dominates because states last many samples, so off-diagonal cells look like zero.',
+      'Staying in a state is removed. Each row shows where the sequence goes after it leaves that state; rows add to 100%.',
+      'Leaving-state probability divided by what you would expect if the next state were chosen at random in proportion to how often each state starts. Above ×1 = preferred transition, below ×1 = avoided.',
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Which state follows which', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 6),
+        SegmentedButton<int>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(value: 1, label: Text('After leaving a state', style: TextStyle(fontSize: 12))),
+            ButtonSegment(value: 2, label: Text('Versus chance', style: TextStyle(fontSize: 12))),
+            ButtonSegment(value: 0, label: Text('All samples', style: TextStyle(fontSize: 12))),
+          ],
+          selected: {_transitionMode},
+          onSelectionChanged: (v) => setState(() => _transitionMode = v.first),
         ),
         const SizedBox(height: 6),
+        Text(blurbs[_transitionMode], style: const TextStyle(fontSize: 12, color: Color(0xFFCBD5E1), height: 1.4)),
+        const SizedBox(height: 6),
         SizedBox(
-          height: 260,
-          child: CustomPaint(
-            painter: _TransitionPainter(recording.transitions),
-          ),
+          height: 320,
+          child: CustomPaint(painter: _TransitionPainter(matrix, labels, _transitionMode), child: const SizedBox.expand()),
         ),
-        const SizedBox(height: 12),
         Text(
-          'Exports: MicrostateDictionaryDiscovery.csv, MicrostateSyntax.csv, per-recording samples.csv (labels/GFP/fit), microstates.json, MicrostateAnalysisResults.csv, MicrostateSequenceMetrics.csv, MicrostateTransitions.csv, template topographies SVG, and per-recording sequence SVG in ${result.outputDirectory}',
-          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+          [
+            if (!stay.isNaN) '${(stay * 100).toStringAsFixed(1)}% of consecutive samples stay in the same state.',
+            if (preferred.isNotEmpty)
+              'Strongest preferred transitions: ${preferred.take(3).map((e) => '${labels[e.$1]}→${labels[e.$2]} (${(leave[e.$1][e.$2] * 100).toStringAsFixed(0)}% of exits, ×${e.$3.toStringAsFixed(1)} chance)').join('; ')}.',
+          ].join(' '),
+          style: const TextStyle(fontSize: 12, height: 1.4),
         ),
       ],
     );
@@ -2913,11 +3153,13 @@ class _TopographyPainter extends CustomPainter {
     this.maps,
     this.correlations,
     this.labels,
+    this.subtitles,
   );
   final List<MicrostateScalpPosition> positions;
   final List<List<double>> maps;
   final List<double?> correlations;
   final List<String> labels;
+  final List<String> subtitles;
 
   @override
   void paint(Canvas c, Size size) {
@@ -2933,12 +3175,12 @@ class _TopographyPainter extends CustomPainter {
         cellWidth * (column + .5),
         cellHeight * (row + .52),
       );
-      final radius = math.min(cellWidth * .36, cellHeight * .34);
+      final radius = math.min(cellWidth * .36, cellHeight * .32);
       final head = Path()
         ..addOval(Rect.fromCircle(center: center, radius: radius));
       c.save();
       c.clipPath(head);
-      const grid = 42;
+      const grid = 84;
       final step = radius * 2 / grid;
       final absmax = map
           .map((x) => x.abs())
@@ -3000,6 +3242,8 @@ class _TopographyPainter extends CustomPainter {
         );
       }
       for (final position in positions) {
+        // electrodes beyond the head outline (e.g. ear / reference sites) are not drawn
+        if (position.x * position.x + position.y * position.y > 1.02) continue;
         c.drawCircle(
           center +
               Offset(position.x * radius * .92, -position.y * radius * .92),
@@ -3045,6 +3289,25 @@ class _TopographyPainter extends CustomPainter {
           ..strokeWidth = .6
           ..color = const Color(0xFF94A3B8),
       );
+      for (final (text, x, anchorRight) in [
+        ('−max', barLeft - 3, true),
+        ('0', barLeft + barWidth / 2, null),
+        ('+max', barLeft + barWidth + 3, false),
+      ]) {
+        final lp = TextPainter(
+          text: TextSpan(text: text, style: const TextStyle(fontSize: 9, color: Color(0xFF94A3B8))),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final dx = anchorRight == true ? x - lp.width : (anchorRight == null ? x - lp.width / 2 : x);
+        lp.paint(c, Offset(dx, anchorRight == null ? barTop + 7 : barTop - 2));
+      }
+      if (s < subtitles.length && subtitles[s].isNotEmpty) {
+        final sp = TextPainter(
+          text: TextSpan(text: subtitles[s], style: const TextStyle(fontSize: 10.5, color: Color(0xFFE2E8F0))),
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: cellWidth - 8);
+        sp.paint(c, Offset(center.dx - sp.width / 2, barTop - 18));
+      }
     }
   }
 
@@ -3069,64 +3332,145 @@ class _TopographyPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TopographyPainter old) =>
-      old.maps != maps || old.positions != positions;
+      old.maps != maps || old.positions != positions || old.subtitles != subtitles;
 }
 
-class _TransitionPainter extends CustomPainter {
-  const _TransitionPainter(this.matrix);
-  final List<List<double>> matrix;
+class _Swatch extends StatelessWidget {
+  const _Swatch(this.color, this.label);
+  final Color color;
+  final String label;
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(width: 10, height: 10, color: color),
+      const SizedBox(width: 4),
+      Text(label, style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
+    ],
+  );
+}
+
+/// Grouped bars per word class: chance, Markov, observed (percent of words).
+class _SyntaxBarsPainter extends CustomPainter {
+  const _SyntaxBarsPainter(this.classes);
+  final List<Map> classes;
+
   @override
   void paint(Canvas c, Size z) {
-    if (matrix.isEmpty) return;
-    final n = matrix.length;
-    final side = math.min(z.width, z.height) - 35;
-    final cell = side / n;
-    final max = matrix
-        .expand((x) => x)
-        .fold(0.0, math.max)
-        .clamp(1e-12, double.infinity);
-    for (var i = 0; i < n; i++) {
-      for (var j = 0; j < n; j++) {
-        final v = matrix[i][j] / max;
-        c.drawRect(
-          Rect.fromLTWH(30 + j * cell, 5 + i * cell, cell - 1, cell - 1),
-          Paint()
-            ..color = Color.lerp(
-              const Color(0xFF172554),
-              const Color(0xFF22D3EE),
-              v,
-            )!,
-        );
-        final t = TextPainter(
-          text: TextSpan(
-            text: '${(matrix[i][j] * 100).toStringAsFixed(2)}%',
-            style: TextStyle(
-              color: v > .5 ? Colors.black : Colors.white,
-              fontSize: math.min(10, cell * .22),
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        t.paint(
-          c,
-          Offset(
-            30 + j * cell + (cell - t.width) / 2,
-            5 + i * cell + (cell - t.height) / 2,
-          ),
-        );
+    if (classes.isEmpty) return;
+    final left = 38.0, bottom = 24.0, top = 6.0;
+    final plotW = z.width - left - 4, plotH = z.height - bottom - top;
+    double v(Map m, String k) => m[k] is num ? (m[k] as num).toDouble() : 0.0;
+    var maxV = 0.0;
+    for (final m in classes) {
+      for (final k in ['theoretical', 'markov', 'empirical']) {
+        maxV = math.max(maxV, v(m, k));
       }
-      final l = TextPainter(
+    }
+    if (maxV <= 0) maxV = 1;
+    final axis = Paint()..color = const Color(0xFF334155);
+    for (var g = 0; g <= 4; g++) {
+      final y = top + plotH * (1 - g / 4);
+      c.drawLine(Offset(left, y), Offset(left + plotW, y), axis);
+      final t = TextPainter(
+        text: TextSpan(text: '${(maxV * g / 4 * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 9, color: Color(0xFF94A3B8))),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      t.paint(c, Offset(left - t.width - 4, y - t.height / 2));
+    }
+    final group = plotW / classes.length;
+    const colors = [Color(0xFF64748B), Color(0xFFF59E0B), Color(0xFF22D3EE)];
+    const keys = ['theoretical', 'markov', 'empirical'];
+    for (var i = 0; i < classes.length; i++) {
+      final bw = group * .22;
+      for (var b = 0; b < 3; b++) {
+        final h = plotH * v(classes[i], keys[b]) / maxV;
+        c.drawRect(Rect.fromLTWH(left + i * group + group * .12 + b * (bw + 2), top + plotH - h, bw, h), Paint()..color = colors[b]);
+      }
+      final t = TextPainter(
         text: TextSpan(
-          text: String.fromCharCode(65 + i),
-          style: const TextStyle(color: Colors.white, fontSize: 11),
+          text: v(classes[i], 'entropy_bits').toStringAsFixed(2),
+          style: const TextStyle(fontSize: 9, color: Color(0xFFCBD5E1)),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      l.paint(c, Offset(10, 5 + i * cell + (cell - l.height) / 2));
-      l.paint(c, Offset(30 + i * cell + (cell - l.width) / 2, 8 + side));
+      t.paint(c, Offset(left + i * group + (group - t.width) / 2, top + plotH + 4));
     }
   }
 
   @override
-  bool shouldRepaint(covariant _TransitionPainter old) => old.matrix != matrix;
+  bool shouldRepaint(covariant _SyntaxBarsPainter old) => old.classes != classes;
+}
+
+/// mode 0 = all samples (%), 1 = after leaving a state (%), 2 = versus chance (×).
+class _TransitionPainter extends CustomPainter {
+  const _TransitionPainter(this.matrix, this.labels, this.mode);
+  final List<List<double>> matrix;
+  final List<String> labels;
+  final int mode;
+
+  TextPainter _t(String s, double size, Color color, {FontWeight? w}) => TextPainter(
+    text: TextSpan(text: s, style: TextStyle(fontSize: size, color: color, fontWeight: w)),
+    textDirection: TextDirection.ltr,
+  )..layout();
+
+  @override
+  void paint(Canvas c, Size z) {
+    if (matrix.isEmpty) return;
+    final n = matrix.length;
+    const left = 46.0, top = 34.0;
+    final side = math.min(z.width - left - 8, z.height - top - 8);
+    if (side <= 20) return;
+    final cell = side / n;
+    var maxV = 1e-12;
+    for (var i = 0; i < n; i++) {
+      for (var j = 0; j < n; j++) {
+        if (mode == 0 || i != j) maxV = math.max(maxV, matrix[i][j]);
+      }
+    }
+    final title = _t('TO state →', 11, const Color(0xFF94A3B8), w: FontWeight.w600);
+    title.paint(c, Offset(left + (side - title.width) / 2, 0));
+    c.save();
+    c.translate(12, top + (side + _t('FROM state →', 11, Colors.white).width) / 2);
+    c.rotate(-math.pi / 2);
+    _t('FROM state →', 11, const Color(0xFF94A3B8), w: FontWeight.w600).paint(c, Offset.zero);
+    c.restore();
+    for (var i = 0; i < n; i++) {
+      final color = _stateColors[i % _stateColors.length];
+      final lab = _t(i < labels.length ? labels[i] : '', 12, color, w: FontWeight.bold);
+      lab.paint(c, Offset(left - lab.width - 6, top + i * cell + (cell - lab.height) / 2));
+      lab.paint(c, Offset(left + i * cell + (cell - lab.width) / 2, top - lab.height - 2));
+      for (var j = 0; j < n; j++) {
+        final rect = Rect.fromLTWH(left + j * cell, top + i * cell, cell - 1.5, cell - 1.5);
+        if (i == j && mode != 0) {
+          c.drawRect(rect, Paint()..color = const Color(0xFF0B1220));
+          final dash = _t('—', 11, const Color(0xFF475569));
+          dash.paint(c, Offset(rect.center.dx - dash.width / 2, rect.center.dy - dash.height / 2));
+          continue;
+        }
+        final value = matrix[i][j];
+        Color fill;
+        String text;
+        double strength;
+        if (mode == 2) {
+          final lg = value <= 0 ? -1.0 : (math.log(value) / math.ln2).clamp(-1.0, 1.0);
+          fill = lg >= 0
+              ? Color.lerp(const Color(0xFF172554), const Color(0xFFF59E0B), lg)!
+              : Color.lerp(const Color(0xFF172554), const Color(0xFF3B82F6), -lg)!;
+          text = value <= 0 ? '–' : '×${value.toStringAsFixed(value >= 10 ? 0 : 1)}';
+          strength = lg.abs();
+        } else {
+          strength = (value / maxV).clamp(0.0, 1.0);
+          fill = Color.lerp(const Color(0xFF172554), const Color(0xFF22D3EE), strength)!;
+          text = mode == 0 ? '${(value * 100).toStringAsFixed(2)}%' : '${(value * 100).toStringAsFixed(0)}%';
+        }
+        c.drawRect(rect, Paint()..color = fill);
+        final tp = _t(text, math.max(7, math.min(12, cell * .26)), strength > .6 && mode != 2 ? Colors.black : Colors.white);
+        tp.paint(c, Offset(rect.center.dx - tp.width / 2, rect.center.dy - tp.height / 2));
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TransitionPainter old) => old.matrix != matrix || old.mode != mode || old.labels != labels;
 }

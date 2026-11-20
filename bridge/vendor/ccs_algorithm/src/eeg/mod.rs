@@ -158,6 +158,7 @@ pub struct Row {
 }
 
 pub mod connectivity;
+pub mod graph_theory;
 pub mod information;
 pub mod dfa_fei;
 pub mod features;

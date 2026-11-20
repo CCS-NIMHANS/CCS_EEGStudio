@@ -81,6 +81,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await tester.tap(find.byKey(const ValueKey('erp-stage-3')));
+    await tester.pumpAndSettle();
     expect(find.text('Load Saved ERP Folder…'), findsOneWidget);
     expect(find.text('Group Statistics'), findsOneWidget);
   });

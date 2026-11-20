@@ -128,7 +128,11 @@ Future<bool> showProcessingSettings(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) => AlertDialog(
-        title: Text('$stage parameters'),
+        title: Text(
+          stage == 'Feature Extraction' && section != null
+              ? '${const {'Bands': 'Frequency band', 'GC': 'Granger causality', 'PSD': 'PSD', 'FOOOF': 'FOOOF / specparam', 'IRASA': 'IRASA', 'Nonlinear': 'Nonlinear dynamics', 'ACW': 'Autocorrelation window'}[section] ?? section} parameters'
+              : '$stage parameters',
+        ),
         content: SizedBox(
           width: 500,
           child: SingleChildScrollView(
@@ -587,7 +591,7 @@ Future<bool> showProcessingSettings(
                   ),
                 ],
                 if (stage == 'Feature Extraction') ...[
-                  DropdownButtonFormField<String>(
+                  if (section == null || section == 'Reference') DropdownButtonFormField<String>(
                     isExpanded: true,
                     initialValue: featureReference,
                     decoration: const InputDecoration(
@@ -609,9 +613,9 @@ Future<bool> showProcessingSettings(
                     ],
                     onChanged: (v) => setState(() => featureReference = v!),
                   ),
-                  if (featureReference == 'channels')
+                  if ((section == null || section == 'Reference') && featureReference == 'channels')
                     field(featureRefs, 'Feature reference channels'),
-                  DropdownButtonFormField<String>(
+                  if (section == null || section == 'PSD') DropdownButtonFormField<String>(
                     isExpanded: true,
                     initialValue: psdMethod,
                     decoration: const InputDecoration(
@@ -631,6 +635,7 @@ Future<bool> showProcessingSettings(
                     ],
                     onChanged: (v) => setState(() => psdMethod = v!),
                   ),
+                  if (section == null || section == 'PSD')
                   if (psdMethod == 'welch') ...[
                     DropdownButtonFormField<String>(
                       isExpanded: true,
@@ -677,13 +682,24 @@ Future<bool> showProcessingSettings(
                     ),
                   ],
                   for (final entry in definitions.entries)
-                    field(advanced[entry.key]!, entry.value.$1),
+                    if (section == null ||
+                        section ==
+                            (entry.key.startsWith('fooof_')
+                                ? 'FOOOF'
+                                : entry.key == 'gc_lags'
+                                ? 'GC'
+                                : entry.key == 'acw_fraction'
+                                ? 'ACW'
+                                : 'Nonlinear'))
+                      field(advanced[entry.key]!, entry.value.$1),
+                  if (section == null || section == 'IRASA')
                   field(
                     factors,
                     'IRASA resampling factors',
                     help:
                         'Empty = standard 17 factors. Custom list between 1 and 2; rounded to two decimals.',
                   ),
+                  if (section == null || section == 'PSD' || section == 'Bands')
                   field(
                     bands,
                     'Frequency bands: label: low-high',

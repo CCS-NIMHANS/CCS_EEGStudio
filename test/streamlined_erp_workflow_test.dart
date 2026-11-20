@@ -44,8 +44,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Preprocess'));
       await tester.pumpAndSettle();
-      expect(find.text('Next: Epochs & ERP'), findsOneWidget);
-      await tester.tap(find.text('Next: Epochs & ERP'));
+      expect(find.text('Next: Define events & create epochs'), findsOneWidget);
+      await tester.tap(find.text('Next: Define events & create epochs'));
       await tester.pumpAndSettle();
       expect(find.text('Open EEG / epochs'), findsOneWidget);
       expect(tester.takeException(), isNull);

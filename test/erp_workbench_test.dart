@@ -47,13 +47,12 @@ void main() {
       const MaterialApp(home: Scaffold(body: ErpWorkbenchView())),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Folder'), findsOneWidget);
-    expect(
-      find.text(
-        'Choose recordings, inspect the markers, then review the proposed analysis.',
-      ),
-      findsOneWidget,
-    );
+    expect(find.text('Add Folder'), findsOneWidget);
+    expect(find.byKey(const ValueKey('erp-stage-0')), findsOneWidget);
+    expect(find.text('Columns'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('erp-stage-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('Load cleaned EEG…'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
   testWidgets('ERP CORE compact report and results view render', (

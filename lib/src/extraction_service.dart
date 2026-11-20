@@ -2112,6 +2112,8 @@ class ExtractionService {
       return 'nonlinear';
     }
     if (header.startsWith('conn_') ||
+        header.startsWith('graph_') ||
+        header.startsWith('graphglobal_') ||
         header.startsWith('coh_') ||
         header.startsWith('plv_') ||
         header.startsWith('pli_') ||

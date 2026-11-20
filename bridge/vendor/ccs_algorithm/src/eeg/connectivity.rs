@@ -96,46 +96,73 @@ struct MultivariateScores {
     gc_tr: Vec<f64>,
 }
 
-fn multivariate_scores(
-    coefficients: &[Vec<Vec<Complex64>>],
+/// The two ROIs of the multivariate connectivity (MIC, MIM, GC, GC-TR): seed ROI -> target ROI.
+/// Returns (seed channel indices, target channel indices, seed ROI name, target ROI name).
+/// Explicit `roi_seed` / `roi_target` label lists win (case-insensitive, labels not in the recording are ignored).
+/// Otherwise the documented default is used: frontal channels (label starts with F) -> parietal + occipital
+/// channels (label starts with P or O); recordings without such labels fall back to first half -> second half.
+pub fn resolve_rois(
     labels: &[String],
-    options: &Options,
-) -> MultivariateScores {
-    let mut seeds: Vec<usize> = labels
+    o: &crate::eeg::information::InformationOptions,
+) -> (Vec<usize>, Vec<usize>, String, String) {
+    let find = |names: &[String]| -> Vec<usize> {
+        labels
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| names.iter().any(|n| n.trim().eq_ignore_ascii_case(l.trim())))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let named = |name: &str, fallback: &str| if name.trim().is_empty() { fallback.to_string() } else { name.trim().to_string() };
+    if !o.roi_seed.is_empty() && !o.roi_target.is_empty() {
+        let seeds = find(&o.roi_seed);
+        let targets: Vec<usize> = find(&o.roi_target).into_iter().filter(|t| !seeds.contains(t)).collect();
+        if !seeds.is_empty() && !targets.is_empty() {
+            return (seeds, targets, named(&o.roi_seed_name, "Seed ROI"), named(&o.roi_target_name, "Target ROI"));
+        }
+    }
+    let seeds: Vec<usize> = labels
         .iter()
         .enumerate()
         .filter(|(_, l)| {
             let u = l.to_uppercase();
             u.starts_with('F') || u.contains("FRONTAL")
         })
-        .map(|(index, _)| index)
+        .map(|(i, _)| i)
         .collect();
-    let mut targets: Vec<usize> = labels
+    let targets: Vec<usize> = labels
         .iter()
         .enumerate()
         .filter(|(_, l)| {
             let u = l.to_uppercase();
-            u.starts_with('P')
-                || u.starts_with('O')
-                || u.contains("PARIETAL")
-                || u.contains("OCCIPITAL")
+            u.starts_with('P') || u.starts_with('O') || u.contains("PARIETAL") || u.contains("OCCIPITAL")
         })
-        .map(|(index, _)| index)
+        .map(|(i, _)| i)
         .collect();
+    if !seeds.is_empty() && !targets.is_empty() {
+        return (seeds, targets, "Frontal".into(), "Parieto-occipital".into());
+    }
+    let n = labels.len();
+    if n >= 2 {
+        return ((0..n / 2).collect(), (n / 2..n).collect(), "First half of channels".into(), "Second half of channels".into());
+    }
+    (Vec::new(), Vec::new(), String::new(), String::new())
+}
+
+fn multivariate_scores(
+    coefficients: &[Vec<Vec<Complex64>>],
+    labels: &[String],
+    options: &Options,
+) -> MultivariateScores {
+    let (seeds, targets, _, _) = resolve_rois(labels, &options.information);
     let empty = || vec![f64::NAN; N_FREQS];
     if seeds.is_empty() || targets.is_empty() {
-        let n = labels.len();
-        if n >= 2 {
-            seeds = (0..n / 2).collect();
-            targets = (n / 2..n).collect();
-        } else {
-            return MultivariateScores {
-                mic: empty(),
-                mim: empty(),
-                gc: empty(),
-                gc_tr: empty(),
-            };
-        }
+        return MultivariateScores {
+            mic: empty(),
+            mim: empty(),
+            gc: empty(),
+            gc_tr: empty(),
+        };
     }
     let indices: Vec<usize> = seeds.iter().chain(&targets).copied().collect();
     let csd = csd_matrices(coefficients, &indices);

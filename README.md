@@ -70,12 +70,13 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 
 ---
 
-## ✨ What's New in v1.2.53
+## ✨ What's New in v1.2.54
 
-- **Preprocessing Pipeline & Bad-Channel Fixes:** Interactive Preprocessing now lets you tick steps and run them together via `"Apply selected (N)"` in one cached engine run, removed `"Default for new configured runs"` boxes, and fixed Batch ASR/Muscle switches writing invalid modes (`burst_repair`, `cca`); interpolated slow (`<1 Hz`) excursions after ASR; runs ICA, ASR, and GEDAI on good channels only (with `leadfield_cov` subset for GEDAI) before interpolating bad channels and applying the output reference; improved bad-channel detection (per-window detrend + `4×` amplitude ratio); and added red bad-channel highlighting, header hide/show chip, and right-click mark/unmark in the EEG viewer.
-- **Video/Audio ↔ EEG Sync & Time-Resolved Neural Speech Tracking:** Fixed BrainVision `.vmrk` `"New Segment"` start-time parsing and aligned all plotted sessions and media segments on one wall-clock timeline with per-session plot cursors, `align_audio` cross-correlation, audio envelope source attribution, and sliding-window decoder/TRF `Speech Tracking`.
+- **ERP workflow:** One stage navigator, direct loading from cleaned EEG / saved epochs / saved results, and a repaired preprocessing handoff. Compact measurement tables open group statistics without loading waveform arrays.
+- **Interactive labels and groups:** No-regex filename setup, explicit label sources, participant/session identity, Excel cohort matching, and guided group-analysis results.
+- **Connectivity and microstates:** Graph measures and Louvain communities, configurable ROIs and connectivity plots, plus clearer microstate maps, syntax and transition displays.
 
-See [CHANGELOG.md](CHANGELOG.md) for full release history (v1.2.52 multi-component ERP & group ERSP/ERPimage/rERP, v1.2.51 algorithmic parity audit, v1.2.50 batch localizer & stats plots, and earlier releases).
+See [CHANGELOG.md](CHANGELOG.md) for full release notes and previous versions.
 
 ---
 

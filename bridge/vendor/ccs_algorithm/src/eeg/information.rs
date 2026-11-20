@@ -22,6 +22,17 @@ pub struct InformationOptions {
     pub te_target_history: usize,
     pub te_history_step: usize,
     pub te_estimator: String,
+    /// Louvain resolution (gamma > 1 -> more, smaller communities).
+    pub louvain_gamma: f64,
+    /// Louvain random restarts (best modularity wins; fixed seed -> deterministic).
+    pub louvain_restarts: usize,
+    pub graph_seed: u64,
+    /// Explicit ROI definitions of the multivariate connectivity (MIC / MIM / GC): channel labels of the seed ROI
+    /// and the target ROI. Empty = built-in default (frontal -> parietal + occipital). The names are metadata.
+    pub roi_seed: Vec<String>,
+    pub roi_target: Vec<String>,
+    pub roi_seed_name: String,
+    pub roi_target_name: String,
 }
 impl Default for InformationOptions {
     fn default() -> Self {
@@ -38,6 +49,13 @@ impl Default for InformationOptions {
             te_target_history: 1,
             te_history_step: 1,
             te_estimator: "time_copula_cmi".into(),
+            louvain_gamma: 1.0,
+            louvain_restarts: 10,
+            graph_seed: 1,
+            roi_seed: Vec::new(),
+            roi_target: Vec::new(),
+            roi_seed_name: String::new(),
+            roi_target_name: String::new(),
         }
     }
 }
@@ -57,8 +75,14 @@ impl InformationOptions {
             || self.te_max_delay > 100000
             || self.te_estimator != "time_copula_cmi"
             || self.te_max_delay <= self.te_min_delay
+            || !self.louvain_gamma.is_finite()
+            || self.louvain_gamma <= 0.0
+            || self.louvain_gamma > 10.0
+            || self.louvain_restarts == 0
+            || self.louvain_restarts > 1000
+            || self.roi_seed.iter().any(|c| self.roi_target.iter().any(|t| t.eq_ignore_ascii_case(c)))
         {
-            return Err("Invalid connectivity output, graph density, or TE delays".into());
+            return Err("Invalid connectivity output, graph density, Louvain settings, ROI definition (seed and target ROI must not share channels) or TE delays".into());
         }
         Ok(())
     }
@@ -290,6 +314,17 @@ pub fn graph_features(raw: &[Vec<f64>], density: f64) -> Vec<Vec<f64>> {
     }
     out
 }
+fn extra_graph_columns(name: &str) -> Vec<String> {
+    crate::eeg::graph_theory::NODE_NAMES
+        .iter()
+        .map(|g| format!("graph_{name}_{g}"))
+        .chain(
+            crate::eeg::graph_theory::GLOBAL_NAMES
+                .iter()
+                .map(|g| format!("graphglobal_{name}_{g}")),
+        )
+        .collect()
+}
 pub fn column_names(labels: &[String], o: &InformationOptions) -> Vec<String> {
     let mut out = Vec::new();
     for (on, name) in [(o.gcmi, "gcmi"), (o.te, "te_time")] {
@@ -301,12 +336,34 @@ pub fn column_names(labels: &[String], o: &InformationOptions) -> Vec<String> {
         }
         if o.output != "edges" {
             out.extend(GRAPH_NAMES.iter().map(|g| format!("graph_{name}_{g}")));
+            out.extend(extra_graph_columns(name));
         }
     }
     out
 }
+/// Undirected matrix (GCMI, spectral pair matrices).
 pub fn summarize(matrix: &[Vec<f64>], o: &InformationOptions) -> Vec<Vec<f64>> {
+    summarize_with(matrix, o, false)
+}
+/// `directed = true` for matrices whose entry [i][j] is the influence of source i on target j (transfer entropy).
+/// Directed graphs keep edge direction for strength, clustering (Fagiolo), paths, Louvain (directed modularity).
+pub fn summarize_with(matrix: &[Vec<f64>], o: &InformationOptions, directed: bool) -> Vec<Vec<f64>> {
     let graph = graph_features(matrix, o.graph_density);
+    // Same validity rule as `graph_features`: any non-finite off-diagonal entry makes every graph output NaN.
+    let valid = matrix
+        .iter()
+        .enumerate()
+        .all(|(i, r)| r.iter().enumerate().all(|(j, v)| i == j || v.is_finite()));
+    let extra = if valid {
+        crate::eeg::graph_theory::analyze(matrix, directed, o.graph_density, o.louvain_gamma, o.louvain_restarts, o.graph_seed)
+    } else {
+        crate::eeg::graph_theory::GraphResult {
+            node: vec![vec![f64::NAN; crate::eeg::graph_theory::NODE_NAMES.len()]; matrix.len()],
+            global: vec![f64::NAN; crate::eeg::graph_theory::GLOBAL_NAMES.len()],
+            communities: vec![0; matrix.len()],
+            weights: Vec::new(),
+        }
+    };
     matrix
         .iter()
         .enumerate()
@@ -321,6 +378,8 @@ pub fn summarize(matrix: &[Vec<f64>], o: &InformationOptions) -> Vec<Vec<f64>> {
             }
             if o.output != "edges" {
                 row.extend(&graph[i]);
+                row.extend(&extra.node[i]);
+                row.extend(&extra.global);
             }
             row
         })
@@ -334,6 +393,7 @@ pub fn network_columns(name: &str, labels: &[String], o: &InformationOptions) ->
     }
     if o.output != "edges" {
         out.extend(GRAPH_NAMES.iter().map(|g| format!("graph_{name}_{g}")));
+        out.extend(extra_graph_columns(name));
     }
     out
 }

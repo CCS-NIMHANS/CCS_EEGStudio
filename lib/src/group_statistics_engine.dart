@@ -128,6 +128,7 @@ class ErpGroupStatsEngine {
     final parsed = await TabularSheetReader.read(csvPath);
     var headers = List<String>.from(parsed.headers);
     var rows = List<List<String>>.from(parsed.rows);
+    final columnSources = <String, String>{for (final h in headers) h: 'Measurement table · $h'};
 
     if (metadataPath != null &&
         metadataPath.trim().isNotEmpty &&
@@ -143,6 +144,34 @@ class ErpGroupStatsEngine {
         );
         headers = merged.headers;
         rows = merged.rows;
+        for (final h in meta.headers) {
+          final actual = headers.where((c) => c.toLowerCase() == h.toLowerCase()).firstOrNull;
+          if (actual != null) columnSources[actual] = 'Participant file ${File(metadataPath.trim()).uri.pathSegments.last} · $h (fills missing labels)';
+        }
+      }
+    }
+
+    final subjectIndex = headers.indexWhere((h) => const {
+      'subjid', 'subject', 'subject_id', 'participant_id',
+    }.contains(h.toLowerCase()));
+    if (subjectIndex >= 0 && !headers.contains('participant_id')) {
+      final sessionPattern = RegExp(
+        r'^(.+?)[_-]?(?:session|ses|visit)[_-]?(\d+)(?:[-_].*)?$',
+        caseSensitive: false,
+      );
+      final matches = rows.map((r) => subjectIndex < r.length
+          ? sessionPattern.firstMatch(r[subjectIndex]) : null).toList();
+      if (matches.any((m) => m != null)) {
+        final addSession = !headers.any((h) => const {'session', 'sessn'}.contains(h.toLowerCase()));
+        headers.add('participant_id');
+        columnSources['participant_id'] = 'Separated from ${headers[subjectIndex]} in the measurement table';
+        if (addSession) columnSources['Session'] = 'Session suffix in ${headers[subjectIndex]} (for example SESSION03 → 03)';
+        if (addSession) headers.add('Session');
+        rows = [for (var i = 0; i < rows.length; i++) [
+          ...List.generate(headers.length - (addSession ? 2 : 1), (c) => c < rows[i].length ? rows[i][c] : ''),
+          matches[i]?.group(1) ?? rows[i][subjectIndex],
+          if (addSession) matches[i]?.group(2) ?? 'Unknown',
+        ]];
       }
     }
 
@@ -150,7 +179,7 @@ class ErpGroupStatsEngine {
     final metricCols = <String>[];
     final factorLevels = <String, List<String>>{};
     final factorCounts = <String, Map<String, int>>{};
-    String? detectedSubjectCol;
+    String? detectedSubjectCol = headers.contains('participant_id') ? 'participant_id' : null;
 
     for (var c = 0; c < headers.length; c++) {
       final h = headers[c];
@@ -184,6 +213,9 @@ class ErpGroupStatsEngine {
 
       const idOrMetaNumeric = {
         'sl.no.',
+        'sl.no',
+        'session',
+        'sessn',
         'sno',
         'index',
         'epoch',
@@ -219,6 +251,7 @@ class ErpGroupStatsEngine {
     }
 
     return {
+      'column_sources': columnSources,
       'headers': headers,
       'rows': rows,
       'row_count': rows.length,
@@ -241,9 +274,9 @@ class ErpGroupStatsEngine {
     String? metaKey;
     if (explicitKey != null &&
         explicitKey.trim().isNotEmpty &&
-        headers.contains(explicitKey.trim()) &&
         metaHeaders.contains(explicitKey.trim())) {
-      csvKey = explicitKey.trim();
+      csvKey = headers.contains(explicitKey.trim()) ? explicitKey.trim()
+          : headers.where((h) => const {'subjid', 'subject', 'subject_id', 'participant_id'}.contains(h.toLowerCase())).firstOrNull;
       metaKey = explicitKey.trim();
     } else {
       const candidates = [
@@ -288,10 +321,11 @@ class ErpGroupStatsEngine {
       return (headers: headers, rows: rows);
     }
 
+    final subjectJoin = const {'subjid', 'subject', 'subject_id', 'participant_id', 'id', 'participant'}.contains(csvKey.toLowerCase());
     String normKey(String raw) {
       var s = raw.trim().toLowerCase();
       s = s.replaceFirst(RegExp(r'^sub-'), '');
-      s = s.replaceFirst(
+      if (subjectJoin) s = s.replaceFirst(
         RegExp(r'(?:[-_]?|(?<=\d))(?:session|ses|visit)[-_]?\d+.*$'),
         '',
       );
@@ -304,6 +338,9 @@ class ErpGroupStatsEngine {
       if (metaKeyIdx >= mr.length) continue;
       final k = normKey(mr[metaKeyIdx]);
       if (k.isEmpty) continue;
+      if (lookup.containsKey(k)) {
+        throw FormatException('Metadata has more than one row for "$k". Choose a unique subject or recording column.');
+      }
       lookup[k] = [
         for (final col in newCols)
           metaHeaders.indexOf(col) < mr.length

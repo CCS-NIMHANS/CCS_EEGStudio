@@ -16,8 +16,8 @@ void main() {
       );
       expect(find.text('Load results folder'), findsOneWidget);
       expect(find.text('Choose feature files'), findsOneWidget);
-      final element = tester.element(find.text('1. Feature data and metadata'));
-      expect(Theme.of(element).brightness, Brightness.light);
+      final element = tester.element(find.text('Measurements and participant groups'));
+      expect(Theme.of(element).brightness, Brightness.dark);
     },
   );
 }

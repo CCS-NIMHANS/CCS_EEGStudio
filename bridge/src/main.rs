@@ -728,10 +728,11 @@ fn main() -> Result<(), String> {
                     Vec::new()
                 };
                 let te = if options.information.te {
-                    Some(information::summarize(
+                    Some(information::summarize_with(
                         &information::temporal_te_matrix(channels, a, b, &options.information)
                             .expect("validated equal-sized epoch bounds"),
                         &options.information,
+                        true, // transfer entropy is directed: [source][target]
                     ))
                 } else {
                     None
@@ -786,8 +787,22 @@ fn main() -> Result<(), String> {
         if job.options.information.gcmi
             || job.options.information.te
             || job.options.information.spectral_graph
+            || job.options.mic
+            || job.options.mim
+            || job.options.gc
+            || job.options.gc_tr
         {
-            serde_json::to_string(&job.options.information).map_err(err)?
+            let mut info = job.options.information.clone();
+            if job.options.mic || job.options.mim || job.options.gc || job.options.gc_tr {
+                // Record the ROIs that were actually used (explicit or the built-in default).
+                let (seed, target, seed_name, target_name) =
+                    connectivity::resolve_rois(&recording.labels, &info);
+                info.roi_seed = seed.iter().map(|&i| recording.labels[i].clone()).collect();
+                info.roi_target = target.iter().map(|&i| recording.labels[i].clone()).collect();
+                info.roi_seed_name = seed_name;
+                info.roi_target_name = target_name;
+            }
+            serde_json::to_string(&info).map_err(err)?
         } else {
             String::new()
         }

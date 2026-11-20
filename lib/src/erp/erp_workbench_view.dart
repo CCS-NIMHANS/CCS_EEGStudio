@@ -92,8 +92,9 @@ Future<Map<String, dynamic>> mergeErpResultsInIsolate(
 /// Top-level worker to read, decode, and merge saved `.ccserp` / `erp_results.json`
 /// files off the UI isolate without capturing Flutter `State` or `BuildContext`.
 Future<({Map<String, dynamic> merged, int loadedFiles})> loadErpFolderInWorker(
-  List<String> candidatePaths,
-) async {
+  List<String> candidatePaths, {
+  SendPort? progress,
+}) async {
   // If a folder contains both a combined `erp_results.ccserp` (which can be
   // hundreds of MB) AND per-recording `*_erp_results.ccserp` files, load the
   // per-recording files in parallel instead of decoding the huge combined file
@@ -106,27 +107,44 @@ Future<({Map<String, dynamic> merged, int loadedFiles})> loadErpFolderInWorker(
   if (perFile.isNotEmpty) {
     paths = perFile;
   }
-  final multi = paths.length > 1;
-  final workers = math.min(8, math.max(1, paths.length));
-  final chunkSize = (paths.length / workers).ceil();
-  final chunks = <List<String>>[];
-  for (var i = 0; i < paths.length; i += chunkSize) {
-    chunks.add(
-      paths.sublist(i, math.min(i + chunkSize, paths.length)),
-    );
+  final resultsList = <Map<String, dynamic>>[];
+  // Bound disk concurrency while decoding on worker isolates. Results stay off
+  // the UI isolate until the merged result is ready.
+  const batchSize = 32;
+  for (var start = 0; start < paths.length; start += batchSize) {
+    final end = math.min(start + batchSize, paths.length);
+    final batch = paths.sublist(start, end);
+    final workers = math.min(4, batch.length);
+    final chunkSize = (batch.length / workers).ceil();
+    final decoded = await Future.wait([
+      for (var i = 0; i < batch.length; i += chunkSize)
+        decodeErpChunkInIsolate(
+          batch.sublist(i, math.min(i + chunkSize, batch.length)),
+          paths.length > 1,
+        ),
+    ]);
+    for (final chunk in decoded) {
+      resultsList.addAll(chunk);
+    }
+    progress?.send({'progress': end / paths.length});
   }
-  final decodedChunks = await Future.wait([
-    for (final c in chunks)
-      Isolate.run(() => _decodeErpChunkInWorker((paths: c, stripGroups: multi))),
-  ]);
-  final resultsList = <Map<String, dynamic>>[
-    for (final chunk in decodedChunks) ...chunk,
-  ];
   if (resultsList.isEmpty) {
     return (merged: <String, dynamic>{}, loadedFiles: 0);
   }
   final merged = _ErpWorkbenchViewState.mergeErpResults(resultsList);
   return (merged: merged, loadedFiles: resultsList.length);
+}
+
+Future<void> _loadErpFolderWorker((SendPort, List<String>) args) async {
+  try {
+    final result = await loadErpFolderInWorker(args.$2, progress: args.$1);
+    Isolate.exit(args.$1, {
+      'merged': result.merged,
+      'loadedFiles': result.loadedFiles,
+    });
+  } catch (error) {
+    args.$1.send({'error': error.toString()});
+  }
 }
 
 class ErpWorkbenchView extends StatefulWidget {
@@ -165,7 +183,7 @@ class ErpWorkbenchView extends StatefulWidget {
   final Map<String, dynamic>? initialInspection;
   final VoidCallback? onOpenRecording;
   final VoidCallback? onPrepare, onOpenBatch;
-  final Widget Function({VoidCallback? onNext})? stage1Builder;
+  final Widget Function({VoidCallback? onNext, Future<void> Function()? onRun})? stage1Builder;
   final Future<List<String>> Function()? onRunPreprocessing;
   final VoidCallback? onCloseBatch;
   final VoidCallback? onEditEpochs;
@@ -255,16 +273,19 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   final String _withinStatsContrast = 'conditions';
 
   // Uniform 4-Stage Batch Workspace state
-  bool _batchPreprocessedInput = false;
-  bool _batchSkipExisting = false;
-  bool _batchTabbedView = false;
+  Isolate? _folderLoader;
+  ReceivePort? _folderPort;
+
+  void _cancelWork() {
+    if (_folderPort != null) {
+      _folderLoader?.kill(priority: Isolate.immediate);
+      _folderPort?.sendPort.send({'cancelled': true});
+    } else {
+      _service.cancel();
+    }
+  }
+
   int _batchActiveStage = 0;
-  bool _batchStage1Enabled = true;
-  bool _batchStage2Enabled = true;
-  bool _batchStage3Enabled = true;
-  bool _batchStage4Enabled = true;
-  bool _batchUseStage1Outputs = true;
-  bool _batchShowResults = false;
   bool _stage4ExportComponentCsv = true;
   bool _stage4ExportSvg = false;
   bool _stage4ExportGaWaves = false;
@@ -692,7 +713,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         jsonDecode(File(widget.initialResultPath!).readAsStringSync()) as Map,
       );
       _result = result;
-      _batchShowResults = true;
+      _batchActiveStage = 3;
       _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
       _output.text = File(widget.initialResultPath!).parent.path;
     }
@@ -720,8 +741,16 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (!widget.batchMode)
         _status = 'Choose saved groups A/B and review the ROI/window.';
     }
+    if (widget.batchMode && widget.initialInspection != null && _result == null && _paths.isNotEmpty) {
+      _batchActiveStage = _isPrepared ? 2 : 1;
+    }
     if (_paths.isNotEmpty && widget.initialInspection == null)
-      WidgetsBinding.instance.addPostFrameCallback((_) => _inspect());
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await _inspect();
+        if (mounted && widget.batchMode && _inspection != null && _result == null) {
+          setState(() => _batchActiveStage = _isPrepared ? 2 : 1);
+        }
+      });
     if (widget.linkedReview && widget.initialInspection != null) {
       _output.text = widget.linkedOutputDirectory ?? '';
       _inspection = widget.initialInspection;
@@ -787,6 +816,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
 
   @override
   void dispose() {
+    _folderLoader?.kill(priority: Isolate.immediate);
+    _folderPort?.close();
     _service.cancel();
     for (final c in _conditions) {
       c.dispose();
@@ -1389,7 +1420,16 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       if (!mounted) return;
       setState(() {
         _result = merged;
-        _batchShowResults = true;
+        for (final raw in (merged['files'] as List? ?? [])) {
+          final f = erpMap(raw);
+          final path = '${f['path'] ?? ''}';
+          final subject = '${f['subject'] ?? ''}';
+          if (path.isNotEmpty && subject.isNotEmpty) _subjects[path] = subject;
+          final group = '${f['group'] ?? ''}'.trim();
+          if (subject.isNotEmpty && group.isNotEmpty)
+            _participantGroups.putIfAbsent(subject, () => group);
+        }
+        _batchActiveStage = 3;
         _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
         _file = null;
         _output.text = File(validFiles.first).parent.path;
@@ -1409,6 +1449,40 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       fallbackFilePath: _paths.firstOrNull,
     );
     if (dirPath == null || !mounted) return;
+    // Group models use the compact measurement table, not saved waveforms.
+    final tables = <String>[];
+    for (final folder in [Directory(dirPath), Directory('$dirPath/Group_Statistics')]) {
+      if (!await folder.exists()) continue;
+      await for (final entry in folder.list(followLinks: false)) {
+        if (entry is File && entry.path.endsWith('_conditions_group_input.csv')) {
+          tables.add(entry.path);
+        }
+      }
+    }
+    tables.sort();
+    if (!mounted) return;
+    if (tables.isNotEmpty) {
+      final choice = await showDialog<String>(context: context, builder: (ctx) => SimpleDialog(
+        title: const Text('What would you like to open?'),
+        children: [
+          const Padding(padding: EdgeInsets.all(16), child: Text('Group statistics only needs the measurement table. Waveform viewing loads the larger saved ERP files.')),
+          for (final table in tables) SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, table),
+            child: Text('Group statistics (fast) — ${File(table).uri.pathSegments.last}'),
+          ),
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, 'waveforms'), child: const Text('Load full ERP waveforms')),
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        ],
+      ));
+      if (choice == null || !mounted) return;
+      if (choice != 'waveforms') {
+        await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('ERP group analysis')),
+          body: GroupStatisticsWorkbench(initialCsvPath: choice),
+        )));
+        return;
+      }
+    }
     setState(() {
       _busy = true;
       _status = 'Scanning $dirPath for saved ERP results…';
@@ -1449,52 +1523,41 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         paths = perFile;
       }
 
-      final multi = paths.length > 1;
-      final resultsList = <Map<String, dynamic>>[];
-      const batchSize = 64;
-      for (var start = 0; start < paths.length; start += batchSize) {
-        final end = math.min(start + batchSize, paths.length);
-        final batch = paths.sublist(start, end);
-        if (mounted) {
+      final port = ReceivePort();
+      _folderPort = port;
+      _folderLoader = await Isolate.spawn(_loadErpFolderWorker, (
+        port.sendPort,
+        paths,
+      ));
+      Map<String, dynamic>? completed;
+      await for (final message in port) {
+        final event = Map<String, dynamic>.from(message as Map);
+        if (!mounted || event['cancelled'] == true) {
+          if (mounted)
+            setState(() => _status = 'ERP folder loading cancelled.');
+          return;
+        }
+        if (event.containsKey('progress')) {
           setState(() {
-            _progress = start / paths.length;
-            _status =
-                'Loading saved ERP results: $start / ${paths.length} file(s)…';
+            _progress = (event['progress'] as double) * .95;
+            _status = _progress >= .95
+                ? 'Merging saved ERP results…'
+                : 'Loading saved ERP results: ${(event['progress'] * paths.length).round()} / ${paths.length} file(s)…';
           });
-        }
-        final workers = math.min(8, math.max(1, batch.length));
-        final subSize = (batch.length / workers).ceil();
-        final chunks = <List<String>>[];
-        for (var i = 0; i < batch.length; i += subSize) {
-          chunks.add(batch.sublist(i, math.min(i + subSize, batch.length)));
-        }
-        final decoded = await Future.wait([
-          for (final c in chunks) decodeErpChunkInIsolate(c, multi),
-        ]);
-        for (final d in decoded) {
-          resultsList.addAll(d);
+        } else {
+          completed = event;
+          break;
         }
       }
-      if (!mounted) return;
-      if (resultsList.isEmpty) {
-        setState(
-          () => _status = 'No valid ccs-erp-workbench-v1 files in $dirPath',
-        );
-        return;
-      }
-      setState(() {
-        _progress = 0.95;
-        _status = 'Merging ${resultsList.length} saved ERP recording(s)…';
-      });
-      final merged = await mergeErpResultsInIsolate(resultsList);
-      if (!mounted) return;
+      if (completed == null || !mounted) return;
+      if (completed.containsKey('error'))
+        throw StateError(completed['error'].toString());
+      final merged = Map<String, dynamic>.from(completed['merged'] as Map);
+      final loadedCount = completed['loadedFiles'] as int;
       if (merged.isEmpty) {
-        setState(
-          () => _status = 'No valid ccs-erp-workbench-v1 files in $dirPath',
-        );
+        setState(() => _status = 'No valid ERP results in $dirPath');
         return;
       }
-      final loadedCount = resultsList.length;
       final loadedPaths = [
         for (final f in (merged['files'] as List? ?? []))
           if (f is Map && (f['path']?.toString().isNotEmpty ?? false))
@@ -1502,7 +1565,16 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       ];
       setState(() {
         _result = merged;
-        _batchShowResults = true;
+        for (final raw in (merged['files'] as List? ?? [])) {
+          final f = erpMap(raw);
+          final path = '${f['path'] ?? ''}';
+          final subject = '${f['subject'] ?? ''}';
+          if (path.isNotEmpty && subject.isNotEmpty) _subjects[path] = subject;
+          final group = '${f['group'] ?? ''}'.trim();
+          if (subject.isNotEmpty && group.isNotEmpty)
+            _participantGroups.putIfAbsent(subject, () => group);
+        }
+        _batchActiveStage = 3;
         _component = _groups.isEmpty ? '' : _groups.first['task'] as String;
         _file = null;
         _output.text = dirPath;
@@ -1518,11 +1590,15 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     } catch (e) {
       if (mounted) setState(() => _status = 'Error loading ERP folder: $e');
     } finally {
+      _folderLoader?.kill(priority: Isolate.immediate);
+      _folderLoader = null;
+      _folderPort?.close();
+      _folderPort = null;
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _addFolder() async {
+  Future<void> _addFolder({bool replaceInputs = false}) async {
     final directory = await FilePicker.getDirectoryPath();
     if (directory == null || !mounted) return;
     try {
@@ -1544,7 +1620,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       );
       if (selection == null || !mounted) return;
       setState(() {
-        if (selection.replaceExisting) {
+        if (replaceInputs || selection.replaceExisting) {
+          _inspection = null; _waveformCache = null;
+          _subjects.clear(); _participantGroups.clear(); _fileFactors.clear();
+          _excludedFactorFiles.clear(); _excludedLevelsByFactor.clear(); _factorNames.clear(); _primaryGroupFactor = null;
           _paths
             ..clear()
             ..addAll(selection.selectedFiles);
@@ -1601,8 +1680,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       _lazySubjectRecording = null;
       _lazySubjectPath = null;
       _lazyRecBusy = false;
-      _batchShowResults = false;
       _fillProfile(null);
+      _batchActiveStage = 0;
       _status = 'Cleared all batch files and ERP results.';
     });
   }
@@ -1730,7 +1809,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     Map<String, dynamic> result,
     String outDir,
   ) async {
-    if (!_batchStage4Enabled || outDir.isEmpty) return;
+    if (outDir.isEmpty) return;
     await Directory(outDir).create(recursive: true);
     if (_stage4ExportComponentCsv) {
       await _writeComponentMeasurementsCsv(result, outDir);
@@ -1888,7 +1967,13 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     final res = await FactorGroupingDesignerDialog.show(
       context,
       filePaths: candidatePaths,
-      initialFileFactors: _fileFactors,
+      initialFileFactors: {
+        for (final p in candidatePaths)
+          p: {
+            if (_subjects[p] != null) 'Subject': _subjects[p]!,
+            ...?_fileFactors[p],
+          },
+      },
       initialParticipantGroups: _participantGroups,
       initialExcludedFiles: _excludedFactorFiles,
       initialPrimaryGroupFactor: _primaryGroupFactor,
@@ -1907,6 +1992,11 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       _participantGroups
         ..clear()
         ..addAll(res.participantGroups);
+      for (final entry in res.fileFactors.entries) {
+        final subject = entry.value['Subject']?.trim();
+        if (subject != null && subject.isNotEmpty)
+          _subjects[entry.key] = subject;
+      }
       _primaryGroupFactor = res.primaryGroupFactor;
       _excludedLevelsByFactor
         ..clear()
@@ -2172,7 +2262,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       setState(() {
         _result = result;
         _storeWaveformCache(_results);
-        _batchShowResults = true;
+        _batchActiveStage = 3;
         _file = null;
         _resultsGroupFilter = null;
         _focusedGridChannel = null;
@@ -3567,13 +3657,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ],
             );
       if (widget.batchMode) {
-        return _buildUniformErpBatchWorkspace(constraints, results, body);
+        return _buildUniformErpBatchWorkspace(constraints, results);
       }
       return body;
     },
   );
 
   Future<void> _runErpStage1Only() async {
+    if (_busy) return;
     if (widget.onRunPreprocessing != null) {
       setState(() {
         _busy = true;
@@ -3587,9 +3678,21 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ..clear()
               ..addAll(written);
             _result = null;
+            _inspection = null;
+            _waveformCache = null;
+            _excludedFactorFiles.clear();
           });
           await _inspect();
+          if (mounted && _inspection != null) setState(() {
+            _batchActiveStage = _isPrepared ? 2 : 1;
+            _status = _isPrepared
+                ? 'Cleaned epochs are ready. Choose conditions and the ERP measurement window.'
+                : 'Preprocessing saved. Next: review task events and condition labels.';
+          });
         }
+        if (written.isEmpty && mounted) setState(() => _status = 'No cleaned recordings were produced. Review the preprocessing log or load cleaned EEG directly in Events & trials.');
+      } catch (e) {
+        if (mounted) setState(() => _status = 'Preprocessing failed: $e');
       } finally {
         if (mounted) setState(() => _busy = false);
       }
@@ -3606,639 +3709,394 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     }
   }
 
-  Future<void> _runFullErpPipeline() async {
-    if (_batchStage1Enabled && !_batchPreprocessedInput) {
-      await _runErpStage1Only();
+  Future<void> _resumeStage(int stage, {bool folder = false}) async {
+    if (_busy) return;
+    final picked = folder
+        ? null
+        : await pickFilteredFiles(
+            context,
+            allowMultiple: true,
+            type: FileType.custom,
+            allowedExtensions: ['edf', 'fif', 'ccseeg', 'json'],
+            recordingsOnly: true,
+            dialogTitle: stage == 2
+                ? 'Open saved epochs for ERP measurement'
+                : 'Open cleaned EEG for task events',
+          );
+    if (!mounted) return;
+    if (folder) {
+      setState(() {
+        _batchActiveStage = stage;
+      });
+      await _addFolder(replaceInputs: true);
+    } else {
+      if (picked == null || picked.files.isEmpty) return;
+      final paths = picked.files
+          .map((f) => f.path)
+          .whereType<String>()
+          .toList();
+      if (paths.isEmpty) return;
+      setState(() {
+        _paths
+          ..clear()
+          ..addAll(paths);
+        _inspection = null;
+        _result = null;
+        _waveformCache = null;
+        _subjects.clear();
+        _fileFactors.clear();
+        _participantGroups.clear();
+        _excludedFactorFiles.clear();
+        _excludedLevelsByFactor.clear();
+        _factorNames.clear();
+        _primaryGroupFactor = null;
+        _batchActiveStage = stage;
+      });
+      await _inspect();
     }
-    if (_canRun) {
-      await _run();
+    if (!mounted || _inspection == null) return;
+    setState(() {
+      if (stage == 2 && !_isPrepared) {
+        _batchActiveStage = 1;
+        _status =
+            'Continuous EEG detected. Define task events here before measuring the ERP.';
+      } else {
+        _batchActiveStage = stage;
+        _status = _isPrepared
+            ? 'Saved epochs loaded. Existing trial boundaries and condition labels will be reused.'
+            : 'Cleaned recordings loaded. Review task events, then continue to ERP measurement.';
+      }
+    });
+  }
+
+  Future<void> _continueToEvents() async {
+    if (_busy) return;
+    if (_paths.isEmpty) {
+      await _resumeStage(1);
+      return;
+    }
+    if (_inspection == null) await _inspect();
+    if (mounted && _inspection != null)
+      setState(() => _batchActiveStage = _isPrepared ? 2 : 1);
+  }
+
+  Future<void> _openBatchGroupStatistics() async {
+    if (_result != null && _component.isNotEmpty) {
+      await _groupModels(difference: false);
+    } else {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('ERP group analysis')),
+            body: const GroupStatisticsWorkbench(),
+          ),
+        ),
+      );
     }
   }
 
   Widget _buildUniformErpBatchWorkspace(
     BoxConstraints constraints,
     Widget resultsPane,
-    Widget splitBody,
   ) {
-    const bgColor = Color(0xFF060D1A);
-    const cardColor = Color(0xFF0F1D32);
-    const borderColor = Color(0xFF1E293B);
-    const textMuted = Color(0xFF94A3B8);
-    const accentBlue = Color(0xFF3B82F6);
-    const accentGreen = Color(0xFF10B981);
-
+    const names = [
+      '1. Prepare EEG',
+      '2. Events & trials',
+      '3. Measure ERP',
+      '4. Results & groups',
+    ];
+    const icons = [
+      Icons.cleaning_services,
+      Icons.flag_outlined,
+      Icons.analytics_outlined,
+      Icons.assessment_outlined,
+    ];
+    final step = _batchActiveStage.clamp(0, 3);
+    final hasResults = _result != null;
+    Widget stageBody;
+    switch (step) {
+      case 0:
+        stageBody = _buildErpStage1Card(onNext: _continueToEvents);
+      case 1:
+        stageBody = _buildErpStage2Card(
+          onPrevious: () => setState(() => _batchActiveStage = 0),
+          onNext: _inspection == null || _paths.isEmpty
+              ? null
+              : () => setState(() => _batchActiveStage = 2),
+        );
+      case 2:
+        stageBody = _buildErpStage3Card(
+          onPrevious: () => setState(() => _batchActiveStage = 1),
+          onNext: hasResults
+              ? () => setState(() {
+                  _batchActiveStage = 3;
+                })
+              : null,
+        );
+      default:
+        stageBody = hasResults
+            ? resultsPane
+            : Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 680),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            'Continue from saved results',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'For group comparisons, open the compact measurement table. To inspect ERP traces, open saved waveform results. Neither route repeats preprocessing or epoching.',
+                          ),
+                          const SizedBox(height: 20),
+                          FilledButton.icon(
+                            onPressed: _busy ? null : _openBatchGroupStatistics,
+                            icon: const Icon(Icons.groups),
+                            label: const Text('Group Statistics'),
+                          ),
+                          const SizedBox(height: 10),
+                          OutlinedButton.icon(
+                            onPressed: _busy ? null : _openResultFolder,
+                            icon: const Icon(Icons.folder_open),
+                            label: const Text('Load Saved ERP Folder…'),
+                          ),
+                          TextButton(
+                            onPressed: _busy ? null : _openResult,
+                            child: const Text(
+                              'Open individual ERP result files…',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+    }
+    final description = switch (step) {
+      0 =>
+        'Start with raw EEG here. Already cleaned? Select Events & trials. Already epoched? Select Measure ERP.',
+      1 =>
+        _paths.isEmpty
+            ? 'Load cleaned continuous EEG here, or use the recordings carried forward from Prepare EEG.'
+            : '${_selectedPaths.length} recordings carried forward. Review stimulus events and trial definitions; participant cohorts are assigned later.',
+      2 =>
+        _isPrepared
+            ? '${_selectedPaths.length} saved-epoch recordings ready. Reuse their trials; choose conditions, channels and a measurement window.'
+            : 'Use the event definitions from the previous stage, or load saved epochs directly here. Running measures the ERP and opens Results.',
+      _ =>
+        hasResults
+            ? 'ERP results are ready. Inspect traces below or continue to participant group comparisons.'
+            : 'Load existing ERP results or a measurement table; earlier stages are not required.',
+    };
     return Container(
-      decoration: const BoxDecoration(
-        color: bgColor,
-        border: Border(top: BorderSide(color: borderColor)),
-      ),
+      color: const Color(0xFF060D1A),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 1. Uniform BATCH QUEUE Header Bar
-          SizedBox(
-            height: 36,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.queue_play_next,
-                    size: 13,
-                    color: accentBlue,
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'ERP batch workflow',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(width: 6),
-                  const Text(
-                    'BATCH QUEUE',
-                    style: TextStyle(
-                      color: accentBlue,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    '${_selectedPaths.length} files queued',
-                    style: const TextStyle(color: textMuted, fontSize: 11),
-                  ),
-                  const Spacer(),
-                  if (_prepFiles.isNotEmpty || _paths.isNotEmpty || _result != null) ...[
-                    TextButton.icon(
-                      onPressed: _busy ? null : _clearAllBatchErp,
-                      icon: const Icon(
-                        Icons.delete_sweep_outlined,
-                        size: 15,
-                        color: Colors.redAccent,
-                      ),
-                      label: const Text(
-                        'Clear All',
-                        style: TextStyle(fontSize: 11, color: Colors.redAccent),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                  ],
-                  if (_result != null) ...[
-                    OutlinedButton.icon(
-                      onPressed: () =>
-                          setState(() => _batchShowResults = !_batchShowResults),
-                      icon: Icon(
-                        _batchShowResults
-                            ? Icons.view_column_outlined
-                            : Icons.analytics_outlined,
-                        size: 15,
-                      ),
-                      label: Text(
-                        _batchShowResults
-                            ? 'Pipeline Stages'
-                            : 'View ERP Results',
-                        style: const TextStyle(fontSize: 11),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                  ],
+                ),
+                if (_busy)
                   TextButton.icon(
-                    onPressed: _busy ? null : _openResultFolder,
-                    icon: const Icon(Icons.folder_open, size: 16),
-                    label: const Text('Load Saved ERP Folder…'),
+                    onPressed: _cancelWork,
+                    icon: const Icon(Icons.stop_circle),
+                    label: const Text('Cancel'),
                   ),
-                  const SizedBox(width: 4),
-                  TextButton.icon(
-                    onPressed: _busy || _result == null || _component.isEmpty
-                        ? null
-                        : () => _groupModels(difference: false),
-                    icon: const Icon(Icons.groups, size: 16),
-                    label: const Text('Group Statistics'),
+                TextButton(
+                  onPressed: _busy ? null : _clearAllBatchErp,
+                  child: const Text('Start over'),
+                ),
+                if (widget.onCloseBatch != null)
+                  IconButton(
+                    onPressed: _busy ? null : widget.onCloseBatch,
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Close batch',
                   ),
-                  const SizedBox(width: 4),
-                  if (_busy)
-                    TextButton.icon(
-                      onPressed: () => _service.cancel(),
-                      icon: const Icon(Icons.stop_circle, size: 14),
-                      label: const Text('Cancel', style: TextStyle(fontSize: 11)),
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.redAccent,
-                      ),
-                    )
-                  else
-                    FilledButton.icon(
-                      onPressed: _canRun ||
-                              (_batchStage1Enabled &&
-                                  !_batchPreprocessedInput &&
-                                  _prepFiles.isNotEmpty)
-                          ? _runFullErpPipeline
-                          : null,
-                      icon: const Icon(Icons.play_circle_filled, size: 14),
-                      label: Text(
-                        _batchStage1Enabled && !_batchPreprocessedInput
-                            ? 'Run Full Pipeline'
-                            : 'Analyse ${_selectedPaths.length} recording(s)',
-                        style: const TextStyle(fontSize: 11),
-                      ),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: accentGreen,
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor: cardColor,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                      ),
-                    ),
-                  if (widget.onCloseBatch != null) ...[
-                    const SizedBox(width: 8),
-                    IconButton(
-                      tooltip: 'Close batch workspace',
-                      icon: const Icon(Icons.close, size: 17, color: textMuted),
-                      onPressed: widget.onCloseBatch,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 28,
-                        minHeight: 28,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
+              ],
             ),
           ),
-          const Divider(color: borderColor, height: 1),
-          if (_busy)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0F1D32),
-                border: Border(
-                  bottom: BorderSide(color: accentBlue.withValues(alpha: 0.35)),
-                ),
-              ),
-              child: Row(
-                children: [
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                _status,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 11.5,
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                            if (_progress > 0) ...[
-                              const SizedBox(width: 8),
-                              Text(
-                                '${(_progress * 100).round()}%',
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.cyanAccent,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                        const SizedBox(height: 5),
-                        LinearProgressIndicator(
-                          value: _progress > 0 ? _progress : null,
-                          minHeight: 5,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  TextButton.icon(
-                    onPressed: () => _service.cancel(),
-                    icon: const Icon(Icons.stop_circle, size: 15),
-                    label: const Text('Cancel', style: TextStyle(fontSize: 11)),
-                    style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
-                  ),
-                ],
-              ),
-            ),
-          if (!_busy &&
-              (_status.startsWith('Error') ||
-                  _status.startsWith('No ') ||
-                  _status.startsWith('Loaded ')))
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              color: _status.startsWith('Loaded ')
-                  ? const Color(0xFF064E3B).withValues(alpha: 0.45)
-                  : const Color(0xFF7F1D1D).withValues(alpha: 0.45),
-              child: Row(
-                children: [
-                  Icon(
-                    _status.startsWith('Loaded ')
-                        ? Icons.check_circle_outline
-                        : Icons.error_outline,
-                    size: 14,
-                    color: _status.startsWith('Loaded ')
-                        ? Colors.greenAccent
-                        : Colors.amberAccent,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _status,
-                      style: const TextStyle(fontSize: 11, color: Colors.white),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          if (_batchShowResults && _result != null)
-            Expanded(child: splitBody)
-          else ...[
-            // 2. Info Banner
+          if (_busy) const LinearProgressIndicator(),
+          if (_status.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  color: accentBlue.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: accentBlue.withValues(alpha: 0.3)),
-                ),
-                child: const Text(
-                  'Batch parameters are configured inside each stage below. Preprocess raw recordings in Stage 1, configure ERP-CORE or custom task markers in Stage 2, set ERP windows & models in Stage 3, and inspect/export group statistics in Stage 4.',
-                  style: TextStyle(color: Colors.white70, fontSize: 11),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  _status,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
                 ),
               ),
             ),
-
-            // 3. Global Batch Output Directory Bar
-            Container(
-              margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: cardColor,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: borderColor),
-              ),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.folder_shared_outlined,
-                    size: 18,
-                    color: accentBlue,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text(
-                          'BATCH OUTPUT DIRECTORY (ALL STAGES)',
-                          style: TextStyle(
-                            color: accentBlue,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0.6,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          _output.text.trim().isEmpty
-                              ? 'Next to source files (default for each recording)'
-                              : _output.text.trim(),
-                          style: TextStyle(
-                            color: _output.text.trim().isEmpty
-                                ? textMuted
-                                : Colors.white,
-                            fontSize: 12,
-                            fontWeight: _output.text.trim().isEmpty
-                                ? FontWeight.normal
-                                : FontWeight.w600,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : () async {
-                            final path = await pickDirectorySafe(
-                              dialogTitle:
-                                  'Select ERP batch output directory for all stages',
-                              currentDirectory: _output.text,
-                              fallbackFilePath:
-                                  _paths.firstOrNull ?? _prepFiles.firstOrNull,
-                            );
-                            if (path != null && mounted) {
-                              setState(() => _output.text = path);
-                            }
-                          },
-                    icon: const Icon(Icons.folder_open, size: 14),
-                    label: const Text('Browse…'),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                    ),
-                  ),
-                  if (_output.text.trim().isNotEmpty) ...[
-                    const SizedBox(width: 6),
-                    IconButton(
-                      tooltip: 'Reset to default output location',
-                      icon: const Icon(Icons.clear, size: 16, color: textMuted),
-                      onPressed: _busy
-                          ? null
-                          : () => setState(() => _output.clear()),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-
-            // 4. Batch Workspace Toolbar Row
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: SwitchListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            title: const Text(
-                              'Already preprocessed: start with task markers',
-                              style: TextStyle(fontSize: 12),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  width: 210,
+                  child: ListView(
+                    padding: const EdgeInsets.all(8),
+                    children: [
+                      for (var i = 0; i < names.length; i++)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: ListTile(
+                            key: ValueKey('erp-stage-$i'),
+                            selected: step == i,
+                            selectedTileColor: const Color(0xFF1E3A5F),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                            value: _batchPreprocessedInput,
-                            onChanged: _busy
+                            leading: Icon(icons[i]),
+                            title: Text(names[i]),
+                            subtitle: Text(switch (i) {
+                              0 => 'Raw recordings',
+                              1 => 'Cleaned EEG',
+                              2 => 'Saved epochs or events',
+                              _ => 'Saved ERP / measurements',
+                            }),
+                            onTap: _busy
                                 ? null
-                                : (v) => setState(() {
-                                    _batchPreprocessedInput = v;
-                                    _batchUseStage1Outputs = !v;
-                                    if (v && _batchActiveStage == 0) {
-                                      _batchActiveStage = 1;
-                                    }
+                                : () => setState(() {
+                                    _batchActiveStage = i;
                                   }),
                           ),
                         ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: SwitchListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            title: const Text(
-                              'Skip already processed files (resume batch)',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                            value: _batchSkipExisting,
-                            onChanged: _busy
-                                ? null
-                                : (v) => setState(() => _batchSkipExisting = v),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  SizedBox(
-                    width: 260,
-                    child: _field(
-                      _limit,
-                      'First N participants on folder import (0 = all)',
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  SegmentedButton<bool>(
-                    segments: const [
-                      ButtonSegment(
-                        value: true,
-                        icon: Icon(Icons.tab, size: 14),
-                        label: Text('Tabs', style: TextStyle(fontSize: 11)),
-                      ),
-                      ButtonSegment(
-                        value: false,
-                        icon: Icon(Icons.view_column, size: 14),
-                        label: Text('Columns', style: TextStyle(fontSize: 11)),
-                      ),
                     ],
-                    selected: {_batchTabbedView},
-                    onSelectionChanged: (set) =>
-                        setState(() => _batchTabbedView = set.first),
                   ),
-                ],
-              ),
-            ),
-
-            // 5. 4-Stage Pipeline Step Tabs
-            _buildErpBatchStageTabs(),
-
-            // 6. 4 Stage Cards (Columns or Tabs)
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                child: _batchTabbedView
-                    ? switch (_batchActiveStage) {
-                        0 => _buildErpStage1Card(
-                            onNext: () => setState(() => _batchActiveStage = 1),
-                          ),
-                        1 => _buildErpStage2Card(
-                            onPrevious: _batchPreprocessedInput
-                                ? null
-                                : () => setState(() => _batchActiveStage = 0),
-                            onNext: () => setState(() => _batchActiveStage = 2),
-                          ),
-                        2 => _buildErpStage3Card(
-                            onPrevious: () =>
-                                setState(() => _batchActiveStage = 1),
-                            onNext: () => setState(() => _batchActiveStage = 3),
-                          ),
-                        _ => _buildErpStage4Card(
-                            onPrevious: () =>
-                                setState(() => _batchActiveStage = 2),
-                          ),
-                      }
-                    : Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (!_batchPreprocessedInput) ...[
-                            Expanded(child: _buildErpStage1Card()),
-                            const SizedBox(width: 10),
-                          ],
-                          Expanded(child: _buildErpStage2Card()),
-                          const SizedBox(width: 10),
-                          Expanded(child: _buildErpStage3Card()),
-                          const SizedBox(width: 10),
-                          Expanded(child: _buildErpStage4Card()),
-                        ],
-                      ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildErpBatchStageTabs() {
-    const borderColor = Color(0xFF1E293B);
-    const textMuted = Color(0xFF94A3B8);
-    final stages = [
-      (
-        index: 0,
-        title: 'Stage 1: Preprocessing',
-        color: const Color(0xFF8B5CF6),
-        icon: Icons.cleaning_services,
-        badge: !_batchStage1Enabled || _batchPreprocessedInput
-            ? 'Skipped'
-            : '${_prepFiles.length} files',
-        enabled: !_batchPreprocessedInput,
-        stageActive: _batchStage1Enabled && !_batchPreprocessedInput,
-      ),
-      (
-        index: 1,
-        title: 'Stage 2: Task & Event Markers',
-        color: const Color(0xFF10B981),
-        icon: Icons.flag_outlined,
-        badge: !_batchStage2Enabled
-            ? 'Skipped'
-            : (_batchUseStage1Outputs && _paths.isEmpty
-                ? 'Stage 1 output'
-                : '${_selectedPaths.length} files'),
-        enabled: true,
-        stageActive: _batchStage2Enabled,
-      ),
-      (
-        index: 2,
-        title: 'Stage 3: Windows & ERP Models',
-        color: const Color(0xFFF59E0B),
-        icon: Icons.analytics_outlined,
-        badge: !_batchStage3Enabled ? 'Skipped' : 'ERP / Decode',
-        enabled: true,
-        stageActive: _batchStage3Enabled,
-      ),
-      (
-        index: 3,
-        title: 'Stage 4: ERP Plots & Group Stats',
-        color: const Color(0xFF3B82F6),
-        icon: Icons.groups,
-        badge: !_batchStage4Enabled
-            ? 'Skipped'
-            : (_result != null ? '${_results.length} results' : 'Waveforms / LMM'),
-        enabled: true,
-        stageActive: _batchStage4Enabled,
-      ),
-    ];
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0A1628),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: borderColor),
-      ),
-      child: Row(
-        children: [
-          for (var i = 0; i < stages.length; i++) ...[
-            if (i > 0)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 2),
-                child: Icon(Icons.chevron_right, size: 16, color: borderColor),
-              ),
-            Expanded(
-              child: InkWell(
-                onTap: !stages[i].enabled
-                    ? null
-                    : () => setState(() => _batchActiveStage = stages[i].index),
-                borderRadius: BorderRadius.circular(8),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: _batchActiveStage == stages[i].index
-                        ? stages[i].color.withValues(alpha: 0.18)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: _batchActiveStage == stages[i].index
-                          ? stages[i].color
-                          : Colors.transparent,
-                      width: 1.5,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                ),
+                const VerticalDivider(width: 1),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Icon(
-                        stages[i].icon,
-                        size: 14,
-                        color: stages[i].enabled
-                            ? (_batchActiveStage == stages[i].index
-                                ? stages[i].color
-                                : textMuted)
-                            : borderColor,
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(description),
                       ),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          stages[i].title,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: stages[i].enabled
-                                ? (_batchActiveStage == stages[i].index
-                                    ? Colors.white
-                                    : textMuted)
-                                : borderColor,
-                            fontWeight: _batchActiveStage == stages[i].index
-                                ? FontWeight.bold
-                                : FontWeight.normal,
-                            fontSize: 11.5,
+                      if (step == 1 || step == 2)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Wrap(
+                            spacing: 8,
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _resumeStage(step),
+                                icon: const Icon(Icons.file_open_outlined),
+                                label: Text(
+                                  step == 1
+                                      ? 'Load cleaned EEG…'
+                                      : 'Load saved epochs…',
+                                ),
+                              ),
+                              TextButton.icon(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _resumeStage(step, folder: true),
+                                icon: const Icon(Icons.folder_open),
+                                label: const Text('Choose recording folder…'),
+                              ),
+                              if (_paths.isNotEmpty)
+                                TextButton(
+                                  onPressed: _busy ? null : _reviewInputs,
+                                  child: Text(
+                                    'Review ${_selectedPaths.length} input files…',
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: !stages[i].stageActive
-                              ? Colors.orange.withValues(alpha: 0.18)
-                              : stages[i].color.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(4),
+                      if (step == 2)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Save outputs: ${_output.text.isEmpty ? "next to input recordings" : _output.text}',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: _busy
+                                    ? null
+                                    : () async {
+                                        final path = await pickDirectorySafe(
+                                          dialogTitle:
+                                              'ERP measurement output folder',
+                                          currentDirectory: _output.text,
+                                          fallbackFilePath: _paths.firstOrNull,
+                                        );
+                                        if (path != null && mounted)
+                                          setState(() => _output.text = path);
+                                      },
+                                child: const Text('Change output folder…'),
+                              ),
+                            ],
+                          ),
                         ),
-                        child: Text(
-                          stages[i].badge,
-                          style: TextStyle(
-                            color: !stages[i].stageActive
-                                ? Colors.orangeAccent
-                                : stages[i].color,
-                            fontSize: 9.5,
-                            fontWeight: FontWeight.w600,
+                      if (step == 3 && hasResults)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Wrap(
+                            spacing: 8,
+                            children: [
+                              FilledButton.icon(
+                                onPressed: _busy
+                                    ? null
+                                    : _openBatchGroupStatistics,
+                                icon: const Icon(Icons.groups),
+                                label: const Text(
+                                  'Next: Compare participant groups',
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: _busy ? null : _openResultFolder,
+                                child: const Text(
+                                  'Open another result folder…',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                          child: IgnorePointer(
+                            ignoring: _busy,
+                            child: stageBody,
                           ),
                         ),
                       ),
                     ],
                   ),
                 ),
-              ),
+              ],
             ),
-          ],
+          ),
         ],
       ),
     );
@@ -4255,6 +4113,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     ValueChanged<bool>? onStageEnabledChanged,
     VoidCallback? onPrevious,
     VoidCallback? onNext,
+    String nextLabel = 'Continue',
   }) {
     const cardColor = Color(0xFF0F1D32);
     const borderColor = Color(0xFF1E293B);
@@ -4378,7 +4237,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     OutlinedButton.icon(
                       onPressed: onNext,
                       icon: const Icon(Icons.arrow_forward, size: 14),
-                      label: const Text('Next', style: TextStyle(fontSize: 11)),
+                      label: Text(nextLabel, style: const TextStyle(fontSize: 11)),
                     ),
                   ],
                 ],
@@ -4392,7 +4251,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
 
   Widget _buildErpStage1Card({VoidCallback? onNext}) {
     if (widget.stage1Builder != null) {
-      return widget.stage1Builder!(onNext: onNext);
+      return widget.stage1Builder!(onNext: onNext, onRun: _runErpStage1Only);
     }
     const accentPurple = Color(0xFF8B5CF6);
     const borderColor = Color(0xFF1E293B);
@@ -4402,8 +4261,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       title: 'Stage 1: Preprocessing',
       icon: Icons.cleaning_services,
       color: accentPurple,
-      stageEnabled: _batchStage1Enabled,
-      onStageEnabledChanged: (v) => setState(() => _batchStage1Enabled = v),
       onNext: onNext,
       runLabel: 'Run Preprocessing Only',
       onRun: !_busy && _prepFiles.isNotEmpty ? _runErpStage1Only : null,
@@ -4606,103 +4463,16 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     const accentGreen = Color(0xFF10B981);
 
     return _erpBatchCardShell(
-      title: 'Stage 2: Task & Event Markers',
+      title: 'Review task events & trial definitions',
       icon: Icons.flag_outlined,
       color: accentGreen,
-      stageEnabled: _batchStage2Enabled,
-      onStageEnabledChanged: (v) => setState(() => _batchStage2Enabled = v),
       onPrevious: onPrevious,
       onNext: onNext,
-      runLabel: 'Inspect & Verify Markers',
+      nextLabel: 'Continue to ERP measurement',
+      runLabel: _inspection == null ? 'Inspect task events' : 'Refresh event inspection',
       onRun: !_busy && _paths.isNotEmpty ? _inspect : null,
       children: [
-        CheckboxListTile(
-          dense: true,
-          contentPadding: EdgeInsets.zero,
-          controlAffinity: ListTileControlAffinity.leading,
-          title: const Text(
-            'Use Stage 1 outputs (or choose recordings directly)',
-            style: TextStyle(fontSize: 11, color: Colors.white),
-          ),
-          value: _batchUseStage1Outputs,
-          onChanged: _busy
-              ? null
-              : (v) => setState(() => _batchUseStage1Outputs = v ?? true),
-        ),
-        _card('1  Batch inputs', [
-          TextButton.icon(
-            onPressed: _busy ? null : _openResult,
-            icon: const Icon(Icons.history),
-            label: const Text('Open saved ERP results…'),
-          ),
-          const Text(
-            'Start from continuous recordings with events, or reuse saved epoched condition files.',
-            style: TextStyle(fontSize: 11),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            children: [
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _addFiles,
-                icon: const Icon(Icons.add),
-                label: const Text('Files'),
-              ),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _addFolder,
-                icon: const Icon(Icons.folder_open),
-                label: const Text('Folder'),
-              ),
-              if (_paths.isNotEmpty)
-                TextButton(
-                  onPressed: _busy
-                      ? null
-                      : () => setState(() {
-                          _paths.clear();
-                          _excludedFactorFiles.clear();
-                          _inspection = null;
-                          _result = null;
-                          _waveformCache = null;
-                          _file = null;
-                          _fillProfile(null);
-                        }),
-                  child: const Text('Clear'),
-                ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text('${_selectedPaths.length} recordings selected'),
-          if (_paths.isNotEmpty)
-            Wrap(
-              spacing: 8,
-              children: [
-                TextButton(
-                  onPressed: _busy ? null : _reviewInputs,
-                  child: const Text('Review files and participant IDs…'),
-                ),
-                TextButton.icon(
-                  onPressed: _busy
-                      ? null
-                      : () => _openFactorGroupingDesigner(_paths),
-                  icon: const Icon(Icons.account_tree_outlined, size: 15),
-                  label: Text(
-                    _participantGroups.isNotEmpty || _excludedFactorFiles.isNotEmpty
-                        ? 'Factor & Grouping (${_participantGroups.values.toSet().length} grp · ${_excludedFactorFiles.length} excl)…'
-                        : 'Factor & Grouping Designer…',
-                  ),
-                ),
-              ],
-            ),
-          if (_participantGroups.isNotEmpty || _excludedFactorFiles.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                'Active factors: ${_factorNames.isEmpty ? "Group" : _factorNames.join(", ")} · ${_participantGroups.values.toSet().length} group(s) · ${_excludedFactorFiles.length} file(s) excluded',
-                style: const TextStyle(fontSize: 10.5, color: Colors.cyanAccent),
-              ),
-            ),
-        ]),
-        _card('2  Task and event markers', [
+        _card('Event definitions', [
           if (!_isPrepared) ...[
             _buildErpCorePresetBar(),
             const SizedBox(height: 10),
@@ -4836,16 +4606,22 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     const accentAmber = Color(0xFFF59E0B);
 
     return _erpBatchCardShell(
-      title: 'Stage 3: Windows & ERP Models',
+      title: 'ERP conditions, channels & measurement window',
       icon: Icons.analytics_outlined,
       color: accentAmber,
-      stageEnabled: _batchStage3Enabled,
-      onStageEnabledChanged: (v) => setState(() => _batchStage3Enabled = v),
       onPrevious: onPrevious,
       onNext: onNext,
-      runLabel: 'Analyse ${_selectedPaths.length} recording(s)',
+      runLabel: 'Measure ERP for ${_selectedPaths.length} recording(s)',
       onRun: _canRun ? _run : null,
       children: [
+        if (_paths.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Load saved epochs above to start here, or return to Events & trials to define trials in continuous EEG.')),
+        ExpansionTile(title: const Text('Output files (optional)'), children: [
+          _check('Save component measurement CSV', _stage4ExportComponentCsv, (v) => _stage4ExportComponentCsv = v),
+          _check('Save publication waveform SVGs', _stage4ExportSvg, (v) => _stage4ExportSvg = v),
+          _check('Save grand-average waveform CSV', _stage4ExportGaWaves, (v) => _stage4ExportGaWaves = v),
+          _check('Open group comparison after measuring', _stage4AutoOpenStats, (v) => _stage4AutoOpenStats = v),
+        ]),
+
         if (_profile != null)
           _card('Time windows & ROI', [
             _field(
@@ -4935,7 +4711,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               ),
             ],
           ]),
-        _card('3  Analyses', [
+        _card('ERP measures and optional models', [
           const Text(
             'Always: mean, peak amplitude/latency, signed and positive/negative AUC, fractional-area/peak latency, GFP, paired subject statistics, corrected topography and TANOVA.',
             style: TextStyle(fontSize: 11),
@@ -5002,150 +4778,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     );
   }
 
-  Widget _buildErpStage4Card({VoidCallback? onPrevious}) {
-    const accentBlue = Color(0xFF3B82F6);
-
-    return _erpBatchCardShell(
-      title: 'Stage 4: ERP Plots & Group Statistics',
-      icon: Icons.groups,
-      color: accentBlue,
-      stageEnabled: _batchStage4Enabled,
-      onStageEnabledChanged: (v) => setState(() => _batchStage4Enabled = v),
-      onPrevious: onPrevious,
-      runLabel: _result != null
-          ? 'Open ERP Results & Plots Workbench'
-          : 'Open ERP Results Workbench',
-      onRun: _result != null
-          ? () => setState(() => _batchShowResults = true)
-          : (_canRun ? _run : null),
-      children: [
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: accentBlue.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: accentBlue.withValues(alpha: 0.3)),
-          ),
-          child: const Text(
-            'Batch ERP waveforms, multi-condition topographies, latency/amplitude tables, LMM/GLM group models, and publication PDF reports. Disable this stage above to skip optional automated exports.',
-            style: TextStyle(fontSize: 11, color: Colors.white70),
-          ),
-        ),
-        const SizedBox(height: 10),
-        _check(
-          'Export multi-component ERP CSV (erp_component_measurements.csv)',
-          _stage4ExportComponentCsv,
-          (v) => _stage4ExportComponentCsv = v,
-        ),
-        _check(
-          'Export publication waveform & interaction SVGs on run',
-          _stage4ExportSvg,
-          (v) => _stage4ExportSvg = v,
-        ),
-        _check(
-          'Export grand-average waveforms CSV (erp_grand_average_waveforms.csv)',
-          _stage4ExportGaWaves,
-          (v) => _stage4ExportGaWaves = v,
-        ),
-        _check(
-          'Auto-open Group Statistics workbench after run',
-          _stage4AutoOpenStats,
-          (v) => _stage4AutoOpenStats = v,
-        ),
-        const SizedBox(height: 8),
-        if (widget.config != null)
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: const Text('Protocol', style: TextStyle(fontSize: 13)),
-            children: [
-              ProtocolTools(
-                config: widget.config!,
-                beforeSave: () {
-                  _options();
-                },
-                onChanged: () => setState(_restoreProtocol),
-              ),
-            ],
-          ),
-        _card('4  Run and export', [
-          if (_timingIssue != null)
-            Text(
-              _timingIssue!,
-              style: const TextStyle(color: Colors.orangeAccent),
-            ),
-          _field(_output, 'Output folder'),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              OutlinedButton.icon(
-                onPressed: _busy
-                    ? null
-                    : () async {
-                        final path = await pickDirectorySafe(
-                          dialogTitle: 'Choose output folder',
-                          currentDirectory: _output.text,
-                          fallbackFilePath:
-                              _paths.firstOrNull ?? _prepFiles.firstOrNull,
-                        );
-                        if (path != null && mounted) {
-                          setState(() => _output.text = path);
-                        }
-                      },
-                icon: const Icon(Icons.folder_open, size: 15),
-                label: const Text('Choose output folder'),
-              ),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _openResultFolder,
-                icon: const Icon(Icons.analytics_outlined, size: 15),
-                label: const Text('Load ERP Folder'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          SelectableText(
-            _busy || !_isPrepared
-                ? _status
-                : (_canRun
-                      ? 'Ready: ${_conditions.length} conditions · ${_roi.text} · ${_window0.text}–${_window1.text} ms'
-                      : 'Choose saved groups for each condition before averaging.'),
-            style: const TextStyle(fontSize: 11),
-          ),
-          if (_result != null) ...[
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () => _groupModels(difference: false),
-                  icon: const Icon(Icons.groups, size: 15),
-                  label: const Text('Condition group models'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => _groupModels(difference: true),
-                  icon: const Icon(Icons.compare_arrows, size: 15),
-                  label: const Text('Difference-wave group models'),
-                ),
-                TextButton.icon(
-                  onPressed: () => Process.run(
-                    Platform.isMacOS
-                        ? 'open'
-                        : Platform.isWindows
-                            ? 'explorer'
-                            : 'xdg-open',
-                    [_output.text],
-                  ),
-                  icon: const Icon(Icons.folder, size: 15),
-                  label: const Text('Open results folder'),
-                ),
-              ],
-            ),
-          ],
-        ]),
-      ],
-    );
-  }
   Future<void> _reviewInputs() async {
     final kept = Set<String>.from(_paths);
     final filterCtrl = TextEditingController();
@@ -5497,7 +5129,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       MaterialPageRoute(
         builder: (context) => Scaffold(
           appBar: AppBar(
-            title: Text('$_component · metadata and group models'),
+            title: Text('$_component · group analysis'),
           ),
           body: GroupStatisticsWorkbench(initialCsvPath: path),
         ),

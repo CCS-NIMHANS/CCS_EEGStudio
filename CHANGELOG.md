@@ -4,6 +4,26 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.54]
+
+### ERP workflow and resuming saved work
+- Replaced the duplicate stage ribbon, Tabs/Columns switch and parallel cards with one stage navigator: Prepare EEG → Events & trials → Measure ERP → Results & groups.
+- Each stage owns its inputs: raw recordings in preprocessing, cleaned EEG in event review, saved epochs in ERP measurement, and saved waveforms or compact measurement tables in results. Loading saved epochs preserves trial boundaries; continuous inputs are routed back to event definition.
+- Fixed the embedded preprocessing run callback so cleaned outputs actually reach the ERP workspace. Successful inspection carries those files forward and selects the appropriate next stage. Loading a different input set clears stale results and grouping exclusions.
+- Saved measurement tables provide a fast route to group statistics without decoding full waveform files. Full waveform loading remains dependent on recording count and storage speed.
+- Measurement output options live with the measurement stage; the results workspace no longer repeats the pipeline setup panel.
+
+### Interactive labels and group analysis
+- Replaced regex-first filename setup with automatic participant/session detection, visible filename-part mapping and editable, paged previews. Reviewed labels apply directly, while full recording paths keep separate sessions distinct.
+- Data review distinguishes people, cohort groups, sessions and stimulus conditions, shows the source of every label, and previews recording-to-person mappings. Cohorts are never inferred from stimulus conditions.
+- Excel group import uses the bundled reader, automatically finds subject IDs after serial-number columns, and separates participant identity from session suffixes. Missing cohort labels must be assigned or explicitly excluded.
+- Guided Data & groups → Design & run → Results workflow with one run action, readable metric labels, optional advanced controls and honest reporting of unavailable Word/PDF exports.
+
+### Connectivity and microstates
+- Added weighted graph measures, seeded Louvain communities, directed transfer-entropy graph handling, configurable MIC/MIM ROIs, and a connectivity graph viewer with matrices, scalp/circular layouts and graph tables.
+- Connectivity settings are grouped under their own features and directed/undirected measures are identified explicitly.
+- Microstate results explain map polarity/scaling, canonical-label availability, variance and timing summaries, sparse syntax estimates and transition probabilities after leaving a state.
+
 ## [1.2.53]
 
 ### Preprocessing fixes (Workshop_Test review)

@@ -124,6 +124,7 @@ def calc_cohen_d(x: np.ndarray, y: np.ndarray) -> float:
 # ─── DATA INSPECTION & PREPROCESSING ────────────────────────────────────────
 
 SUBJECT_CANDIDATE_NAMES = [
+    "participant_id",
     "subject identifier", "subject_code", "subject code", "subjname", "subject_name",
     "subject", "subjid", "subject id", "napid", "nap_id", "mappingcode", "sl.no.",
     "participant_id", "participant", "patient_id", "patient", "subj"
@@ -348,9 +349,11 @@ def prepare_eeg_table(df, metadata_path=None, metadata_key=None, include_non_eeg
     if metadata_path:
         csv_metadata = str(metadata_path).lower().endswith('.csv')
         metadata_columns = pd.read_csv(metadata_path, nrows=0).columns if csv_metadata else pd.read_excel(metadata_path, nrows=0).columns
-        join_column = metadata_key or metadata_columns[0]
+        aliases = ("participant_id", "subject", "subject_id", "subjid", "participant", "subject code", "id")
+        inferred_key = next((c for alias in aliases for c in metadata_columns if str(c).strip().lower() == alias), metadata_columns[0])
+        join_column = metadata_key or inferred_key
         metadata = pd.read_csv(metadata_path, dtype={join_column: str}) if csv_metadata else pd.read_excel(metadata_path, dtype={join_column: str})
-        key = metadata_key or metadata.columns[0]
+        key = join_column
         if key not in metadata.columns:
             raise ValueError(f"Metadata key {key!r} is not present")
         df_cols_lower = {str(c).lower(): c for c in df.columns}
@@ -414,13 +417,20 @@ def prepare_eeg_table(df, metadata_path=None, metadata_key=None, include_non_eeg
                 missing_cur = df[existing_ci].isna() | cur_norm.isin(("", "unknown", "unassigned", "nan", "none"))
                 has_meta = df[meta_col].notna() & (df[meta_col].astype(str).str.strip() != "")
                 df.loc[missing_cur & has_meta, existing_ci] = df.loc[missing_cur & has_meta, meta_col]
-                if f"{mc}_metadata" in df.columns:
-                    drop_meta_dups.append(f"{mc}_metadata")
+                drop_meta_dups.append(meta_col)
         # Fill missing string values in newly added metadata columns
         for mc in meta_payload_cols:
             if mc in df.columns and df[mc].dtype == object:
                 df[mc] = df[mc].fillna("Unknown")
         df = df.drop(columns=["__join_key", "_merge"] + drop_meta_dups)
+    # Preserve recording IDs while exposing repeated-session participant identity.
+    subject_col = next((c for alias in ("subjid", "subject", "subject_id") for c in df.columns if str(c).lower() == alias), None)
+    if subject_col is not None and "participant_id" not in df.columns:
+        parts = df[subject_col].astype(str).str.extract(r"(?i)^(.+?)[_-]?(?:session|ses|visit)[_-]?(\d+)(?:[-_].*)?$")
+        if parts[0].notna().any():
+            df["participant_id"] = parts[0].fillna(df[subject_col].astype(str))
+            if not any(str(c).lower() in ("session", "sessn") for c in df.columns):
+                df["Session"] = parts[1].fillna("Unknown")
     if "filename" in df.columns and "Epoch" in df.columns:
         if "epoch_label" in df.columns:
             labels = df["epoch_label"].astype(str).str.replace(r"\s+/\s+[-+0-9.]+\s*s$", "", regex=True).str.strip()
@@ -582,8 +592,13 @@ def detect_columns(df: pd.DataFrame) -> dict[str, Any]:
         c for c in categorical_cols
         if cols_clean[c] not in ("filename", "file", "source_file", "source_path", "path")
         and c != subject_id
+        and cols_clean[c] not in SUBJECT_CANDIDATE_NAMES
         and df[c].nunique(dropna=True) >= 2
     ]
+    if "epoch_condition" in factors:
+        duplicate = next((c for c in factors if c != "epoch_condition" and str(c).lower() == "condition" and df[c].astype(str).equals(df["epoch_condition"].astype(str))), None)
+        if duplicate:
+            factors.remove("epoch_condition")
     # Primary group
     group_col = None
     for cand in GROUP_CANDIDATE_NAMES:
@@ -619,7 +634,9 @@ def detect_columns(df: pd.DataFrame) -> dict[str, Any]:
     metric_cols = []
     for c in cols:
         cl = cols_clean[c]
-        if cl in SUBJECT_CANDIDATE_NAMES:
+        if cl in SUBJECT_CANDIDATE_NAMES or cl in ("sl.no.", "sl.no", "sno", "index"):
+            continue
+        if cl in ("session", "sessn", "sl.no.", "sno", "index"):
             continue
         if c in (subject_id, group_col, subgroup_col, "source_file", "source_path", "filename", "file", "Chan", "Epoch", "Bin", "Start_s", "End_s", "subjid", "sessn", "condn", "bin_idx", "bin_start_s", "bin_end_s", "epoch_start_s", "epoch_end_s", "window_start_ms", "window_end_ms", "polarity", "n_trials", "dfa_fei_window_s", "dfa_fei_context_start_s", "dfa_fei_context_end_s", "event_markers", "connectivity_settings"):
             continue
@@ -642,7 +659,7 @@ def detect_columns(df: pd.DataFrame) -> dict[str, Any]:
         "subject_id": subject_id,
         "group_col": group_col,
         "subgroup_col": subgroup_col,
-        "categorical_columns": categorical_cols,
+        "categorical_columns": list(dict.fromkeys(factors + ([subject_id] if subject_id else []))),
         "covariates": covariates,
         "metric_columns": metric_cols,
         "total_rows": len(df),
@@ -2565,6 +2582,12 @@ def run_group_analysis(
         pdf_file = out_root / f"Group_Statistical_Report_{timestamp}.pdf"
         generate_pdf_report(analysis_results, meta_summary, pdf_file, plot_paths)
 
+    report_warnings = []
+    if docx_file and not docx_file.exists():
+        report_warnings.append("Word report was not created. Install python-docx in the analysis Python environment.")
+    if pdf_file and not pdf_file.exists():
+        report_warnings.append("PDF report was not created. Install reportlab in the analysis Python environment.")
+
     # Clean results for JSON serialization (remove pandas objects)
     json_results = []
     for r in analysis_results:
@@ -2578,6 +2601,7 @@ def run_group_analysis(
         "status": "success",
         "metadata": meta_summary,
         "output_dir": str(out_root),
+        "report_warnings": report_warnings,
         "docx_path": str(docx_file) if docx_file and docx_file.exists() else None,
         "pdf_path": str(pdf_file) if pdf_file and pdf_file.exists() else None,
         "results": json_results,

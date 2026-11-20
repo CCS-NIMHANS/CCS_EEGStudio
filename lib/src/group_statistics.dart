@@ -1,6 +1,7 @@
 import 'extraction_service.dart';
 import 'topostats/topostats_batch.dart' show preferSessionFeatureCsvs;
 import 'filename_metadata.dart';
+import 'filename_metadata_dialog.dart';
 import 'topostats/topostats_engine.dart' show splitFeatureCsvLine;
 import 'dart:convert';
 import 'dart:io';
@@ -11,6 +12,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'filtered_file_picker.dart';
 import 'group_statistics_engine.dart';
+import 'erp/factor_grouping_designer.dart' show TabularSheetReader;
 import 'group_statistics_plots.dart';
 
 /// Top-level entry point for running N-way permutation GLM/LMM models inside
@@ -59,6 +61,32 @@ Future<Map<String, dynamic>> runDartPermutationsInWorker(
   Map<String, dynamic> payload,
 ) => Isolate.run(() => runDartPermutationsInIsolate(payload));
 
+Future<Map<String, dynamic>> inspectGroupDatasetInWorker(
+  String csv, String metadata, String key,
+) => Isolate.run(() => ErpGroupStatsEngine.inspectDataset(
+  csvPath: csv, metadataPath: metadata, metadataKey: key,
+));
+
+/// Read Excel with the app's bundled reader so Python needs no Excel plugin.
+Future<String> prepareGroupMetadataForPython(String path, Directory runtime) async {
+  if (!path.toLowerCase().endsWith('.xlsx')) return path;
+  final table = await TabularSheetReader.read(path);
+  String cell(String value) => '"${value.replaceAll('"', '""')}"';
+  final csv = [table.headers, ...table.rows]
+      .map((row) => row.map(cell).join(',')).join('\n');
+  final file = File('${runtime.path}/participant_groups.csv');
+  await file.writeAsString(csv);
+  return file.path;
+}
+
+String groupMetricLabel(String name) => const {
+  'mean_amplitude_ERP': 'Mean amplitude (µV)',
+  'signed_auc_ERP': 'Signed area under the curve (µV·s)',
+  'peak_amplitude_ERP': 'Peak amplitude (µV)',
+  'peak_latency_ms_ERP': 'Peak latency (ms)',
+  'fractional_area_latency_ms_ERP': 'Fractional-area latency (ms)',
+}[name] ?? name;
+
 class GroupStatisticsWorkbench extends StatefulWidget {
   const GroupStatisticsWorkbench({
     super.key,
@@ -80,6 +108,51 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   final TextEditingController _metadataKeyController = TextEditingController();
 
   bool _isInspecting = false;
+  bool _pythonReady = false;
+  bool _usePermutation = false;
+
+  String? get _participantGroupColumn {
+    final counts = _dartInspection?['factor_counts'] as Map? ?? {};
+    for (final column in counts.keys) {
+      if (!const {'group', 'cohort', 'arm', 'groupid', 'group_id'}.contains('$column'.toLowerCase())) continue;
+      final values = (counts[column] as Map).keys.map((k) => '$k'.trim().toLowerCase());
+      if (values.any((v) => !const {'', 'unknown', 'unassigned', 'nan', 'none'}.contains(v))) return '$column';
+    }
+    return null;
+  }
+
+  Set<String> get _unassignedGroupLabels {
+    final counts = (_dartInspection?['factor_counts'] as Map?)?[_participantGroupColumn] as Map? ?? {};
+    return counts.keys.map((k) => '$k').where((k) => const {'', 'unknown', 'unassigned', 'nan', 'none'}.contains(k.toLowerCase().trim())).toSet();
+  }
+
+  bool get _groupsReady => _unassignedGroupLabels.every((label) => (_dartExcludedLevels[_participantGroupColumn] ?? {}).contains(label));
+
+  void _setExcludeUnassigned(bool exclude) {
+    setState(() {
+      final group = _participantGroupColumn;
+      if (group != null) {
+        final levels = _dartExcludedLevels.putIfAbsent(group, () => {});
+        if (exclude) { levels.addAll(_unassignedGroupLabels); }
+        else { levels.removeAll(_unassignedGroupLabels); }
+      }
+    });
+  }
+
+  int _workflowStep = 0;
+
+  void _invalidateInspection() {
+    setState(() {
+      _inspectionData = null;
+      _dartInspection = null;
+      _analysisResults = null;
+      _dartAnalysisResults = null;
+      _pythonReady = false;
+      _workflowStep = 0;
+      _statusMessage = 'Data changed. Review data again before running an analysis.';
+    });
+  }
+
   bool _isAnalyzing = false;
   double _analysisProgress = 0.0;
   String _progressStatus = '';
@@ -245,16 +318,37 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       dialogTitle: 'Choose a feature-results folder',
     );
     if (path == null) return;
-    final files =
-        Directory(path)
-            .listSync()
-            .whereType<File>()
-            .map((f) => f.path)
-            .where((p) => p.endsWith('.features.csv'))
-            .toList()
-          ..sort();
+    final erpDir = Directory('$path/Group_Statistics');
+    final erpTables = <String>[];
+    for (final dir in [Directory(path), erpDir]) {
+      if (!await dir.exists()) continue;
+      await for (final entry in dir.list(followLinks: false)) {
+        if (entry is File && entry.path.endsWith('_conditions_group_input.csv')) erpTables.add(entry.path);
+      }
+    }
+    if (erpTables.isNotEmpty) {
+      String? selected = erpTables.first;
+      if (erpTables.length > 1 && mounted) {
+        selected = await showDialog<String>(context: context, builder: (ctx) => SimpleDialog(
+          title: const Text('Choose an ERP measurement table'),
+          children: [for (final table in erpTables) SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, table),
+            child: Text(File(table).uri.pathSegments.last),
+          )],
+        ));
+      }
+      if (selected == null || !mounted) return;
+      setState(() => _csvPathController.text = selected!);
+      await _inspectCsv();
+      return;
+    }
+    final files = <String>[];
+    await for (final entry in Directory(path).list(followLinks: false)) {
+      if (entry is File && entry.path.endsWith('.features.csv')) files.add(entry.path);
+    }
+    files.sort();
     if (files.isEmpty) {
-      _showSnack('No recording feature CSVs in this folder.');
+      _showSnack('No ERP measurement tables or recording feature CSVs found. Choose the saved analysis folder, or select a measurement CSV directly.');
       return;
     }
     final dir = Directory('$path/Group_Statistics');
@@ -291,106 +385,16 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       }
     }
     if (!mounted) return;
-    final pattern = TextEditingController();
-    var rows = inferFilenameMetadata(names);
-    String? error;
-    var appliedPattern = '';
-    final accepted = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, refresh) {
-          final cols = <String>{for (final row in rows) ...row.keys}.toList();
-          return AlertDialog(
-            title: const Text('Review metadata inferred from filenames'),
-            content: SizedBox(
-              width: 850,
-              height: 420,
-              child: Column(
-                children: [
-                  const Text(
-                    'Auto: BIDS sub/ses/task/run/acq fields, or legacy SubNN subject IDs. Missing values stay blank. Review before use.',
-                  ),
-                  TextField(
-                    controller: pattern,
-                    onChanged: (_) => refresh(() {}),
-                    decoration: const InputDecoration(
-                      labelText: 'Optional regex with named groups',
-                      hintText:
-                          r'(?<Subject>[^_]+)_(?<Session>[^_]+)_(?<Task>[^_]+)',
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () => refresh(() {
-                      try {
-                        rows = inferFilenameMetadata(
-                          names,
-                          pattern: pattern.text,
-                        );
-                        error = null;
-                        appliedPattern = pattern.text;
-                      } catch (e) {
-                        error = '$e';
-                      }
-                    }),
-                    child: const Text('Update preview'),
-                  ),
-                  if (error != null)
-                    Text(error!, style: const TextStyle(color: Colors.red)),
-                  Text('${rows.length} filenames; first 10 shown'),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: DataTable(
-                          columns: [
-                            for (final col in cols)
-                              DataColumn(label: Text(col)),
-                          ],
-                          rows: [
-                            for (final row in rows.take(10))
-                              DataRow(
-                                cells: [
-                                  for (final col in cols)
-                                    DataCell(Text(row[col] ?? '')),
-                                ],
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed:
-                    error != null ||
-                        cols.length < 2 ||
-                        pattern.text != appliedPattern
-                    ? null
-                    : () => Navigator.pop(context, true),
-                child: const Text('Save reviewed metadata'),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-    pattern.dispose();
-    if (accepted != true) return;
-    final path = await FilePicker.saveFile(
-      dialogTitle: 'Save reviewed filename metadata',
-      fileName: 'filename_metadata.csv',
-      type: FileType.custom,
-      allowedExtensions: ['csv'],
-    );
-    if (path == null) return;
-    await File(path).writeAsString(filenameMetadataCsv(rows));
+    final rows = await showDialog<List<Map<String, String>>>(context: context,
+      builder: (_) => FilenameMetadataDialog(names: names.toList()));
+    if (rows == null || !mounted) return;
+    final runtime = await _runtimeDirectory;
+    final path = '${runtime.path}/reviewed_filename_labels.csv';
+    final reviewed = [for (final row in rows) <String, String>{
+      for (final entry in row.entries) if (entry.key != 'Subject') entry.key: entry.value,
+      'participant_id': row['Subject'] ?? '',
+    }];
+    await File(path).writeAsString(filenameMetadataCsv(reviewed));
     if (!mounted) return;
     setState(() {
       _metadataPathController.text = path;
@@ -423,15 +427,23 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     setState(() {
       _isInspecting = true;
-      _statusMessage = 'Inspecting columns and data structure…';
+      _statusMessage = 'Checking participants, groups and measurements…';
+      _inspectionData = null;
+      _dartInspection = null;
+      _analysisResults = null;
+      _dartAnalysisResults = null;
+      _pythonReady = false;
+      _selectedMetrics.clear();
+      _selectedGroupCol = null;
+      _selectedSubgroupCol = 'None';
+      _selectedSubjectIdCol = null;
     });
 
     try {
-      final dartInsp = await ErpGroupStatsEngine.inspectDataset(
-        csvPath: csvPath,
-        metadataPath: _metadataPathController.text.trim(),
-        metadataKey: _metadataKeyController.text.trim(),
+      final dartInsp = await inspectGroupDatasetInWorker(
+        csvPath, _metadataPathController.text.trim(), _metadataKeyController.text.trim(),
       );
+      if (!mounted) return;
       _applyDartInspection(dartInsp);
 
       final python = await _findPythonExecutable();
@@ -446,7 +458,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
       final args = [script, '--csv', csvPath, '--inspect-only'];
       if (_metadataPathController.text.trim().isNotEmpty) {
-        args.addAll(['--metadata-csv', _metadataPathController.text.trim()]);
+        args.addAll(['--metadata-csv', await prepareGroupMetadataForPython(_metadataPathController.text.trim(), await _runtimeDirectory)]);
       }
       if (_metadataKeyController.text.trim().isNotEmpty) {
         args.addAll(['--metadata-key', _metadataKeyController.text.trim()]);
@@ -457,12 +469,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         args,
         environment: {'MPLCONFIGDIR': '${(await _runtimeDirectory).path}/mpl'},
       );
+      if (!mounted) return;
       if (res.exitCode != 0) {
         throw StateError('Inspection failed: ${res.stderr}');
       }
 
       final jsonMap = jsonDecode(res.stdout as String) as Map<String, dynamic>;
       setState(() {
+        _pythonReady = true;
         _inspectionData = jsonMap;
         _selectedGroupCol = jsonMap['group_col'] as String?;
         _selectedSubgroupCol = jsonMap['subgroup_col'] as String? ?? 'None';
@@ -490,19 +504,19 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         }
 
         _statusMessage =
-            'Dataset loaded: ${jsonMap['total_rows']} rows, ${jsonMap['unique_subjects']} subjects detected.';
+            'Ready: ${jsonMap['recording_count']} recordings from ${jsonMap['unique_subjects']} participants. Review the group counts below.';
       });
     } catch (e) {
-      _showSnack('Error inspecting file: $e');
+      if (!mounted) return;
+      if (_dartInspection == null) _showSnack('Error inspecting file: $e');
       setState(() {
         _consoleLogs.add('$e');
-        _statusMessage =
-            'Could not inspect the feature table. Check feature values and retry; details are in the activity log.';
+        _statusMessage = _dartInspection != null
+            ? 'Data loaded. Standard reports are unavailable in this Python environment. Choose permutation analysis, or see the activity log for details.'
+            : 'Data could not be loaded: $e';
       });
     } finally {
-      setState(() {
-        _isInspecting = false;
-      });
+      if (mounted) setState(() { _isInspecting = false; });
     }
   }
 
@@ -513,7 +527,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     final rawLevels = (insp['factor_levels'] as Map<String, dynamic>? ?? {});
 
     final nonSubjFactors = factorCols.where((f) {
-      if (f == subjCol) return false;
+      if (f == subjCol || const {'subjid', 'subject', 'subject_id', 'participant_id', 'sl.no.', 'sno', 'index', 'epoch', 'epoch_label', 'bin', 'bin_idx'}.contains(f.toLowerCase())) return false;
       final fl = f.toLowerCase();
       if (const {'filename', 'file', 'source_file', 'source_path', 'path'}
           .contains(fl)) {
@@ -527,23 +541,27 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       _dartInspection = insp;
       _dartFactors
         ..clear()
-        ..addAll(nonSubjFactors.take(4));
+        ..addAll(nonSubjFactors.where((f) => const {'group', 'condition', 'session', 'sessn'}.contains(f.toLowerCase())));
+      if (nonSubjFactors.any((f) => f.toLowerCase() == 'session') && nonSubjFactors.any((f) => f.toLowerCase() == 'condition')) _usePermutation = true;
       _dartExcludedLevels.clear();
       _dartLevelOrder.clear();
-      _selectedSubjectIdCol ??= subjCol;
+      _selectedSubjectIdCol = subjCol;
+      _selectedSubgroupCol = nonSubjFactors.where((f) => const {'condition', 'epoch_condition', 'session'}.contains(f.toLowerCase())).firstOrNull ?? 'None';
       if (_selectedGroupCol == null && nonSubjFactors.isNotEmpty) {
-        _selectedGroupCol = nonSubjFactors.first;
+        _selectedGroupCol = nonSubjFactors.where((f) => const {'group', 'cohort', 'arm'}.contains(f.toLowerCase())).firstOrNull ?? nonSubjFactors.first;
       }
       if (_selectedMetrics.isEmpty && metricCols.isNotEmpty) {
         _selectedMetrics.add(metricCols.first);
       }
-      _inspectionData ??= {
+      _inspectionData = {
         'total_rows': insp['row_count'],
         'unique_subjects': ((insp['factor_levels'] as Map?)?[subjCol] as List?)?.length ?? 0,
         'categorical_columns': nonSubjFactors,
         'subject_candidates': factorCols,
         'metric_columns': metricCols,
         'covariates': <String>[],
+        'channel_count': ((insp['factor_levels'] as Map?)?['Chan'] as List?)?.length ?? 0,
+        'recording_count': ((insp['factor_levels'] as Map?)?['filename'] as List?)?.length ?? 0,
       };
 
       // Smart default plot role assignment:
@@ -568,6 +586,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
   Future<void> _runDartPermutationAnalysis() async {
     final insp = _dartInspection;
+    if (!_groupsReady) { _showSnack('Review missing group labels in Data & groups first.'); return; }
     if (insp == null) {
       _showSnack('Inspect a CSV dataset first.');
       return;
@@ -627,6 +646,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       final resultsList = (res['results'] as List? ?? []).cast<Map<String, dynamic>>();
       setState(() {
         _dartAnalysisResults = res;
+        _workflowStep = 2;
         _selectedDartMetric = resultsList.isNotEmpty
             ? resultsList.first['metric'] as String?
             : null;
@@ -642,6 +662,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   }
 
   Future<void> _runAnalysis() async {
+    if (!_groupsReady || !_pythonReady) { _showSnack('Review data and missing group labels before running.'); return; }
     final csvPath = _csvPathController.text.trim();
     if (csvPath.isEmpty || !File(csvPath).existsSync()) {
       _showSnack('Please select a valid CSV file.');
@@ -709,7 +730,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         _reportFormat,
       ];
       if (_metadataPathController.text.trim().isNotEmpty) {
-        args.addAll(['--metadata-csv', _metadataPathController.text.trim()]);
+        args.addAll(['--metadata-csv', await prepareGroupMetadataForPython(_metadataPathController.text.trim(), await _runtimeDirectory)]);
       }
       if (_metadataKeyController.text.trim().isNotEmpty) {
         args.addAll(['--metadata-key', _metadataKeyController.text.trim()]);
@@ -779,13 +800,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
       setState(() {
         _analysisResults = jsonMap;
+        _workflowStep = 2;
         final resList = jsonMap['results'] as List<dynamic>? ?? [];
         if (resList.isNotEmpty) {
           _selectedResultMetric =
               (resList.first as Map<String, dynamic>)['metric'] as String?;
         }
         _statusMessage =
-            'Analysis completed successfully! Generated ${_selectedMetrics.length} metric models, publication plots, and reports.';
+            'Analysis complete. Open Results to see plots, tables and available reports.';
       });
     } catch (e) {
       _showSnack('Analysis failed: $e');
@@ -849,14 +871,50 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             children: [
           _buildHeaderCard(),
           const SizedBox(height: 12),
-          _buildDataSourceCard(),
+          Wrap(spacing: 8, children: [
+            for (var step = 0; step < 3; step++) ChoiceChip(
+              label: Text(const ['1. Data & groups', '2. Design & run', '3. Results'][step]),
+              selected: _workflowStep == step,
+              onSelected: _isInspecting || _isAnalyzing || (step > 0 && _inspectionData == null) ? null
+                  : (_) => setState(() => _workflowStep = step),
+            ),
+          ]),
           const SizedBox(height: 12),
-          if (_inspectionData != null) ...[
-            _buildConfigurationCard(),
+          if (_workflowStep == 0) ...[
+            _buildDataSourceCard(),
+            if (_dartInspection != null) _buildDataReview(),
+            const SizedBox(height: 12),
+            Align(alignment: Alignment.centerRight, child: FilledButton.icon(
+              onPressed: _inspectionData == null || _isInspecting ? null : () => setState(() => _workflowStep = 1),
+              icon: const Icon(Icons.arrow_forward), label: const Text('Continue to analysis design'),
+            )),
+          ],
+          const SizedBox(height: 12),
+          if (_inspectionData != null && _workflowStep == 1) ...[
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('Standard comparison + report')),
+                ButtonSegment(value: true, label: Text('Several labels + interactive results')),
+              ],
+              selected: {_usePermutation},
+              onSelectionChanged: _isAnalyzing ? null : (v) => setState(() => _usePermutation = v.first),
+            ),
+            const SizedBox(height: 12),
+            Padding(padding: const EdgeInsets.all(12), child: Text(
+              _usePermutation
+                ? 'Compare ${_dartFactors.join(", ")} together. Measurements with the same $_selectedSubjectIdCol belong to the same person.'
+                : 'Compare values of $_selectedGroupCol${_selectedSubgroupCol == "None" ? "" : " and $_selectedSubgroupCol"}. Rows with the same $_selectedSubjectIdCol belong to the same person.',
+            )),
+            if (!_groupsReady) const Padding(padding: EdgeInsets.all(12), child: Text('Some participants have no group label. Return to Data & groups to assign or exclude them before running.')),
+            if (!_usePermutation) _buildConfigurationCard(),
+            if (_usePermutation) Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text('For this analysis, each participant can have multiple sessions and stimulus conditions.'),
+            ),
             const SizedBox(height: 12),
             _buildMetricsSelectionCard(),
             const SizedBox(height: 12),
-            Card(
+            if (!_usePermutation) Card(
               elevation: 0,
               color: const Color(0xFF111827),
               shape: RoundedRectangleBorder(
@@ -957,7 +1015,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ),
             ),
             const SizedBox(height: 12),
-            if (_dartInspection != null) ...[
+            if (_dartInspection != null && _usePermutation) ...[
               _buildConfigurablePlotAndPreviewCard(),
               const SizedBox(height: 12),
             ],
@@ -972,11 +1030,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             _buildActionRunCard(),
             const SizedBox(height: 12),
           ],
-          if (_dartAnalysisResults != null) ...[
+          if (_workflowStep == 2 && _dartAnalysisResults == null && _analysisResults == null)
+            const Padding(padding: EdgeInsets.all(16), child: Text('No results yet. Go to Design & run to choose a comparison and run the analysis.')),
+          if (_workflowStep == 2 && _dartAnalysisResults != null) ...[
             _buildDartResultsCard(),
             const SizedBox(height: 12),
           ],
-          if (_analysisResults != null) ...[
+          if (_workflowStep == 2 && _analysisResults != null) ...[
             _buildResultsCard(),
             const SizedBox(height: 12),
           ],
@@ -985,6 +1045,66 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         ),
       ),
     );
+  }
+
+  Widget _buildDataReview() {
+    final insp = _dartInspection!;
+    final levels = (insp['factor_levels'] as Map).cast<String, dynamic>();
+    final sources = (insp['column_sources'] as Map? ?? {});
+    final headers = (insp['headers'] as List).cast<String>();
+    final rows = (insp['rows'] as List).cast<List>();
+    final participant = _selectedSubjectIdCol;
+    final group = _participantGroupColumn;
+    final subjectIndex = headers.indexOf(participant ?? '');
+    final groupIndex = headers.indexOf(group ?? '');
+    final participantsByGroup = <String, Set<String>>{};
+    if (subjectIndex >= 0 && groupIndex >= 0) {
+      for (final row in rows) {
+        final label = '${row[groupIndex]}'.trim();
+        participantsByGroup.putIfAbsent(label.isEmpty ? 'Unassigned' : label, () => {}).add('${row[subjectIndex]}');
+      }
+    }
+    String? field(List<String> names) => headers.where((h) => names.contains(h.toLowerCase())).firstOrNull;
+    final condition = field(['condition', 'epoch_condition']);
+    final session = field(['session', 'sessn']);
+    final fields = [if (participant != null) (participant, 'Participant (person)'), if (group != null) (group, 'Participant group (cohort)'), if (session != null) (session, 'Session (visit)'), if (condition != null) (condition, 'Condition (stimulus / task)')];
+    String value(List row, String? col) { final i = headers.indexOf(col ?? ''); return i >= 0 && i < row.length ? '${row[i]}' : '—'; }
+    return Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('What the app found — and where it came from', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Text('${(levels[participant] as List? ?? []).length} people · ${insp['row_count']} measurement rows. Each person can have several sessions and conditions.'),
+        const SizedBox(height: 12),
+        for (final entry in fields) Padding(padding: const EdgeInsets.only(bottom: 10), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(entry.$2, style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text('Values: ${(levels[entry.$1] as List? ?? []).take(8).join(", ")}${(levels[entry.$1] as List? ?? []).length > 8 ? " …" : ""}'),
+          Text('Source: ${sources[entry.$1] ?? "Measurement table · ${entry.$1}"}', style: const TextStyle(fontSize: 12)),
+        ])),
+        if (group == null) ...[
+          const Text('No participant cohorts have been assigned. Freq, Rare and Distr are stimulus conditions — they are not groups of people.'),
+          const SizedBox(height: 8),
+          Wrap(spacing: 8, children: [
+            OutlinedButton.icon(onPressed: _pickMetadataFile, icon: const Icon(Icons.table_chart_outlined), label: const Text('Add participant group file…')),
+            TextButton(onPressed: () => setState(() => _workflowStep = 1), child: const Text('Continue with conditions / sessions only')),
+          ]),
+        ] else Text('People per group: ${participantsByGroup.entries.map((e) => "${e.key}: ${e.value.length}").join(" · ")}'),
+        if (_unassignedGroupLabels.isNotEmpty) ...[
+          Text('No group label for: ${participantsByGroup.entries.where((e) => _unassignedGroupLabels.contains(e.key)).expand((e) => e.value).join(", ")}. Add these people to your group file or exclude them.'),
+          CheckboxListTile(contentPadding: EdgeInsets.zero,
+            title: const Text('Exclude participants without group labels from this analysis'),
+            value: _groupsReady, onChanged: (v) => _setExcludeUnassigned(v ?? false)),
+        ],
+        ExpansionTile(title: const Text('Preview recording → person → session → condition → group'), children: [
+          SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(
+            columns: const [DataColumn(label: Text('Recording')), DataColumn(label: Text('Person')), DataColumn(label: Text('Session')), DataColumn(label: Text('Condition')), DataColumn(label: Text('Group'))],
+            rows: [for (final row in rows.take(12)) DataRow(cells: [
+              DataCell(Tooltip(message: value(row, 'filename'), child: Text(filenameBasename(value(row, 'filename'))))),
+              DataCell(Text(value(row, participant))), DataCell(Text(value(row, session))), DataCell(Text(value(row, condition))), DataCell(Text(value(row, group))),
+            ])],
+          )),
+        ]),
+      ],
+    )));
   }
 
   Widget _buildHeaderCard() {
@@ -1027,7 +1147,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '1. Load feature files or a results folder. 2. Review metadata and subject/state factors. 3. Select outcomes and run. Plots, tables and reports are saved together.',
+                    '1. Check recordings, participants and group labels. 2. Choose your comparison and measurements, then run. 3. Read results and open saved reports.',
                     style: TextStyle(fontSize: 12, color: Colors.white70),
                   ),
                 ],
@@ -1061,7 +1181,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 ),
                 const SizedBox(width: 8),
                 const Text(
-                  '1. Feature data and metadata',
+                  'Measurements and participant groups',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                 ),
                 const Spacer(),
@@ -1077,7 +1197,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       border: Border.all(color: Colors.green.shade200),
                     ),
                     child: Text(
-                      '${_inspectionData!['recording_count'] ?? _inspectionData!['total_rows']} recordings · ${_inspectionData!['unique_subjects']} subjects · ${_inspectionData!['channel_count'] ?? 0} channels',
+                      '${_inspectionData!['recording_count'] ?? _inspectionData!['total_rows']} recordings · ${_inspectionData!['unique_subjects']} participants',
                       style: TextStyle(
                         fontSize: 12,
                         color: Colors.green.shade800,
@@ -1108,13 +1228,17 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ],
             ),
             const SizedBox(height: 10),
+            const Text('Choose a saved analysis folder or a measurement CSV. For ERP statistics, the measurement table is enough; waveform files do not need to be loaded. Add a group file with one row per participant when group labels are missing.'),
+            const SizedBox(height: 10),
             Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _csvPathController,
+                    enabled: !_isInspecting && !_isAnalyzing,
+                    onChanged: (_) => _invalidateInspection(),
                     decoration: InputDecoration(
-                      labelText: 'Batch EEG features (CSV)',
+                      labelText: 'Measurement table (CSV)',
                       hintText:
                           'Select master sheet CSV (e.g., Batch_features.csv)',
                       border: const OutlineInputBorder(),
@@ -1141,7 +1265,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                           ),
                         )
                       : const Icon(Icons.sync, size: 18),
-                  label: Text(_isInspecting ? 'Loading…' : 'Inspect Data'),
+                  label: Text(_isInspecting ? 'Loading…' : 'Review data'),
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF1F4E79),
                     padding: const EdgeInsets.symmetric(
@@ -1160,7 +1284,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     ? null
                     : _inferMetadata,
                 icon: const Icon(Icons.auto_fix_high),
-                label: const Text('Infer metadata from filenames…'),
+                label: const Text('Identify participants & sessions from filenames…'),
               ),
             ),
             Row(
@@ -1168,8 +1292,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 Expanded(
                   child: TextField(
                     controller: _metadataPathController,
+                    enabled: !_isInspecting && !_isAnalyzing,
+                    onChanged: (_) => _invalidateInspection(),
                     decoration: InputDecoration(
-                      labelText: 'External Metadata File (Optional)',
+                      labelText: 'Participant groups (Excel or CSV, optional)',
                       hintText:
                           'Select optional metadata (.csv, .xlsx) to merge demographic/group factors',
                       border: const OutlineInputBorder(),
@@ -1189,11 +1315,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               const SizedBox(height: 8),
               TextField(
                 controller: _metadataKeyController,
+                    enabled: !_isInspecting && !_isAnalyzing,
+                    onChanged: (_) => _invalidateInspection(),
                 decoration: const InputDecoration(
-                  labelText: 'Metadata join column (blank = first column)',
+                  labelText: 'Participant ID column in group file (optional)',
                   hintText: 'filename or Subject',
                   helperText:
-                      'After changing the join column, press Inspect Data again.',
+                      'Leave blank to detect subject / participant_id automatically. Then press Review data.',
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
@@ -1224,12 +1352,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget _buildConfigurationCard() {
     final catCols =
         (_inspectionData?['categorical_columns'] as List<dynamic>? ?? [])
-            .cast<String>();
+            .cast<String>().where((c) => (_dartInspection?['factor_levels']?[c] as List? ?? []).length >= 2 && !const {'filename', 'file', 'subjid', 'subject', 'subject_id', 'participant_id', 'sl.no.', 'epoch', 'epoch_label'}.contains(c.toLowerCase())).toList();
     final allCols = [
       ?_selectedGroupCol,
       ...catCols.where((c) => c != _selectedGroupCol),
     ];
-    final subgrpOptions = ['None', ...catCols];
+    final subgrpOptions = {'None', ?_selectedSubgroupCol, ...catCols}.toList();
     final candidateSubj =
         (_inspectionData?['categorical_columns'] as List<dynamic>? ?? [])
             .cast<String>();
@@ -1251,7 +1379,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 Icon(Icons.tune, size: 20, color: Color(0xFF38BDF8)),
                 SizedBox(width: 8),
                 Text(
-                  'Model Specification & Factors',
+                  'What do you want to compare?',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                 ),
               ],
@@ -1266,10 +1394,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     initialValue: _selectedGroupCol,
                     isExpanded: true,
                     decoration: const InputDecoration(
-                      labelText: 'Primary Grouping Factor (Cohort)',
+                      labelText: 'Main comparison',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      helperText: 'e.g. Group, groupID, Status, Condition',
+                      helperText: 'Choose a cohort, condition or session to compare',
                     ),
                     items: [
                       for (final col in allCols)
@@ -1289,10 +1417,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     initialValue: _selectedSubgroupCol ?? 'None',
                     isExpanded: true,
                     decoration: const InputDecoration(
-                      labelText: 'Secondary / Within-Subject Factor',
+                      labelText: 'Compare repeated measurements',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      helperText: 'e.g. Chan (Electrode), ageID, Session',
+                      helperText: 'For example: stimulus Condition or Session',
                     ),
                     items: [
                       for (final col in subgrpOptions)
@@ -1313,10 +1441,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     initialValue: _selectedSubjectIdCol,
                     isExpanded: true,
                     decoration: const InputDecoration(
-                      labelText: 'Subject Identifier (Random Effect)',
+                      labelText: 'Participant ID',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      helperText: 'Clustering group for repeated measures',
+                      helperText: 'The same participant keeps the same ID across sessions',
                     ),
                     items: [
                       if (_selectedSubjectIdCol != null &&
@@ -1340,7 +1468,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             const SizedBox(height: 14),
             // Covariates selection
             const Text(
-              'Covariates to Adjust For:',
+              'Adjust for other variables (optional):',
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 6),
@@ -1375,7 +1503,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     initialValue: _preferredModel,
                     isExpanded: true,
                     decoration: const InputDecoration(
-                      labelText: 'Statistical Model Approach',
+                      labelText: 'Model (Auto is a starting point)',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
@@ -1383,7 +1511,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       DropdownMenuItem(
                         value: 'auto',
                         child: Text(
-                          'Auto (Mixed-Design ANOVA/LMM for repeated, GLM for single)',
+                          'Auto: choose from the data',
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -1412,7 +1540,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     initialValue: _posthocMethod,
                     isExpanded: true,
                     decoration: const InputDecoration(
-                      labelText: 'Post-Hoc Multiple Testing Adjustment',
+                      labelText: 'Correction for multiple comparisons',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
@@ -1437,7 +1565,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     initialValue: _reportFormat,
                     isExpanded: true,
                     decoration: const InputDecoration(
-                      labelText: 'Scientific Report Output Format',
+                      labelText: 'Report format',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
@@ -1493,7 +1621,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  'Dependent Variables / Metrics (${_selectedMetrics.length} selected)',
+                  'Measurements to analyse (${_selectedMetrics.length} selected)',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
@@ -1546,7 +1674,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               decoration: BoxDecoration(
                 border: Border.all(color: const Color(0xFF334155)),
                 borderRadius: BorderRadius.circular(8),
-                color: Colors.white,
+                color: const Color(0xFF0F172A),
               ),
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(8),
@@ -1560,7 +1688,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                                 [])
                             .cast<String>())
                       FilterChip(
-                        label: Text(m, style: const TextStyle(fontSize: 11)),
+                        label: Text(groupMetricLabel(m), style: const TextStyle(fontSize: 11)),
                         selected: _selectedMetrics.contains(m),
                         onSelected: (sel) {
                           setState(() {
@@ -1584,30 +1712,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
   Widget _buildConfigurablePlotAndPreviewCard() {
     final insp = _dartInspection!;
-    final allFactorCols = (insp['factor_columns'] as List? ?? []).cast<String>();
+    final allFactorCols = (insp['factor_columns'] as List? ?? []).cast<String>().where((f) {
+      if (const {'filename', 'file', 'path', 'subjid', 'subject', 'subject_id', 'participant_id', 'sl.no.', 'epoch', 'epoch_label'}.contains(f.toLowerCase())) return false;
+      return ((insp['factor_levels'] as Map)[f] as List? ?? []).length >= 2;
+    }).toList();
     final rawLevels =
         (insp['factor_levels'] as Map<String, dynamic>? ?? {});
 
-    Map<String, List<String>> effectiveLevels() {
-      final out = <String, List<String>>{};
-      for (final f in allFactorCols) {
-        final raw = (rawLevels[f] as List? ?? []).map((e) => '$e').toList();
-        final custom = _dartLevelOrder[f];
-        final ordered = custom != null && custom.isNotEmpty
-            ? [
-                for (final l in custom)
-                  if (raw.contains(l)) l,
-                for (final l in raw)
-                  if (!custom.contains(l)) l,
-              ]
-            : raw;
-        final excl = _dartExcludedLevels[f] ?? const <String>{};
-        out[f] = ordered.where((l) => !excl.contains(l)).toList();
-      }
-      return out;
-    }
-
-    final levelsMap = effectiveLevels();
     final factorChoices = ['None', ..._dartFactors];
 
     Widget roleDropdown(
@@ -1657,7 +1768,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 const SizedBox(width: 8),
                 const Expanded(
                   child: Text(
-                    'Multi-Factor Design, Permutation Settings & Plot Configuration Preview',
+                    'Choose what to compare',
                     style: TextStyle(
                       fontSize: 14.5,
                       fontWeight: FontWeight.bold,
@@ -1687,7 +1798,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             ),
             const SizedBox(height: 10),
             const Text(
-              'Active Statistical Factors (select factors for N-way Permutation GLM/LMM):',
+              'What should the analysis compare? A factor is one label that can change: cohort between people, or session / condition within the same person.',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 6),
@@ -1699,7 +1810,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   if (f != _selectedSubjectIdCol)
                     FilterChip(
                       label: Text(
-                        '$f (${(rawLevels[f] as List? ?? []).length})',
+                        '$f: ${(rawLevels[f] as List? ?? []).take(4).join(", ")}',
                         style: const TextStyle(fontSize: 11.5),
                       ),
                       selected: _dartFactors.contains(f),
@@ -1713,7 +1824,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     ),
               ],
             ),
+            const SizedBox(height: 8),
+            for (final f in _dartFactors) Text('$f ← ${(_dartInspection?['column_sources'] as Map? ?? {})[f] ?? "measurement table"}', style: const TextStyle(fontSize: 12)),
             const SizedBox(height: 12),
+            ExpansionTile(
+              title: const Text('Optional: plot layout and level filters'),
+              subtitle: const Text('Change axes, panels, level order or exclusions'),
+              children: [
             const Text(
               'Plot Role Configuration (Lines, X-Axis Points, Subplot Columns/Rows):',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
@@ -1899,16 +2016,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 },
               ),
             ],
-            const SizedBox(height: 8),
-            ConfigurableStatsPlotWidget(
-              config: _plotConfig,
-              factorLevels: levelsMap,
-              metricName: _selectedMetrics.isNotEmpty
-                  ? _selectedMetrics.first
-                  : 'ERP Metric',
-              activeFactors: _dartFactors,
-              isDummyPreview: true,
-              height: 300,
+              ],
             ),
           ],
         ),
@@ -1984,11 +2092,15 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ],
             ),
             const SizedBox(height: 10),
+            Text('${groupMetricLabel("${active['metric']}")} · ${active['n_subjects']} participants · ${active['n_obs']} measurement rows'),
+            const SizedBox(height: 6),
+            const Text('Plot shows the included groups. Effects tested asks whether each factor or interaction differs; Pairwise comparisons shows which levels differ. Read the corrected p-values when comparing several levels.'),
+            const SizedBox(height: 10),
             SegmentedButton<int>(
               segments: const [
-                ButtonSegment(value: 0, label: Text('Configurable Plot')),
-                ButtonSegment(value: 1, label: Text('Permutation Effects')),
-                ButtonSegment(value: 2, label: Text('Post-Hoc Contrasts')),
+                ButtonSegment(value: 0, label: Text('Plot')),
+                ButtonSegment(value: 1, label: Text('Effects tested')),
+                ButtonSegment(value: 2, label: Text('Pairwise comparisons')),
               ],
               selected: {_dartResultTab},
               onSelectionChanged: (s) =>
@@ -2117,9 +2229,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           children: [
             Row(
               children: [
-                Expanded(
+                if (_usePermutation) Expanded(
                   child: FilledButton.icon(
-                    onPressed: _isAnalyzing || _dartInspection == null
+                    onPressed: _isAnalyzing || _isInspecting || !_groupsReady || _selectedMetrics.isEmpty || _dartInspection == null
                         ? null
                         : _runDartPermutationAnalysis,
                     icon: _isAnalyzing
@@ -2135,7 +2247,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     label: Text(
                       _isAnalyzing
                           ? 'Running Permutation GLM/LMM…'
-                          : 'Run Permutation GLM / LMM (${_permCountCtrl.text} perms)',
+                          : 'Run comparison',
                     ),
                     style: FilledButton.styleFrom(
                       backgroundColor: const Color(0xFF0D9488),
@@ -2148,14 +2260,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   ),
                 ),
                 const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _isAnalyzing ? null : _runAnalysis,
+                if (!_usePermutation) Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _isAnalyzing || _isInspecting || !_pythonReady || !_groupsReady || _selectedMetrics.isEmpty ? null : _runAnalysis,
                     icon: const Icon(Icons.play_arrow),
                     label: Text(
                       _isAnalyzing
                           ? 'Running Models & Generating Report…'
-                          : 'Run Python Report (${_selectedMetrics.length} Metrics)',
+                          : 'Run analysis & create report (${_selectedMetrics.length} measurements)',
                     ),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
@@ -2259,6 +2371,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if ((_analysisResults!['report_warnings'] as List? ?? []).isNotEmpty) Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text('Plots and tables were saved, but some report files could not be created. ${(_analysisResults!['report_warnings'] as List).join(" ")}'),
+            ),
             // Top action bar
             Row(
               children: [
@@ -2361,7 +2477,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     ButtonSegment(
                       value: 2,
                       icon: Icon(Icons.compare_arrows_outlined, size: 16),
-                      label: Text('Post-Hoc Contrasts'),
+                      label: Text('Pairwise comparisons'),
                     ),
                     ButtonSegment(
                       value: 3,

@@ -388,7 +388,8 @@ void main() {
     expect(find.text('ERP'), findsOneWidget);
     await tester.tap(find.text('ERP'));
     await tester.pumpAndSettle();
-    expect(find.text('1  Batch inputs'), findsOneWidget);
+    expect(find.text('ERP batch workflow'), findsOneWidget);
+    expect(find.byKey(const ValueKey('erp-stage-0')), findsOneWidget);
     await tester.tap(find.text('Microstates'));
     await tester.pumpAndSettle();
     expect(find.text('Add recordings'), findsOneWidget);

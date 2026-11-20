@@ -653,6 +653,14 @@ class AnalysisConfig {
   bool gcmi = false, transferEntropy = false;
   String connectivityOutput = 'both';
   double graphDensity = 0.2;
+  // Graph theory (Louvain communities + node/global measures) on the connectivity matrices
+  double louvainGamma = 1.0;
+  int louvainRestarts = 10;
+  // Explicit ROI -> ROI definition of MIC / MIM / GC (empty = built-in frontal -> parieto-occipital)
+  List<String> roiSeed = [];
+  List<String> roiTarget = [];
+  String roiSeedName = '';
+  String roiTargetName = '';
   int teMinDelay = 0, teMaxDelay = 1, teStep = 1;
   int teSourceHistory = 1, teTargetHistory = 1, teHistoryStep = 1;
   bool dfaFei = false;
@@ -845,6 +853,12 @@ class AnalysisConfig {
       'te_target_history': teTargetHistory,
       'te_history_step': teHistoryStep,
       'te_estimator': 'time_copula_cmi',
+      'louvain_gamma': louvainGamma,
+      'louvain_restarts': louvainRestarts,
+      'roi_seed': List<String>.from(roiSeed),
+      'roi_target': List<String>.from(roiTarget),
+      'roi_seed_name': roiSeedName,
+      'roi_target_name': roiTargetName,
     },
     psdMethod: psdMethod,
     psdMultitaperNw: psdMultitaperNw,

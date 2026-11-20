@@ -10,6 +10,20 @@ spec = importlib.util.spec_from_file_location('eeg_group_stats', Path(__file__).
 g = importlib.util.module_from_spec(spec);spec.loader.exec_module(g)
 
 class GroupStatsTests(unittest.TestCase):
+    def test_auto_metadata_key_ignores_serial_number_and_keeps_sessions_as_factors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'groups.csv'
+            path.write_text('Sl.No.,subject,Group\n1,S01,CON\n2,S02,NOV\n')
+            frame=pd.DataFrame({'filename':['a','b','c'], 'subjid':['S01SESSION01','S01SESSION02','S02SESSION01'],
+                'group':['Unknown']*3,'Chan':['Fz']*3,'Epoch':[1]*3,'mean_amplitude_ERP':[1.,2.,3.]})
+            data=g.prepare_eeg_table(frame,path)
+            self.assertEqual(data['group'].tolist(),['CON','CON','NOV'])
+            self.assertEqual(data['participant_id'].nunique(),2)
+            inspection=g.detect_columns(data)
+            self.assertEqual(inspection['subject_id'],'participant_id')
+            self.assertNotIn('Session',inspection['metric_columns'])
+            self.assertNotIn('Sl.No.',inspection['metric_columns'])
+
     def table(self):
         rng=np.random.default_rng(12);rows=[];metadata=[]
         for subject in range(20):

@@ -1227,27 +1227,30 @@ class _ErpGroupLabelDialogState extends State<ErpGroupLabelDialog> {
   void initState() {
     super.initState();
     _groups = Map<String, String>.from(widget.initialGroups);
-    final subjects = widget.files
-        .map((f) => f['subject'].toString())
-        .toSet()
-        .toList();
-    for (final s in subjects) {
-      if (!_groups.containsKey(s) || _groups[s]!.isEmpty) {
-        // Auto-guess based on subject ID prefix
-        final lower = s.toLowerCase();
-        if (lower.contains('med') ||
-            lower.contains('vip') ||
-            lower.contains('exp')) {
-          _groups[s] = 'MEDITATION';
-        } else if (lower.contains('con') ||
-            lower.contains('ctl') ||
-            lower.contains('ctrl')) {
-          _groups[s] = 'CONTROL';
-        } else {
-          _groups[s] = 'CONTROL';
-        }
-      }
+    for (final file in widget.files) {
+      final subject = '${file['subject'] ?? ''}';
+      final saved = '${file['group'] ?? ''}'.trim();
+      _groups.putIfAbsent(subject, () => saved);
     }
+    final names = _groups.values.where((g) => g.isNotEmpty).toSet().toList()
+      ..sort();
+    if (names.isNotEmpty) _group1Ctrl.text = names.first;
+    if (names.length > 1) _group2Ctrl.text = names[1];
+  }
+
+  void _renameGroup(String oldName, String newName) {
+    for (final subject in _groups.keys.toList()) {
+      if (oldName.isNotEmpty && _groups[subject] == oldName)
+        _groups[subject] = newName.trim();
+    }
+  }
+
+  @override
+  void dispose() {
+    _group1Ctrl.dispose();
+    _group2Ctrl.dispose();
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   @override
@@ -1279,7 +1282,8 @@ class _ErpGroupLabelDialogState extends State<ErpGroupLabelDialog> {
                       labelText: 'Group 1 Name',
                       isDense: true,
                     ),
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (value) =>
+                        setState(() => _renameGroup(g1, value)),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1290,7 +1294,8 @@ class _ErpGroupLabelDialogState extends State<ErpGroupLabelDialog> {
                       labelText: 'Group 2 Name',
                       isDense: true,
                     ),
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (value) =>
+                        setState(() => _renameGroup(g2, value)),
                   ),
                 ),
               ],
@@ -1345,27 +1350,24 @@ class _ErpGroupLabelDialogState extends State<ErpGroupLabelDialog> {
                 itemCount: visible.length,
                 itemBuilder: (ctx, i) {
                   final s = visible[i];
-                  final cur = _groups[s] ?? g1;
                   return ListTile(
                     dense: true,
                     title: Text(
                       s,
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    trailing: SegmentedButton<String>(
-                      segments: [
-                        ButtonSegment(
-                          value: g1,
-                          label: Text(g1, style: const TextStyle(fontSize: 11)),
-                        ),
-                        ButtonSegment(
-                          value: g2,
-                          label: Text(g2, style: const TextStyle(fontSize: 11)),
-                        ),
-                      ],
-                      selected: {cur},
-                      onSelectionChanged: (val) =>
-                          setState(() => _groups[s] = val.first),
+                    trailing: DropdownButton<String>(
+                      value: _groups[s] ?? '',
+                      items: {'', g1, g2, ..._groups.values}
+                          .map(
+                            (name) => DropdownMenuItem(
+                              value: name,
+                              child: Text(name.isEmpty ? 'Unassigned' : name),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) =>
+                          setState(() => _groups[s] = value ?? ''),
                     ),
                   );
                 },
@@ -1380,10 +1382,12 @@ class _ErpGroupLabelDialogState extends State<ErpGroupLabelDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () {
-            widget.onSaved(_groups);
-            Navigator.pop(context);
-          },
+          onPressed: g1.isEmpty || g2.isEmpty || g1 == g2
+              ? null
+              : () {
+                  widget.onSaved(_groups);
+                  Navigator.pop(context);
+                },
           child: const Text('Apply Groups'),
         ),
       ],

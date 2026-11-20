@@ -60,7 +60,7 @@ const Map<String, String> _familyTitles = {
 /// Family of a feature column, from the engine's naming convention.
 String featureFamily(String h) {
   final l = h.toLowerCase();
-  if (l.startsWith('conn_')) return 'conn';
+  if (l.startsWith('conn_') || l.startsWith('graph_') || l.startsWith('graphglobal_')) return 'conn';
   if (l.endsWith('_dfa') ||
       l.endsWith('_fei') ||
       l.endsWith('_dfa_short') ||
