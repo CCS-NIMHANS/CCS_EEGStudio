@@ -41,6 +41,7 @@ import 'recording_preparation_dialog.dart';
 import 'filtered_file_picker.dart';
 import 'group_statistics.dart';
 import 'processing_settings_dialog.dart';
+import 'connectivity/connectivity_view.dart';
 import 'erp/erp_workbench_view.dart';
 import 'batch_profiles.dart';
 import 'erp/stim_epoch_panel.dart';
@@ -470,16 +471,17 @@ class _FeatureHomeState extends State<FeatureHome>
     'resample', 'filter', 'badchannels', 'ica', 'muscle', 'asr', 'gedai', 'interpolate', 'reference',
   ];
 
-  /// Applies every ticked step in one engine run (cached steps are reused, nothing is repeated).
+  /// Applies the exact set of ticked steps in one engine run (cached steps are reused).
   Future<void> _applySelectedPreviewSteps() async {
     if (_running || _batchMaximized) return;
     final baseline = _raw ?? _activeRecording;
-    if (baseline == null || _stepSelection.isEmpty) return;
+    if (baseline == null) return;
     _previewSession ??= PreprocessingPreview(baseline);
-    final next = Map<String, Map<String, dynamic>>.from(_appliedPreviewSteps);
+    final next = <String, Map<String, dynamic>>{};
     for (final id in _stepOrder) {
-      final st = _stepSettingsCache[id];
-      if (_stepSelection.contains(id) && st != null) next[id] = Map<String, dynamic>.from(st);
+      if (!_stepSelection.contains(id)) continue;
+      final st = _stepSettingsCache[id] ?? _appliedPreviewSteps[id];
+      if (st != null) next[id] = Map<String, dynamic>.from(st);
     }
     setState(() {
       _running = true;
@@ -505,6 +507,12 @@ class _FeatureHomeState extends State<FeatureHome>
         _appliedPreviewSteps
           ..clear()
           ..addAll(next);
+        _stepSelection
+          ..clear()
+          ..addAll(next.keys);
+        _stepSelection
+          ..clear()
+          ..addAll(next.keys);
         _interactivePreview = result;
         if (saved != null) {
           _preprocessed = saved;
@@ -513,7 +521,6 @@ class _FeatureHomeState extends State<FeatureHome>
         _source = null;
         _sourceInput = null;
         _selection = const ViewerSelection.empty();
-        _stepSelection.clear();
       });
     } catch (e) {
       _log('Interactive preprocessing failed; previous waveform retained: $e');
@@ -528,6 +535,7 @@ class _FeatureHomeState extends State<FeatureHome>
     _interactivePreview = null;
     _finalizedPreview = null;
     _appliedPreviewSteps.clear();
+    _stepSelection.clear();
     if (previous != null) unawaited(previous.dispose());
   }
 
@@ -558,6 +566,9 @@ class _FeatureHomeState extends State<FeatureHome>
           _appliedPreviewSteps
             ..clear()
             ..addAll(session.restoredSteps);
+          _stepSelection
+            ..clear()
+            ..addAll(session.restoredSteps.keys);
           _cfg.applyPreprocessingJson(session.restoredConfiguration);
           final excluded =
               (session.restoredSettings['non_eeg_channels'] as List? ?? [])
@@ -667,6 +678,9 @@ class _FeatureHomeState extends State<FeatureHome>
         _appliedPreviewSteps
           ..clear()
           ..addAll(next);
+        _stepSelection
+          ..clear()
+          ..addAll(next.keys);
         _interactivePreview = result;
         if (saved != null) {
           _preprocessed = saved;
@@ -847,8 +861,20 @@ class _FeatureHomeState extends State<FeatureHome>
     final changed =
         applied &&
         !preprocessingSettingsEqual(_appliedPreviewSteps[id], settings);
+    final pendingToggle = !_batchMaximized && (_stepSelection.contains(id) != applied);
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
+      shape: (!_batchMaximized && (applied || pendingToggle))
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(
+                color: (changed || pendingToggle)
+                    ? Colors.amber.withValues(alpha: 0.7)
+                    : _accentGreen.withValues(alpha: 0.65),
+                width: 1.2,
+              ),
+            )
+          : null,
       child: ExpansionTile(
         key: ValueKey('interactive-step-$id'),
         initiallyExpanded: false,
@@ -862,8 +888,8 @@ class _FeatureHomeState extends State<FeatureHome>
               )
             : Tooltip(
                 message: applied
-                    ? 'Applied. Tick to re-run it together with other selected steps'
-                    : 'Tick to run this step together with the other ticked steps',
+                    ? 'Applied to waveform (untick & Apply selected to disable)'
+                    : 'Tick to include this step in Apply selected',
                 child: Checkbox(
                   value: _stepSelection.contains(id),
                   onChanged: _running
@@ -890,14 +916,22 @@ class _FeatureHomeState extends State<FeatureHome>
               : applied
               ? (changed
                     ? 'Applied · settings changed'
+                    : !_stepSelection.contains(id)
+                    ? 'Applied · unticked (click Apply selected to disable)'
                     : id == 'ica' && _activeRecording != null
                     ? icaOcularOutcome(_activeRecording!)
                     : 'Applied to waveform')
+              : _stepSelection.contains(id)
+              ? 'Selected · click Apply selected to run'
               : summary,
           style: TextStyle(
             fontSize: 11,
             color: _batchMaximized
                 ? (batchEnabled ? _accentGreen : _textMuted)
+                : (changed || pendingToggle)
+                ? Colors.amberAccent
+                : applied
+                ? _accentGreen
                 : null,
           ),
         ),
@@ -2483,6 +2517,31 @@ class _FeatureHomeState extends State<FeatureHome>
     final inputs = pick.files.map((f) => f.path).whereType<String>().toList();
     await _service.compileCsvFiles(inputs, out);
     _log('✓ Compiled CSV: $out');
+  }
+
+  /// Connectivity matrices, scalp / circular / source-level graphs and graph measures.
+  void _openConnectivityView() {
+    final batch = _resolveBatchPlotInputs();
+    final candidates = <String>[
+      if (batch.isNotEmpty)
+        ...batch
+      else if (_featuresCsv != null && File(_featuresCsv!).existsSync())
+        _featuresCsv!,
+    ];
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (ctx) => Scaffold(
+          backgroundColor: const Color(0xFF0F172A),
+          appBar: AppBar(
+            backgroundColor: const Color(0xFF060D1A),
+            foregroundColor: Colors.white,
+            title: const Text('Connectivity', style: TextStyle(fontSize: 16)),
+          ),
+          body: ConnectivityView(csvPaths: candidates),
+        ),
+      ),
+    );
   }
 
   void _openPlotDialog() {
@@ -4269,6 +4328,10 @@ class _FeatureHomeState extends State<FeatureHome>
       _log(
         '✓ Saved ${saved.epochCount} event trials: $path. ${_cfg.erpEpochFirst ? 'Clean these trials in Preprocess, then average.' : 'Choose condition groups, then average and analyse.'}',
       );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_cfg.erpEpochFirst ? 'Epochs saved. Next: clean these trials in Preprocess.' : 'Epochs saved. Next: choose stimulus conditions and measure the ERP.'),
+        duration: const Duration(seconds: 8),
+      ));
     } catch (e) {
       _log('✗ Epoching: $e');
     } finally {
@@ -4423,6 +4486,10 @@ class _FeatureHomeState extends State<FeatureHome>
               _accentPurple,
             ),
           const SizedBox(height: 6),
+          if (_preprocessed != null && !_previewNeedsFinalizing)
+            _infoBox(_activeRecording?.isEpoched == true
+                ? 'Cleaning complete for saved epochs. Next: average the trials in ERP Analysis; no new epoching is needed.'
+                : 'Cleaned EEG is ready. Next: define the task events and create epochs before ERP averaging.', _accentGreen),
           _subAccordionHeader(
             'Preprocessing Options',
             _step1OptsExpanded,
@@ -4451,10 +4518,10 @@ class _FeatureHomeState extends State<FeatureHome>
               icon: const Icon(Icons.arrow_forward),
               label: Text(
                 _activeRecording?.isEpoched == true
-                    ? 'Next: Epochs & ERP'
+                    ? 'Next: Average saved epochs in ERP'
                     : _previewNeedsFinalizing
-                    ? 'Next: Finalise for Epochs & ERP'
-                    : 'Next: Epochs & ERP',
+                    ? 'Next: Save cleaned EEG, then define epochs'
+                    : 'Next: Define events & create epochs',
               ),
             ),
           ],
@@ -4947,6 +5014,27 @@ class _FeatureHomeState extends State<FeatureHome>
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
+              onPressed: _running || _featuresCsv == null && _resolveBatchPlotInputs().isEmpty
+                  ? null
+                  : _openConnectivityView,
+              icon: const Icon(Icons.hub_outlined, size: 14),
+              label: const Text(
+                'Connectivity graphs…',
+                style: TextStyle(fontSize: 12),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF38BDF8),
+                side: BorderSide(
+                  color: const Color(0xFF38BDF8).withValues(alpha: 0.5),
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 9),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
               onPressed: _running ? null : _openPlotDialog,
               icon: const Icon(Icons.image_search, size: 14),
               label: const Text(
@@ -5201,6 +5289,7 @@ class _FeatureHomeState extends State<FeatureHome>
                           _source = null;
                           _sourceInput = null;
                           _appliedPreviewSteps.clear();
+                          _stepSelection.clear();
                         });
                         try {
                           await session.selectOriginal();
@@ -5213,7 +5302,7 @@ class _FeatureHomeState extends State<FeatureHome>
               ),
               FilledButton.icon(
                 onPressed: _running ||
-                        _stepSelection.isEmpty ||
+                        (_stepSelection.isEmpty && _appliedPreviewSteps.isEmpty) ||
                         (_raw ?? _activeRecording) == null
                     ? null
                     : _applySelectedPreviewSteps,
@@ -6009,122 +6098,7 @@ class _FeatureHomeState extends State<FeatureHome>
               suffix: 's',
             ),
           const SizedBox(height: 6),
-          _subLabel('MULTIVARIATE CONNECTIVITY'),
-          _check('MIC', _cfg.mic, (v) => _cfg.mic = v),
-          _check('MIM', _cfg.mim, (v) => _cfg.mim = v),
-          _check('Granger Causality', _cfg.gc, (v) => _cfg.gc = v),
-          _check('GC-TR', _cfg.gcTr, (v) => _cfg.gcTr = v),
-          _check(
-            'GC − GC-TR contrast',
-            _cfg.gcContrast,
-            (v) => _cfg.gcContrast = v,
-          ),
-          const SizedBox(height: 6),
-          _subLabel('BIVARIATE CONNECTIVITY'),
-          _check('Gaussian-copula MI (GCMI)', _cfg.gcmi, (v) => _cfg.gcmi = v),
-          _check(
-            'Transfer entropy (lagged time samples)',
-            _cfg.transferEntropy,
-            (v) => _cfg.transferEntropy = v,
-          ),
-          _check(
-            'Pair matrices / graph measures for selected spectral connectivity',
-            _cfg.spectralGraph,
-            (v) => _cfg.spectralGraph = v,
-          ),
-          if (_cfg.gcmi || _cfg.transferEntropy || _cfg.spectralGraph) ...[
-            const Text(
-              'GCMI and TE use broadband signals. TE estimates source-past → target-present information within each epoch, conditioned on target history. Overlapping windows are supported.',
-            ),
-            DropdownButtonFormField<String>(
-              initialValue: _cfg.connectivityOutput,
-              decoration: const InputDecoration(
-                labelText: 'Pair / graph output selection',
-              ),
-              items: const [
-                DropdownMenuItem(value: 'edges', child: Text('Raw pairs')),
-                DropdownMenuItem(
-                  value: 'graph',
-                  child: Text('Graph summaries'),
-                ),
-                DropdownMenuItem(
-                  value: 'both',
-                  child: Text('Pairs and graph summaries'),
-                ),
-              ],
-              onChanged: (v) => setState(() => _cfg.connectivityOutput = v!),
-            ),
-            DropdownButtonFormField<double>(
-              initialValue: _cfg.graphDensity,
-              decoration: const InputDecoration(
-                labelText: 'Graph edge density (positive weights)',
-              ),
-              items: [0.1, 0.2, 0.3, 0.5, 1.0]
-                  .map(
-                    (v) => DropdownMenuItem(
-                      value: v,
-                      child: Text('${(v * 100).round()}%'),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (v) => setState(() => _cfg.graphDensity = v!),
-            ),
-            if (_cfg.transferEntropy)
-              DropdownButtonFormField<int>(
-                initialValue: _cfg.teMaxDelay,
-                decoration: const InputDecoration(
-                  labelText: 'TE source-to-target delay (samples)',
-                ),
-                items: [1, 2, 3, 5, 10, 20, 30, 50, 100]
-                    .map(
-                      (v) =>
-                          DropdownMenuItem(value: v, child: Text('$v samples')),
-                    )
-                    .toList(),
-                onChanged: (v) => setState(() {
-                  _cfg.teMaxDelay = v!;
-                  _cfg.teMinDelay = v - 1;
-                }),
-              ),
-            if (_cfg.transferEntropy) ...[
-              for (final source in [true, false])
-                DropdownButtonFormField<int>(
-                  initialValue: source
-                      ? _cfg.teSourceHistory
-                      : _cfg.teTargetHistory,
-                  decoration: InputDecoration(
-                    labelText: source
-                        ? 'TE source history (samples)'
-                        : 'TE target history (samples)',
-                  ),
-                  items: [1, 2, 3, 5, 10]
-                      .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
-                      .toList(),
-                  onChanged: (v) => setState(() {
-                    if (source) {
-                      _cfg.teSourceHistory = v!;
-                    } else {
-                      _cfg.teTargetHistory = v!;
-                    }
-                  }),
-                ),
-              DropdownButtonFormField<int>(
-                initialValue: _cfg.teHistoryStep,
-                decoration: const InputDecoration(
-                  labelText: 'TE history spacing (samples)',
-                ),
-                items: [1, 2, 5, 10]
-                    .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
-                    .toList(),
-                onChanged: (v) => setState(() => _cfg.teHistoryStep = v!),
-              ),
-            ],
-          ],
-          _check('Coherence (COH)', _cfg.coh, (v) => _cfg.coh = v),
-          _check('PLV', _cfg.plv, (v) => _cfg.plv = v),
-          _check('ciPLV', _cfg.ciplv, (v) => _cfg.ciplv = v),
-          _check('PLI', _cfg.pli, (v) => _cfg.pli = v),
-          _check('wPLI', _cfg.wpli, (v) => _cfg.wpli = v),
+          ..._connectivityFamilyWidgets(),
           if (!_cfg.anyFeature)
             const Padding(
               padding: EdgeInsets.only(top: 6),
@@ -6136,6 +6110,449 @@ class _FeatureHomeState extends State<FeatureHome>
         ],
       ),
     );
+  }
+
+  // ── Connectivity feature families ───────────────────────────────────────
+  // Each feature owns the parameters that belong to it, placed directly beneath it.
+  // Directed (source → target) and undirected (symmetric) measures are separated and tagged.
+
+  List<String> get _connectivityLabels =>
+      _activeRecording?.labels ??
+      (_batchPrepFiles.isNotEmpty ? _channels.labels : const <String>[]);
+
+  Widget _paramBox(List<Widget> children) => Container(
+    width: double.infinity,
+    margin: const EdgeInsets.only(left: 14, bottom: 8, top: 2),
+    padding: const EdgeInsets.fromLTRB(10, 4, 4, 4),
+    decoration: BoxDecoration(
+      border: Border(
+        left: BorderSide(color: _accentGreen.withOpacity(.6), width: 2),
+      ),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
+    ),
+  );
+
+  Widget _hint(String text, {Color color = _textMuted}) => Padding(
+    padding: const EdgeInsets.only(bottom: 4),
+    child: Text(text, style: TextStyle(fontSize: 11, color: color)),
+  );
+
+  Widget _directionTag(bool directed) => Padding(
+    padding: const EdgeInsets.only(left: 28, bottom: 2),
+    child: Text(
+      directed
+          ? 'DIRECTED · source → target, matrix is not symmetric'
+          : 'UNDIRECTED · symmetric, no direction',
+      style: TextStyle(
+        fontSize: 9.5,
+        letterSpacing: .4,
+        fontWeight: FontWeight.w600,
+        color: directed ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8),
+      ),
+    ),
+  );
+
+  static const List<String> _roiPresetNames = [
+    'Frontal',
+    'Central',
+    'Temporal',
+    'Parietal',
+    'Occipital',
+    'Parieto-occipital',
+    'Left hemisphere',
+    'Right hemisphere',
+  ];
+
+  (String, List<String>) _roiPreset(String key, List<String> labels) {
+    bool m(String l, String pattern) =>
+        RegExp(pattern, caseSensitive: false).hasMatch(l.trim());
+    final pattern = switch (key) {
+      'Frontal' => r'^(FP|AF|F)[0-9Z]+$',
+      'Central' => r'^(C|FC|CP)[0-9Z]+$',
+      'Temporal' => r'^(T|FT|TP)[0-9]+$',
+      'Parietal' => r'^P[0-9Z]+$',
+      'Occipital' => r'^(O|PO)[0-9Z]+$',
+      'Parieto-occipital' => r'^(P|PO|O)[0-9Z]+$',
+      'Left hemisphere' => r'[13579]$',
+      _ => r'[02468]$',
+    };
+    return (key, [for (final l in labels) if (m(l, pattern)) l]);
+  }
+
+  /// Mirrors the engine's built-in default ROIs (connectivity.rs `resolve_rois`).
+  (List<String>, List<String>, String, String) _defaultRois(
+    List<String> labels,
+  ) {
+    final seed = [
+      for (final l in labels)
+        if (l.toUpperCase().startsWith('F') || l.toUpperCase().contains('FRONTAL'))
+          l,
+    ];
+    final target = [
+      for (final l in labels)
+        if (l.toUpperCase().startsWith('P') ||
+            l.toUpperCase().startsWith('O') ||
+            l.toUpperCase().contains('PARIETAL') ||
+            l.toUpperCase().contains('OCCIPITAL'))
+          l,
+    ];
+    if (seed.isNotEmpty && target.isNotEmpty) {
+      return (seed, target, 'Frontal', 'Parieto-occipital');
+    }
+    final half = labels.length ~/ 2;
+    return (
+      labels.take(half).toList(),
+      labels.skip(half).toList(),
+      'First half of channels',
+      'Second half of channels',
+    );
+  }
+
+  Widget _roiPicker({
+    required String title,
+    required String name,
+    required List<String> selected,
+    required List<String> shown,
+    required void Function(String name, List<String> labels) onChanged,
+  }) {
+    final labels = _connectivityLabels;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '$title · ${name.isEmpty ? (selected.isEmpty ? "default" : "custom") : name} · ${shown.length} ch',
+                style: const TextStyle(fontSize: 12, color: Colors.white),
+              ),
+            ),
+            PopupMenuButton<String>(
+              tooltip: 'ROI preset',
+              icon: const Icon(Icons.auto_awesome, size: 16),
+              enabled: !_running && labels.isNotEmpty,
+              onSelected: (key) {
+                final preset = _roiPreset(key, labels);
+                onChanged(preset.$1, preset.$2);
+              },
+              itemBuilder: (_) => [
+                for (final k in _roiPresetNames)
+                  PopupMenuItem(value: k, child: Text(k)),
+              ],
+            ),
+            if (selected.isNotEmpty)
+              IconButton(
+                tooltip: 'Reset to the built-in default ROI',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.restart_alt, size: 16),
+                onPressed: _running ? null : () => onChanged('', const []),
+              ),
+          ],
+        ),
+        if (labels.isEmpty)
+          _hint(
+            shown.isEmpty
+                ? 'Load a recording to choose channels.'
+                : 'Channels: ${shown.join(", ")}',
+          )
+        else
+          Wrap(
+            spacing: 4,
+            children: [
+              for (final l in labels)
+                FilterChip(
+                  label: Text(l, style: const TextStyle(fontSize: 10)),
+                  selected: shown.contains(l),
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  onSelected: _running
+                      ? null
+                      : (v) {
+                          final base = List<String>.from(shown);
+                          if (v) {
+                            if (!base.contains(l)) base.add(l);
+                          } else {
+                            base.remove(l);
+                          }
+                          onChanged('', base);
+                        },
+                ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  List<Widget> _connectivityFamilyWidgets() {
+    final anySpectral = _cfg.coh || _cfg.plv || _cfg.ciplv || _cfg.pli || _cfg.wpli;
+    final anyMultivariate =
+        _cfg.mic || _cfg.mim || _cfg.gc || _cfg.gcTr || _cfg.gcContrast;
+    final graphSources = _cfg.gcmi ||
+        _cfg.transferEntropy ||
+        (_cfg.spectralGraph && anySpectral);
+    final wantsPairs = _cfg.connectivityOutput != 'graph';
+    final wantsGraph = _cfg.connectivityOutput != 'edges';
+    void setOutputs({required bool pairs, required bool graph}) {
+      if (!pairs && !graph) return; // at least one output is always written
+      setState(
+        () => _cfg.connectivityOutput = pairs && graph
+            ? 'both'
+            : (pairs ? 'edges' : 'graph'),
+      );
+    }
+
+    return [
+      _subLabel('SPECTRAL CONNECTIVITY'),
+      _hint(
+        'Band-limited (theta–gamma), complex Morlet. All five are undirected.',
+      ),
+      _check('Coherence (COH)', _cfg.coh, (v) => _cfg.coh = v),
+      _check('PLV', _cfg.plv, (v) => _cfg.plv = v),
+      _check('ciPLV', _cfg.ciplv, (v) => _cfg.ciplv = v),
+      _check('PLI', _cfg.pli, (v) => _cfg.pli = v),
+      _check('wPLI', _cfg.wpli, (v) => _cfg.wpli = v),
+      if (anySpectral) ...[
+        _directionTag(false),
+        _paramBox([
+          _check(
+            'Save channel × channel matrices (needed for graph theory)',
+            _cfg.spectralGraph,
+            (v) => _cfg.spectralGraph = v,
+          ),
+          _hint(
+            _cfg.spectralGraph
+                ? 'One matrix per measure and band. The per-channel mean columns are replaced by the pair matrix.'
+                : 'Off: only one mean value per channel and band is saved.',
+          ),
+        ]),
+      ],
+      const SizedBox(height: 6),
+      _subLabel('INFORMATION THEORY · broadband'),
+      _check(
+        'Gaussian-copula MI (GCMI)',
+        _cfg.gcmi,
+        (v) => _cfg.gcmi = v,
+      ),
+      if (_cfg.gcmi) _directionTag(false),
+      _check(
+        'Transfer entropy (lagged time samples)',
+        _cfg.transferEntropy,
+        (v) => _cfg.transferEntropy = v,
+      ),
+      if (_cfg.transferEntropy) ...[
+        _directionTag(true),
+        _paramBox([
+          _hint(
+            'Information that the past of the source adds about the present of the target, given the target past. Computed inside each epoch; epochs are never pooled.',
+          ),
+          DropdownButtonFormField<int>(
+            initialValue: _cfg.teMaxDelay,
+            decoration: const InputDecoration(
+              labelText: 'Source → target delay (samples)',
+            ),
+            items: [1, 2, 3, 5, 10, 20, 30, 50, 100]
+                .map(
+                  (v) => DropdownMenuItem(value: v, child: Text('$v samples')),
+                )
+                .toList(),
+            onChanged: (v) => setState(() {
+              _cfg.teMaxDelay = v!;
+              _cfg.teMinDelay = v - 1;
+            }),
+          ),
+          for (final source in [true, false])
+            DropdownButtonFormField<int>(
+              initialValue: source ? _cfg.teSourceHistory : _cfg.teTargetHistory,
+              decoration: InputDecoration(
+                labelText: source
+                    ? 'Source history (samples)'
+                    : 'Target history (samples)',
+              ),
+              items: [1, 2, 3, 5, 10]
+                  .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
+                  .toList(),
+              onChanged: (v) => setState(() {
+                if (source) {
+                  _cfg.teSourceHistory = v!;
+                } else {
+                  _cfg.teTargetHistory = v!;
+                }
+              }),
+            ),
+          DropdownButtonFormField<int>(
+            initialValue: _cfg.teHistoryStep,
+            decoration: const InputDecoration(
+              labelText: 'History spacing (samples)',
+            ),
+            items: [1, 2, 5, 10]
+                .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
+                .toList(),
+            onChanged: (v) => setState(() => _cfg.teHistoryStep = v!),
+          ),
+        ]),
+      ],
+      const SizedBox(height: 6),
+      _subLabel('MULTIVARIATE CONNECTIVITY · ROI → ROI'),
+      _hint('MIC = maximised imaginary coherency, MIM = multivariate interaction measure (undirected). GC = Granger causality seed → target, GC-TR = time-reversed control (directed).'),
+      _check('MIC', _cfg.mic, (v) => _cfg.mic = v),
+      _check('MIM', _cfg.mim, (v) => _cfg.mim = v),
+      if (_cfg.mic || _cfg.mim) _directionTag(false),
+      _check('Granger Causality', _cfg.gc, (v) => _cfg.gc = v),
+      _check('GC-TR', _cfg.gcTr, (v) => _cfg.gcTr = v),
+      _check(
+        'GC − GC-TR contrast',
+        _cfg.gcContrast,
+        (v) => _cfg.gcContrast = v,
+      ),
+      if (_cfg.gc || _cfg.gcTr || _cfg.gcContrast) _directionTag(true),
+      if (anyMultivariate)
+        Builder(
+          builder: (context) {
+            final labels = _connectivityLabels;
+            final defaults = _defaultRois(labels);
+            final seedShown =
+                _cfg.roiSeed.isEmpty ? defaults.$1 : _cfg.roiSeed;
+            final targetShown =
+                _cfg.roiTarget.isEmpty ? defaults.$2 : _cfg.roiTarget;
+            final seedName = _cfg.roiSeed.isEmpty
+                ? defaults.$3
+                : (_cfg.roiSeedName.isEmpty ? 'Seed ROI' : _cfg.roiSeedName);
+            final targetName = _cfg.roiTarget.isEmpty
+                ? defaults.$4
+                : (_cfg.roiTargetName.isEmpty
+                      ? 'Target ROI'
+                      : _cfg.roiTargetName);
+            final shared = [
+              for (final l in seedShown)
+                if (targetShown.contains(l)) l,
+            ];
+            return _paramBox([
+              _hint(
+                'These measures are computed between ONE pair of regions, not between every channel pair:',
+              ),
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: const Color(0x1A38BDF8),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '$seedName (${seedShown.length} ch)  →  $targetName (${targetShown.length} ch)',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ),
+              const SizedBox(height: 6),
+              _roiPicker(
+                title: 'Seed ROI',
+                name: _cfg.roiSeedName,
+                selected: _cfg.roiSeed,
+                shown: seedShown,
+                onChanged: (name, ch) => setState(() {
+                  _cfg.roiSeedName = name;
+                  _cfg.roiSeed = ch;
+                  if (ch.isNotEmpty && _cfg.roiTarget.isEmpty) {
+                    // A custom seed needs an explicit target as well.
+                    _cfg.roiTarget = List<String>.from(defaults.$2);
+                    _cfg.roiTargetName = defaults.$4;
+                  }
+                }),
+              ),
+              _roiPicker(
+                title: 'Target ROI',
+                name: _cfg.roiTargetName,
+                selected: _cfg.roiTarget,
+                shown: targetShown,
+                onChanged: (name, ch) => setState(() {
+                  _cfg.roiTargetName = name;
+                  _cfg.roiTarget = ch;
+                  if (ch.isNotEmpty && _cfg.roiSeed.isEmpty) {
+                    _cfg.roiSeed = List<String>.from(defaults.$1);
+                    _cfg.roiSeedName = defaults.$3;
+                  }
+                }),
+              ),
+              if (shared.isNotEmpty)
+                _hint(
+                  'Seed and target share ${shared.join(", ")}; shared channels are removed from the target.',
+                  color: const Color(0xFFEF4444),
+                ),
+              _hint(
+                'The ROI channel lists are saved in every output row (connectivity_settings) and shown in the plots. Source-space analyses use the ROI labels as channels.',
+              ),
+            ]);
+          },
+        ),
+      const SizedBox(height: 6),
+      _subLabel('GRAPH THEORY · per channel + overall'),
+      if (!graphSources)
+        _hint(
+          'Turn on GCMI, transfer entropy, or spectral channel × channel matrices to build graphs from them.',
+        )
+      else ...[
+        _hint(
+          'Graphs are built from: ${[
+            if (_cfg.gcmi) 'GCMI (undirected)',
+            if (_cfg.transferEntropy) 'transfer entropy (directed)',
+            if (_cfg.spectralGraph && anySpectral) 'spectral matrices (undirected)',
+          ].join(', ')}.',
+        ),
+        _check(
+          'Graph measures + Louvain communities',
+          wantsGraph,
+          (v) => setOutputs(pairs: wantsPairs, graph: v),
+        ),
+        _check(
+          'Raw pair columns (channel × channel)',
+          wantsPairs,
+          (v) => setOutputs(pairs: v, graph: wantsGraph),
+        ),
+        if (wantsGraph)
+          _paramBox([
+            _hint(
+              'Per channel: strength (in/out for directed), clustering, local efficiency, betweenness, eigenvector centrality, participation, within-module z, community, net flow (directed). Overall: path length, global efficiency, clustering, transitivity, modularity Q, number of communities, assortativity, reciprocity (directed).',
+            ),
+            DropdownButtonFormField<double>(
+              initialValue: _cfg.graphDensity,
+              decoration: const InputDecoration(
+                labelText: 'Edge density kept (strongest positive edges)',
+              ),
+              items: [0.1, 0.2, 0.3, 0.5, 1.0]
+                  .map(
+                    (v) => DropdownMenuItem(
+                      value: v,
+                      child: Text('${(v * 100).round()}%'),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (v) => setState(() => _cfg.graphDensity = v!),
+            ),
+            DropdownButtonFormField<double>(
+              initialValue: _cfg.louvainGamma,
+              decoration: const InputDecoration(
+                labelText: 'Louvain resolution γ (higher = more, smaller communities)',
+              ),
+              items: [0.5, 0.8, 1.0, 1.2, 1.5, 2.0]
+                  .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
+                  .toList(),
+              onChanged: (v) => setState(() => _cfg.louvainGamma = v!),
+            ),
+            DropdownButtonFormField<int>(
+              initialValue: _cfg.louvainRestarts,
+              decoration: const InputDecoration(
+                labelText: 'Louvain restarts (best modularity is kept)',
+              ),
+              items: [1, 5, 10, 25, 50]
+                  .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
+                  .toList(),
+              onChanged: (v) => setState(() => _cfg.louvainRestarts = v!),
+            ),
+          ]),
+      ],
+      const SizedBox(height: 6),
+    ];
   }
 
   Widget _buildPlotOptions({EdgeInsets? padding}) {
@@ -9054,11 +9471,26 @@ class _FeatureHomeState extends State<FeatureHome>
                           context,
                           _cfg,
                           stage,
-                          section: text == 'Bandpass + notch filter'
-                              ? 'Filter'
-                              : text == 'GEDAI denoising'
-                              ? 'GEDAI'
-                              : 'Bad channels',
+                          section: switch (text) {
+                            'Bandpass + notch filter' => 'Filter',
+                            'GEDAI denoising' => 'GEDAI',
+                            'PSD band power' => 'PSD',
+                            'FOOOF / specparam' => 'FOOOF',
+                            'IRASA' => 'IRASA',
+                            'Nonlinear dynamics' => 'Nonlinear',
+                            'Autocorrelation window (ACW)' => 'ACW',
+                            'Granger Causality' ||
+                            'GC-TR' ||
+                            'GC − GC-TR contrast' => 'GC',
+                            'MIC' ||
+                            'MIM' ||
+                            'Coherence (COH)' ||
+                            'PLV' ||
+                            'ciPLV' ||
+                            'PLI' ||
+                            'wPLI' => 'Bands',
+                            _ => 'Bad channels',
+                          },
                         );
                         if (mounted) setState(() {});
                       },
