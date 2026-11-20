@@ -3568,6 +3568,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     const SizedBox(width: 6),
                   ],
                   TextButton.icon(
+                    onPressed: _busy ? null : _openResultFolder,
+                    icon: const Icon(Icons.folder_open, size: 16),
+                    label: const Text('Load Saved ERP Folder…'),
+                  ),
+                  const SizedBox(width: 4),
+                  TextButton.icon(
                     onPressed: _busy || _result == null || _component.isEmpty
                         ? null
                         : () => _groupModels(difference: false),
