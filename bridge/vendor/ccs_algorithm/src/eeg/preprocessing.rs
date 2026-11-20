@@ -534,79 +534,96 @@ pub fn run(
             }
         }
     }
+    // Run GEDAI on good channels only so flat/railed bad channels do not distort the covariance GEVD
+    // and interpolated channels are not treated as independent sources; leadfield_cov() subsets to good_labels.
+    // Bad channels are interpolated afterwards (along with ICA/ASR), before the output reference.
+    if options.gedai && !bad_channels.is_empty() && !options.interpolate {
+        warnings.push(format!("GEDAI excluded {} bad channel(s) ({}) which remain uninterpolated because interpolation is off", bad_channels.len(), bad_channels.join(", ")));
+    }
     let mut gedai_quality = None;
     let mut sensai_score = None;
     let mut gedai_reference = "";
     let mut thresholds = Vec::new();
     if options.gedai && rec.channels.len() >= 4 {
-        let extra = cache.apply("gedai", serde_json::json!({"settings":params(&["gedai_epoch_seconds","gedai_threshold","epoch_before_gedai","epoch_length_seconds","stim_epochs"]),"implementation":"gedai-v4-reference-broadband-mra9"}), &mut f64_channels, rec, &mut warnings, |f64_channels, rec, warnings| {
+        let extra = cache.apply("gedai", serde_json::json!({"settings":params(&["gedai_epoch_seconds","gedai_threshold","epoch_before_gedai","epoch_length_seconds","stim_epochs"]),"bad_channels":&bad_channels,"implementation":"gedai-v4-reference-broadband-mra9"}), &mut f64_channels, rec, &mut warnings, |f64_channels, rec, warnings| {
             let mut sensai_score = None;
             let mut gedai_reference = "";
             let mut thresholds = Vec::new();
             let mut quality = serde_json::Value::Null;
-    if options.gedai && rec.channels.len() >= 4 {
-        // Epoched data: one epoch per GEDAI window, and the data are padded to
-        // whole windows (then trimmed back) so no trial is cut off.
-        let orig_len = f64_channels.first().map(Vec::len).unwrap_or(0);
-        let epoched = rec
-            .source_epoch_samples
-            .filter(|&n| n >= 4 && orig_len / n >= 2);
-        let gedai_seconds = epoched
-            .map(|n| n as f64 / rec.rate)
-            .unwrap_or(options.gedai_epoch_seconds);
-        if epoched.is_some() {
-            let win = ((rec.rate * gedai_seconds).round() as usize).max(4);
-            let win = if win % 2 == 0 { win } else { win + 1 };
-            let padded = ((orig_len + win - 1) / win).max(2) * win;
-            if padded > orig_len {
-                for ch in f64_channels.iter_mut() {
-                    ch.resize(padded, 0.0);
+            let bad_set: std::collections::HashSet<String> = bad_channels.iter().map(|b| b.to_lowercase()).collect();
+            let good_indices: Vec<usize> = (0..rec.labels.len())
+                .filter(|&i| !bad_set.contains(&rec.labels[i].to_lowercase()))
+                .collect();
+            if good_indices.len() < 4 {
+                warnings.push(format!(
+                    "GEDAI skipped: fewer than 4 good channels remain ({} of {})",
+                    good_indices.len(),
+                    rec.labels.len()
+                ));
+            } else {
+                let good_labels: Vec<String> = good_indices.iter().map(|&i| rec.labels[i].clone()).collect();
+                let mut good_data: Vec<Vec<f64>> = good_indices.iter().map(|&i| f64_channels[i].clone()).collect();
+                // Epoched data: one epoch per GEDAI window, and the data are padded to
+                // whole windows (then trimmed back) so no trial is cut off.
+                let orig_len = good_data.first().map(Vec::len).unwrap_or(0);
+                let epoched = rec
+                    .source_epoch_samples
+                    .filter(|&n| n >= 4 && orig_len / n >= 2);
+                let gedai_seconds = epoched
+                    .map(|n| n as f64 / rec.rate)
+                    .unwrap_or(options.gedai_epoch_seconds);
+                if epoched.is_some() {
+                    let win = ((rec.rate * gedai_seconds).round() as usize).max(4);
+                    let win = if win % 2 == 0 { win } else { win + 1 };
+                    let padded = ((orig_len + win - 1) / win).max(2) * win;
+                    if padded > orig_len {
+                        for ch in good_data.iter_mut() {
+                            ch.resize(padded, 0.0);
+                        }
+                    }
+                    eprintln!(
+                        "PROGRESS 55 GEDAI on {} epochs ({} samples per window)",
+                        orig_len / epoched.unwrap(),
+                        win
+                    );
+                }
+                match gedai(
+                    &mut good_data,
+                    rec.rate,
+                    &good_labels,
+                    gedai_seconds,
+                    &options.gedai_threshold,
+                ) {
+                    Ok(result) => {
+                        let missing = leadfield_missing_labels(&good_labels);
+                        if !missing.is_empty() {
+                            gedai_reference = "identity";
+                            warnings.push(format!(
+                                "GEDAI ran WITHOUT its leadfield reference: {} of {} channel labels are not in the built-in 10-05 leadfield ({}). \
+                                 An identity reference covariance was used, so the spatial prior is lost and the output is NOT valid GEDAI cleaning. \
+                                 Use standard 10-05 electrode names, or use ASR / ICA instead.",
+                                missing.len(), good_labels.len(), missing.join(", ")
+                            ));
+                        } else {
+                            gedai_reference = "leadfield";
+                        }
+                        let len = result.clean.first().map(Vec::len).unwrap_or(0);
+                        let len = if epoched.is_some() { orig_len.min(len) } else { len };
+                        for (pos, &ch_idx) in good_indices.iter().enumerate() {
+                            f64_channels[ch_idx] = result.clean[pos][..len].to_vec();
+                        }
+                        for ch in f64_channels.iter_mut() {
+                            ch.truncate(len);
+                        }
+                        quality = result.quality;
+                        sensai_score = Some(result.score);
+                        thresholds = result.thresholds;
+                    }
+                    Err(err) => {
+                        warnings.push(format!("GEDAI skipped: {err}"))
+                    }
                 }
             }
-            eprintln!(
-                "PROGRESS 55 GEDAI on {} epochs ({} samples per window)",
-                orig_len / epoched.unwrap(),
-                win
-            );
-        }
-        match gedai(
-            f64_channels,
-            rec.rate,
-            &rec.labels,
-            gedai_seconds,
-            &options.gedai_threshold,
-        ) {
-            Ok(result) => {
-                let missing = leadfield_missing_labels(&rec.labels);
-                if !missing.is_empty() {
-                    gedai_reference = "identity";
-                    warnings.push(format!(
-                        "GEDAI ran WITHOUT its leadfield reference: {} of {} channel labels are not in the built-in 10-05 leadfield ({}). \
-                         An identity reference covariance was used, so the spatial prior is lost and the output is NOT valid GEDAI cleaning. \
-                         Use standard 10-05 electrode names, or use ASR / ICA instead.",
-                        missing.len(), rec.labels.len(), missing.join(", ")
-                    ));
-                } else {
-                    gedai_reference = "leadfield";
-                }
-                let len = result.clean.first().map(Vec::len).unwrap_or(0);
-                let len = if epoched.is_some() { orig_len.min(len) } else { len };
-                *f64_channels = result.clean;
-                for ch in f64_channels.iter_mut() {
-                    ch.truncate(len);
-                }
-                quality = result.quality;
-                sensai_score = Some(result.score);
-                thresholds = result.thresholds;
-            }
-            Err(err) => {
-                for ch in f64_channels.iter_mut() {
-                    ch.truncate(orig_len);
-                }
-                warnings.push(format!("GEDAI skipped: {err}"))
-            }
-        }
-    }
             Ok(serde_json::json!({"score":sensai_score,"reference":gedai_reference,"thresholds":thresholds,"quality":quality}))
         })?;
         gedai_quality = Some(extra["quality"].clone());
@@ -1029,7 +1046,21 @@ fn detect_bad_channels_f64(
         let mut hfs = Vec::with_capacity(n_win);
         let mut flat_cnt = 0_usize;
         for (wi, &ws) in win_starts.iter().enumerate() {
-            let seg = &ch[ws..(ws + win_len).min(ch.len())];
+            let raw_seg = &ch[ws..(ws + win_len).min(ch.len())];
+            // remove the window's linear trend so slow drift / DC steps do not mask or mimic noisy electrodes
+            let detrended: Vec<f64> = {
+                let m = raw_seg.len();
+                if m < 8 { raw_seg.to_vec() } else {
+                    let mf = m as f64;
+                    let mean_y = raw_seg.iter().sum::<f64>() / mf;
+                    let mean_t = (mf - 1.0) / 2.0;
+                    let (mut sty, mut stt) = (0.0, 0.0);
+                    for (k, &y) in raw_seg.iter().enumerate() { let dt = k as f64 - mean_t; sty += dt * (y - mean_y); stt += dt * dt; }
+                    let slope = if stt > 0.0 { sty / stt } else { 0.0 };
+                    raw_seg.iter().enumerate().map(|(k, &y)| y - mean_y - slope * (k as f64 - mean_t)).collect()
+                }
+            };
+            let seg = &detrended[..];
             let (mad_sd, range) = robust_mad_sorted(seg);
             if range < 1e-6 || mad_sd < 1e-8 {
                 flat_cnt += 1;
@@ -1066,7 +1097,8 @@ fn detect_bad_channels_f64(
     let med_log_mad = median(log_mads.clone());
     let abs_dev_mad: Vec<f64> = log_mads.iter().map(|&lv| (lv - med_log_mad).abs()).collect();
     let mad_log_sd = (median(abs_dev_mad) * 1.4826).max(0.12);
-    let amp_ratio = variance_ratio.max(4.0).sqrt();
+    // amplitude ratio to the population median: default variance_ratio 25 -> 4x (was 5x, which missed P3/FC2 at 4.5-6x)
+    let amp_ratio = (variance_ratio.max(4.0).sqrt() * 0.8).max(2.5);
 
     let mut flagged = vec![false; n_ch];
     for i in 0..n_ch {
@@ -2417,6 +2449,55 @@ fn ica_chan_loc(label: &str) -> ccs_ica::iclabel::ChanLoc {
     ccs_ica::iclabel::ChanLoc { label: label.to_string(), theta, radius }
 }
 
+/// Interpolate large slow (< 1 Hz) excursions left in `data` after ASR.  `hp` is the 1 Hz high-passed input of ASR and
+/// `repaired` its ASR output; the slow part is `data_before_asr - hp`, which equals `data - repaired` after the correction.
+/// Samples where the slow part deviates > max(8 robust SD, 150 uV) from its median (dilated by 0.5 s each side) are replaced by
+/// linear interpolation of the slow part.  Returns the number of samples modified.
+fn repair_slow_excursions(data: &mut [f64], _hp: &[f64], repaired: &[f64], rate: f64) -> usize {
+    let n = data.len();
+    if n < 4 || repaired.len() != n { return 0; }
+    let slow: Vec<f64> = (0..n).map(|t| data[t] - repaired[t]).collect();
+    let mut sorted: Vec<f64> = slow.iter().copied().filter(|v| v.is_finite()).collect();
+    if sorted.is_empty() { return 0; }
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let med = sorted[sorted.len() / 2];
+    let mut dev: Vec<f64> = sorted.iter().map(|v| (v - med).abs()).collect();
+    dev.sort_by(|a, b| a.total_cmp(b));
+    let sd = 1.4826 * dev[dev.len() / 2];
+    let thr = (8.0 * sd).max(150.0);
+    let mut bad = vec![false; n];
+    let pad = (0.5 * rate).round() as usize;
+    for t in 0..n {
+        if !slow[t].is_finite() || (slow[t] - med).abs() > thr {
+            let a = t.saturating_sub(pad);
+            let b = (t + pad).min(n - 1);
+            for u in a..=b { bad[u] = true; }
+        }
+    }
+    let count = bad.iter().filter(|&&b| b).count();
+    if count == 0 || count == n { return 0; }
+    // replacement slow signal: linear interpolation between neighbouring good samples
+    let mut t = 0;
+    while t < n {
+        if !bad[t] { t += 1; continue; }
+        let s0 = t;
+        while t < n && bad[t] { t += 1; }
+        let e0 = t; // first good sample after the run (or n)
+        let left = if s0 > 0 { Some(slow[s0 - 1]) } else { None };
+        let right = if e0 < n { Some(slow[e0]) } else { None };
+        for u in s0..e0 {
+            let new_slow = match (left, right) {
+                (Some(l), Some(r)) => l + (r - l) * ((u - s0 + 1) as f64 / (e0 - s0 + 1) as f64),
+                (Some(l), None) => l,
+                (None, Some(r)) => r,
+                _ => med,
+            };
+            data[u] = repaired[u] + new_slow;
+        }
+    }
+    count
+}
+
 /// Runs ICA (blink stage + general stage) and/or ASR on the continuous data in place.  Bad channels are left out of
 /// the decomposition (they are interpolated later).  Returns the JSON report and, for ASR reject mode, the keep-mask.
 fn run_ica_asr(
@@ -2562,6 +2643,15 @@ fn run_ica_asr(
                         for t in 0..data[i].len() {
                             data[i][t] += out.data[k][t] - hp_rows[k][t];
                         }
+                    }
+                    // ASR only repairs > 1 Hz; huge slow (< 1 Hz) excursions of the same bursts would survive and appear
+                    // as new artefacts after ASR.  Repair them by interpolating the slow part across the excursion.
+                    let mut slow_fixed = 0usize;
+                    for (k, &i) in good.iter().enumerate() {
+                        slow_fixed += repair_slow_excursions(&mut data[i], &hp_rows[k], &out.data[k], rate);
+                    }
+                    if slow_fixed > 0 {
+                        warnings.push(format!("ASR: {slow_fixed} samples of slow (<1 Hz) drift/jump artefact were interpolated"));
                     }
                 }
                 report["asr"] = serde_json::json!({

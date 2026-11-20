@@ -4,6 +4,24 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.53]
+
+### Preprocessing fixes (Workshop_Test review)
+- Interactive Preprocessing: each step has a tick box and "Apply selected (N)" runs the ticked steps together in one cached engine run; "Default for new configured runs" boxes removed; Batch cards no longer show both a checkbox and a switch. Fixed Batch ASR/Muscle switches writing invalid modes (`burst_repair`, `cca`) and ASR "off" counting as enabled.
+- Viewer: bad channels are drawn in red and can be hidden (header chip); right-click a channel to mark/unmark it bad (feeds the manual list of "Detect bad channels").
+- ASR: slow (<1 Hz) excursions of artefact bursts that ASR cannot see are now interpolated (previously a ~9500 uV rms drift survived and appeared as a new artefact after ASR).
+- GEDAI: runs on good channels only (with `leadfield_cov` subset to those electrodes) so flat/railed bad channels do not distort the covariance GEVD and interpolated channels are not treated as independent sources; bad channels are interpolated afterwards (along with ICA and ASR) before the output reference.
+- Bad-channel detection: per-window linear detrend and a 4x (was 5x) amplitude ratio at the default setting, so channels like P3/FC2 are caught.
+
+
+### Video/Audio ↔ EEG Sync Fixes & Time-Resolved Neural Speech Tracking
+
+- **Sync root-cause fix:** the BrainVision `.vmrk` "New Segment" start-time pattern was one field short and never matched, so offsets silently fell back to file modification times. Start times now come from the `.vmrk` (with microseconds), the processing-history `source_path` chain, or a nearby matching `.vmrk`; media start prefers the recording-site clock in the file name over UTC `creation_time`; file mtimes are never used.
+- **One wall-clock timeline:** every plotted session and media segment is placed by absolute start time, plot cursors are per session (no more one shared time on every axis), clicks on any plot seek the right media, seeks wait for the media duration before jumping, and media that does not cover the cursor no longer shows an unrelated frame.
+- **Audio-to-video auto-alignment (`align_audio` job):** audio-only files without a clock are aligned to a loaded video's audio by speech-envelope cross-correlation (`Align to video` in the panel).
+- **Envelope source & aligned lanes:** the audio waveform/envelope now names its source (video audio track vs audio file) and is drawn in the exact horizontal span of each session's feature plot.
+- **Neural Speech Tracking time series:** sliding-window decoder-reconstruction r and forward-TRF r (out-of-fold, with circular-shift 95% chance lines) drawn under the feature plot on the same time axis (`Speech Tracking` in the Plots toolbar).
+
 ## [1.2.52]
 
 ### Multi-Component ERP, Group ERSP/ERPimage/rERP, Isolate Worker Fixes & Folder Picker Overhaul

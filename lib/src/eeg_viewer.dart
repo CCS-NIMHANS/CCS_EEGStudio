@@ -95,6 +95,8 @@ class EegViewer extends StatefulWidget {
     this.notchHz = 50.0,
     this.epochShades = const [],
     this.onToggleEpochShade,
+    this.badChannels = const {},
+    this.onToggleBadChannel,
   });
 
   /// Parent workspace supplies the trial picker for a single-trial view.
@@ -126,6 +128,12 @@ class EegViewer extends StatefulWidget {
   final double notchHz;
   final List<EpochShadeSpec> epochShades;
   final ValueChanged<int>? onToggleEpochShade;
+
+  /// Channels currently marked bad (auto-detected + manual). Drawn in red, optionally hidden.
+  final Set<String> badChannels;
+
+  /// Right-click on a channel toggles its bad flag (manual marking / un-marking).
+  final ValueChanged<String>? onToggleBadChannel;
 
   @override
   State<EegViewer> createState() => _EegViewerState();
@@ -162,6 +170,8 @@ class _EegViewerState extends State<EegViewer> {
 
   /// Which channels are visible in stacked mode.
   List<bool> _visible = [];
+  bool _hideBad = false;
+  double _waveH = 0;
   int _pageSize = 12; // 0 = All, 12, 24, 32
   int _currentPage = 0;
   double _traceSpacing = 1.0;
@@ -561,6 +571,21 @@ class _EegViewerState extends State<EegViewer> {
                 children: [
                   _badge('${eeg.labels.length} ch', const Color(0xFF3B82F6)),
                   const SizedBox(width: 4),
+                  if (widget.badChannels.any(eeg.labels.contains)) ...[
+                    Tooltip(
+                      message: _hideBad
+                          ? 'Bad channels hidden. Click to show them (red)'
+                          : 'Bad channels shown in red. Click to hide them. Right-click a channel to mark / unmark it',
+                      child: InkWell(
+                        onTap: () => setState(() => _hideBad = !_hideBad),
+                        child: _badge(
+                          '${widget.badChannels.where(eeg.labels.contains).length} bad · ${_hideBad ? 'hidden' : 'shown'}',
+                          const Color(0xFFEF4444),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   _badge(
                     '${eeg.sampleRate.toStringAsFixed(0)} Hz',
                     const Color(0xFFF59E0B),
@@ -1348,6 +1373,7 @@ class _EegViewerState extends State<EegViewer> {
         for (var i = 0; i < eeg.labels.length; i++)
           if (i < _visible.length &&
               _visible[i] &&
+              !(_hideBad && widget.badChannels.contains(eeg.labels[i])) &&
               (widget.selection.selectedChannels.isEmpty ||
                   widget.selection.selectedChannels.contains(eeg.labels[i])))
             i,
@@ -1366,6 +1392,10 @@ class _EegViewerState extends State<EegViewer> {
       channelIndices = [_selectedChannel.clamp(0, eeg.labels.length - 1)];
     }
 
+    final traceColors = {
+      ...widget.traceColors,
+      for (final b in widget.badChannels) b: const Color(0xFFEF4444),
+    };
     return Listener(
       onPointerDown: (_) => _focusNode.requestFocus(),
       onPointerHover: (_) {
@@ -1498,6 +1528,14 @@ class _EegViewerState extends State<EegViewer> {
           return KeyEventResult.ignored;
         },
         child: GestureDetector(
+          onSecondaryTapDown: widget.onToggleBadChannel == null
+              ? null
+              : (details) => _channelContextMenu(
+                  details.globalPosition,
+                  details.localPosition,
+                  eeg,
+                  channelIndices,
+                ),
           onTapDown: (details) {
             _focusNode.requestFocus();
             final width = context.size?.width ?? 800;
@@ -1550,10 +1588,12 @@ class _EegViewerState extends State<EegViewer> {
             widget.onTimeSelected?.call(_startSeconds);
           },
           child: ClipRect(
-            child: CustomPaint(
+            child: LayoutBuilder(builder: (context, box) {
+              _waveH = box.maxHeight;
+              return CustomPaint(
               painter: _EegSignalPainter(
                 eeg: eeg,
-                traceColors: widget.traceColors,
+                traceColors: traceColors,
                 cursorSeconds: widget.cursorSeconds,
                 highlightWindowSeconds: widget.highlightWindowSeconds,
                 effectivePreview: _getEffectivePreview(eeg),
@@ -1573,11 +1613,43 @@ class _EegViewerState extends State<EegViewer> {
                 timeAxisMode: _timeAxisMode,
               ),
               child: const SizedBox.expand(),
-            ),
+            );
+            }),
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _channelContextMenu(
+    Offset global,
+    Offset local,
+    EegRecording eeg,
+    List<int> channelIndices,
+  ) async {
+    if (channelIndices.isEmpty || _waveH <= 20) return;
+    final drawH = _waveH - 20.0; // painter time-axis height
+    if (local.dy < 0 || local.dy >= drawH) return;
+    final lane = (local.dy / (drawH / channelIndices.length)).floor().clamp(0, channelIndices.length - 1);
+    final chIdx = channelIndices[lane];
+    if (chIdx >= eeg.labels.length) return;
+    final label = eeg.labels[chIdx];
+    final isBad = widget.badChannels.contains(label);
+    final choice = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(global.dx, global.dy, global.dx, global.dy),
+      items: [
+        PopupMenuItem(value: 'toggle', child: Text(isBad ? 'Unmark $label as bad' : 'Mark $label as bad')),
+        if (widget.badChannels.any(eeg.labels.contains))
+          PopupMenuItem(value: 'hide', child: Text(_hideBad ? 'Show bad channels' : 'Hide bad channels')),
+      ],
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'toggle') {
+      widget.onToggleBadChannel?.call(label);
+    } else if (choice == 'hide') {
+      setState(() => _hideBad = !_hideBad);
+    }
   }
 
   List<EegMarker> _markersForView(EegRecording eeg) {

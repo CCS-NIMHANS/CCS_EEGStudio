@@ -369,7 +369,12 @@ class TopoFigure {
   /// Paints the whole figure at [ppi] pixels per inch onto [canvas]
   /// (origin = figure top-left). When [cursorMinutes] is supplied, draws a
   /// vertical time-locked cursor line across matching line plot panels.
-  void paint(Canvas canvas, double ppi, {double? cursorMinutes}) {
+  void paint(
+    Canvas canvas,
+    double ppi, {
+    double? cursorMinutes,
+    List<double?>? sessionCursorMinutes,
+  }) {
     final pt = ppi / 72.0;
     Rect px(Rect inches) => Rect.fromLTRB(
       inches.left * ppi,
@@ -397,11 +402,14 @@ class TopoFigure {
       final axPx = px(lineAxes[i]);
       _paintLineAxes(canvas, i, axPx, pt);
       final dur = result.sessions[i].durationMin;
-      if (cursorMinutes != null &&
-          dur > 0 &&
-          cursorMinutes >= 0 &&
-          cursorMinutes <= dur) {
-        final cx = axPx.left + (cursorMinutes / dur) * axPx.width;
+      // Per-session cursors: each line plot shows the instant on ITS OWN recording
+      // clock (null = this recording is not at the cursor), instead of drawing one
+      // shared time on every axis.
+      final cm = sessionCursorMinutes != null
+          ? (i < sessionCursorMinutes.length ? sessionCursorMinutes[i] : null)
+          : cursorMinutes;
+      if (cm != null && dur > 0 && cm >= 0 && cm <= dur) {
+        final cx = axPx.left + (cm / dur) * axPx.width;
         canvas.drawLine(
           Offset(cx, axPx.top),
           Offset(cx, axPx.bottom),
@@ -416,6 +424,20 @@ class TopoFigure {
     }
     _paintTopoRow(canvas, ppi, pt, px);
     _paintColorbar(canvas, px(colorbarAxes), pt);
+  }
+
+  /// Like [lineAxisTimeSecondsAt] but also reports which session's axes were hit.
+  ({int session, double sec})? lineAxisSessionTimeAt(Offset pIn) {
+    for (var i = 0; i < lineAxes.length; i++) {
+      final ax = lineAxes[i];
+      if (ax.contains(pIn)) {
+        final dur = result.sessions[i].durationMin;
+        if (dur <= 0 || ax.width <= 0) return null;
+        final frac = ((pIn.dx - ax.left) / ax.width).clamp(0.0, 1.0);
+        return (session: i, sec: frac * dur * 60.0);
+      }
+    }
+    return null;
   }
 
   /// Maps a figure-inch point inside any line plot axes back to EEG seconds.

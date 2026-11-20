@@ -70,13 +70,12 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 
 ---
 
-## ✨ What's New in v1.2.52
+## ✨ What's New in v1.2.53
 
-- **Microstates & Group Statistics Stability + Non-Blocking Folder Picker:** Moved all `Isolate.run` calls to top-level worker boundaries to eliminate unsendable `WidgetsFlutterBinding` closure errors in Microstate Analysis and Permutation GLM/LMM; added `pickDirectorySafe` with fast local `initialDirectory` fallback and re-entrancy locking so macOS folder dialogs open cleanly without stalling.
-- **Multi-Component ERP, Cached Fast Recompute & Group Time-Frequency/Image:** Added simultaneous multi-component ROI specs (`erp_component_measurements.csv`), instant in-memory `ErpWaveformCache` recomputation (live epoch limits, re-baselining, factor filtering & `Exclude "Unknown"`), interlinked channel grid + enlarged plots, Group ERPimage, Group ERSP/ITC (`group_ersp_itc`), subject-averaged rERP/decoding, and 4+ group Okabe-Ito / `RdBu_r` publication figures.
-- **BrainVision Recovery, Unified Batch Progress/ETA, `New Instance` & Clear Controls:** Added automatic companion `.eeg`/`.vmrk` typo recovery, monotonic weighted progress + adaptive ETA across batch stages, `Clear`/`Clear All` resets, and Stage 4 export toggles.
+- **Preprocessing Pipeline & Bad-Channel Fixes:** Interactive Preprocessing now lets you tick steps and run them together via `"Apply selected (N)"` in one cached engine run, removed `"Default for new configured runs"` boxes, and fixed Batch ASR/Muscle switches writing invalid modes (`burst_repair`, `cca`); interpolated slow (`<1 Hz`) excursions after ASR; runs ICA, ASR, and GEDAI on good channels only (with `leadfield_cov` subset for GEDAI) before interpolating bad channels and applying the output reference; improved bad-channel detection (per-window detrend + `4×` amplitude ratio); and added red bad-channel highlighting, header hide/show chip, and right-click mark/unmark in the EEG viewer.
+- **Video/Audio ↔ EEG Sync & Time-Resolved Neural Speech Tracking:** Fixed BrainVision `.vmrk` `"New Segment"` start-time parsing and aligned all plotted sessions and media segments on one wall-clock timeline with per-session plot cursors, `align_audio` cross-correlation, audio envelope source attribution, and sliding-window decoder/TRF `Speech Tracking`.
 
-See [CHANGELOG.md](CHANGELOG.md) for full release history (v1.2.51 algorithmic parity audit, v1.2.50 batch localizer & stats plots, and earlier releases).
+See [CHANGELOG.md](CHANGELOG.md) for full release history (v1.2.52 multi-component ERP & group ERSP/ERPimage/rERP, v1.2.51 algorithmic parity audit, v1.2.50 batch localizer & stats plots, and earlier releases).
 
 ---
 

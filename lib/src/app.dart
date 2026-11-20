@@ -459,6 +459,69 @@ class _FeatureHomeState extends State<FeatureHome>
       !identical(_finalizedPreview, _interactivePreview);
   final Map<String, Map<String, dynamic>> _appliedPreviewSteps = {};
 
+  /// Steps ticked in the interactive panel to be run together with "Apply selected".
+  final Set<String> _stepSelection = {};
+
+  /// Latest settings of every step card, collected while the panel is built.
+  final Map<String, Map<String, dynamic>> _stepSettingsCache = {};
+
+  /// Pipeline order of the interactive steps (applied in this order by the engine).
+  static const List<String> _stepOrder = [
+    'resample', 'filter', 'badchannels', 'ica', 'muscle', 'asr', 'gedai', 'interpolate', 'reference',
+  ];
+
+  /// Applies every ticked step in one engine run (cached steps are reused, nothing is repeated).
+  Future<void> _applySelectedPreviewSteps() async {
+    if (_running || _batchMaximized) return;
+    final baseline = _raw ?? _activeRecording;
+    if (baseline == null || _stepSelection.isEmpty) return;
+    _previewSession ??= PreprocessingPreview(baseline);
+    final next = Map<String, Map<String, dynamic>>.from(_appliedPreviewSteps);
+    for (final id in _stepOrder) {
+      final st = _stepSettingsCache[id];
+      if (_stepSelection.contains(id) && st != null) next[id] = Map<String, dynamic>.from(st);
+    }
+    setState(() {
+      _running = true;
+      _stopRequested = false;
+      _progress = 0;
+    });
+    try {
+      final result = await _previewSession!.compute(
+        service: _service,
+        steps: next,
+        configuration: _cfg.toPreprocessingJson(),
+        settings: _cfg
+            .toPreprocessingOptions(nonEegChannels: _channels.nonEegChannels)
+            .toJson(),
+        onProgress: (p, m) {
+          if (mounted) setState(() => _progress = p);
+          _log(m);
+        },
+      );
+      final saved = await _previewSession!.finalizedCopyFor(result);
+      if (!mounted || _stopRequested) return;
+      setState(() {
+        _appliedPreviewSteps
+          ..clear()
+          ..addAll(next);
+        _interactivePreview = result;
+        if (saved != null) {
+          _preprocessed = saved;
+          _finalizedPreview = result;
+        }
+        _source = null;
+        _sourceInput = null;
+        _selection = const ViewerSelection.empty();
+        _stepSelection.clear();
+      });
+    } catch (e) {
+      _log('Interactive preprocessing failed; previous waveform retained: $e');
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
   void _resetInteractivePreview() {
     final previous = _previewSession;
     _previewSession = null;
@@ -533,6 +596,37 @@ class _FeatureHomeState extends State<FeatureHome>
       if (e.key.startsWith('ica_'))
         e.key: e.key == 'ica_method' && e.value == 'none' ? 'runica' : e.value,
   };
+
+  /// Auto-detected (from the recording's provenance) plus manually marked bad channels.
+  Set<String> get _viewerBadChannels {
+    final auto = ((_activeRecording?.provenance['summary'] as Map?)?['bad_channels'] as List?)
+            ?.map((e) => e.toString()) ??
+        const <String>[];
+    return {...auto, ..._cfg.manualBadChannels};
+  }
+
+  /// Right-click in the waveform: mark / unmark a channel as bad. Manual marks feed the "Detect bad channels" step.
+  void _toggleBadChannel(String label) {
+    final manual = List<String>.from(_cfg.manualBadChannels);
+    final lower = label.toLowerCase();
+    if (manual.any((c) => c.toLowerCase() == lower)) {
+      manual.removeWhere((c) => c.toLowerCase() == lower);
+    } else {
+      final auto = ((_activeRecording?.provenance['summary'] as Map?)?['bad_channels'] as List?)
+              ?.map((e) => e.toString().toLowerCase()) ??
+          const <String>[];
+      if (auto.contains(lower)) {
+        _log('$label was auto-detected as bad. Raise the detection ratio or turn off auto-detection to keep it.');
+        return;
+      }
+      manual.add(label);
+    }
+    setState(() {
+      _cfg.manualBadChannels = manual;
+      _stepSelection.add('badchannels');
+    });
+    _log('Manual bad channels: ${manual.isEmpty ? "none" : manual.join(", ")}. Apply "Detect bad channels" (ticked) to use them.');
+  }
 
   Future<void> _togglePreviewStep(
     String id,
@@ -708,7 +802,7 @@ class _FeatureHomeState extends State<FeatureHome>
     'badchannels' => _cfg.badChannels,
     'ica' => _cfg.icaMethod != 'none',
     'muscle' => _cfg.muscleMethod != 'none',
-    'asr' => _cfg.asrMode != 'none',
+    'asr' => _cfg.asrMode != 'off' && _cfg.asrMode != 'none',
     'gedai' => _cfg.gedai,
     'interpolate' => _cfg.interpolate,
     'reference' => _cfg.referenceMode != 'none',
@@ -727,9 +821,9 @@ class _FeatureHomeState extends State<FeatureHome>
         case 'ica':
           _cfg.icaMethod = enabled ? 'runica' : 'none';
         case 'muscle':
-          _cfg.muscleMethod = enabled ? 'cca' : 'none';
+          _cfg.muscleMethod = enabled ? 'bss_cca' : 'none';
         case 'asr':
-          _cfg.asrMode = enabled ? 'burst_repair' : 'none';
+          _cfg.asrMode = enabled ? 'correct' : 'off';
         case 'gedai':
           _cfg.gedai = enabled;
         case 'interpolate':
@@ -747,6 +841,7 @@ class _FeatureHomeState extends State<FeatureHome>
     Map<String, dynamic> settings,
     List<Widget> children,
   ) {
+    _stepSettingsCache[id] = settings;
     final batchEnabled = _batchMaximized ? _batchStepEnabled(id) : false;
     final applied = _appliedPreviewSteps.containsKey(id);
     final changed =
@@ -760,19 +855,30 @@ class _FeatureHomeState extends State<FeatureHome>
         tilePadding: const EdgeInsets.symmetric(horizontal: 8),
         childrenPadding: const EdgeInsets.all(10),
         leading: _batchMaximized
-            ? Checkbox(
-                value: batchEnabled,
-                onChanged: _running
-                    ? null
-                    : (v) => _setBatchStepEnabled(id, v ?? false),
-                activeColor: _accentGreen,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-              )
-            : Icon(
-                applied ? Icons.check_circle : Icons.radio_button_unchecked,
-                color: applied ? _accentGreen : _textMuted,
+            ? Icon(
+                batchEnabled ? Icons.check_circle : Icons.remove_circle_outline,
+                color: batchEnabled ? _accentGreen : _textMuted,
                 size: 20,
+              )
+            : Tooltip(
+                message: applied
+                    ? 'Applied. Tick to re-run it together with other selected steps'
+                    : 'Tick to run this step together with the other ticked steps',
+                child: Checkbox(
+                  value: _stepSelection.contains(id),
+                  onChanged: _running
+                      ? null
+                      : (v) => setState(() {
+                          if (v == true) {
+                            _stepSelection.add(id);
+                          } else {
+                            _stepSelection.remove(id);
+                          }
+                        }),
+                  activeColor: _accentGreen,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
               ),
         title: Text(
           title,
@@ -3779,6 +3885,8 @@ class _FeatureHomeState extends State<FeatureHome>
                     : EegViewer(
                         recording: _activeRecording,
                         rawRecording: _raw,
+                        badChannels: _viewerBadChannels,
+                        onToggleBadChannel: _toggleBadChannel,
                         allRecordings: _stageRecordings,
                         onSelectRecording: (rec) {
                           if (_running) return;
@@ -3886,6 +3994,8 @@ class _FeatureHomeState extends State<FeatureHome>
               ? EegViewer(
                   recording: _activeRecording,
                   rawRecording: _raw,
+                  badChannels: _viewerBadChannels,
+                  onToggleBadChannel: _toggleBadChannel,
                   cursorSeconds: _mediaCursorSec,
                   allRecordings: _stageRecordings,
                   onSelectRecording: (rec) {
@@ -5076,13 +5186,13 @@ class _FeatureHomeState extends State<FeatureHome>
               style: TextStyle(fontSize: 11, color: _textMuted),
             ),
           ),
-        if (!_batchMaximized && _previewSession != null)
+        if (!_batchMaximized)
           Wrap(
             spacing: 8,
             runSpacing: 4,
             children: [
               TextButton.icon(
-                onPressed: _running
+                onPressed: _running || _previewSession == null
                     ? null
                     : () async {
                         final session = _previewSession!;
@@ -5100,6 +5210,29 @@ class _FeatureHomeState extends State<FeatureHome>
                       },
                 icon: const Icon(Icons.restore),
                 label: const Text('Original input'),
+              ),
+              FilledButton.icon(
+                onPressed: _running ||
+                        _stepSelection.isEmpty ||
+                        (_raw ?? _activeRecording) == null
+                    ? null
+                    : _applySelectedPreviewSteps,
+                icon: const Icon(Icons.play_arrow),
+                label: Text('Apply selected (${_stepSelection.length})'),
+              ),
+              TextButton(
+                onPressed: _running
+                    ? null
+                    : () => setState(() {
+                        if (_stepSelection.length == _stepOrder.length) {
+                          _stepSelection.clear();
+                        } else {
+                          _stepSelection.addAll(_stepOrder);
+                        }
+                      }),
+                child: Text(
+                  _stepSelection.length == _stepOrder.length ? 'Select none' : 'Select all',
+                ),
               ),
               OutlinedButton.icon(
                 onPressed: _running || _appliedPreviewSteps.isEmpty
@@ -5132,11 +5265,6 @@ class _FeatureHomeState extends State<FeatureHome>
           '${_cfg.downsampleFreq} Hz',
           {'downsample': true, 'downsample_freq': _cfg.downsampleFreq},
           [
-            _check(
-              'Default for new configured runs',
-              _cfg.downsample,
-              (v) => _cfg.downsample = v,
-            ),
             _field(_preDownsample, 'Target rate', suffix: 'Hz'),
           ],
         ),
@@ -5161,11 +5289,6 @@ class _FeatureHomeState extends State<FeatureHome>
                   : _cfg.toPreprocessingOptions().toJson()[k],
           },
           [
-            _check(
-              'Default for new configured runs',
-              _cfg.filter,
-              (v) => _cfg.filter = v,
-            ),
             Row(
               children: [
                 Expanded(child: _field(_preLow, 'High-pass')),
@@ -5191,11 +5314,6 @@ class _FeatureHomeState extends State<FeatureHome>
             'manual_bad_channels': List<String>.from(_cfg.manualBadChannels),
           },
           [
-            _check(
-              'Default for new configured runs',
-              _cfg.badChannels,
-              (v) => _cfg.badChannels = v,
-            ),
             const Text(
               'Detection identifies exclusions (auto + manual). Enable interpolation to reconstruct excluded channels.',
               style: TextStyle(fontSize: 11),
@@ -5449,11 +5567,6 @@ class _FeatureHomeState extends State<FeatureHome>
             'gedai_epoch_seconds': _cfg.gedaiEpochSeconds,
           },
           [
-            _check(
-              'Default for new configured runs',
-              _cfg.gedai,
-              (v) => _cfg.gedai = v,
-            ),
             DropdownButtonFormField<String>(
               key: ValueKey('gedai-mode-${_cfg.gedaiThreshold}'),
               initialValue:
@@ -5497,11 +5610,6 @@ class _FeatureHomeState extends State<FeatureHome>
           'Spherical spline reconstruction',
           {'interpolate': true},
           [
-            _check(
-              'Default for new configured runs',
-              _cfg.interpolate,
-              (v) => _cfg.interpolate = v,
-            ),
             const Text(
               'Reconstructs detected bad channels after artifact cleaning. Apply bad channel detection first.',
             ),

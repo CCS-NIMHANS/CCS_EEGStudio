@@ -27,8 +27,9 @@ import 'topostats_batch.dart'
 import 'topostats_figure.dart';
 import 'topostats_runner.dart';
 import '../state_dynamics/state_dynamics_view.dart';
+import '../media/media_sync_service.dart' show SyncedMediaSegment;
 import '../media/synced_media_panel.dart'
-    show AudioWaveformEnvelopePainter, MediaSyncController;
+    show MediaSyncController, SessionAlignedAudioPainter, TrackingSeriesPainter;
 
 // Design tokens (match app.dart)
 const _bg = Color(0xFF0F172A);
@@ -119,6 +120,8 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   bool _fit = true;
   double _ppi = 110;
   bool _showAudioStrip = true;
+  bool _trackingRunning = false;
+  String? _trackingMsg;
   TopoPlotGroup? _hoverGroup;
   TopoHit? _hoverHit;
   Offset _hoverPos = Offset.zero;
@@ -129,6 +132,14 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   String? _selectedStateLabel;
 
   TopoFigure _makeFigure(TopoStatsResult r, [TopoPlotGroup? g]) {
+    final media = widget.mediaController;
+    if (media != null) {
+      // Resolve each plotted recording's wall-clock start so media can be placed on it.
+      for (final s in r.sessions) {
+        // ignore: unawaited_futures
+        media.registerSessionPath(s.path);
+      }
+    }
     return TopoFigure(
       r,
       stateDynamicsResult: g?.stateDynamicsResult ?? _stateDynamicsResult,
@@ -2066,6 +2077,26 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                   setState(() => _showAudioStrip = !_showAudioStrip),
             ),
             const SizedBox(width: 8),
+            Tooltip(
+              message:
+                  'Compute sliding-window neural speech tracking for each plotted session that overlaps the loaded media',
+              child: ActionChip(
+                visualDensity: VisualDensity.compact,
+                avatar: Icon(
+                  Icons.timeline,
+                  size: 13,
+                  color: _trackingRunning ? Colors.amberAccent : Colors.tealAccent,
+                ),
+                label: Text(
+                  _trackingRunning ? 'Tracking…' : 'Speech Tracking',
+                  style: const TextStyle(color: _text, fontSize: 11),
+                ),
+                backgroundColor: _panel,
+                side: BorderSide(color: Colors.tealAccent.withValues(alpha: 0.6)),
+                onPressed: _trackingRunning ? null : _runTrackingForSessions,
+              ),
+            ),
+            const SizedBox(width: 8),
           ],
           Tooltip(
             message: 'Event marker opacity on waveform plots',
@@ -2291,9 +2322,12 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 }
                 final media = widget.mediaController;
                 if (media != null && media.segments.isNotEmpty) {
-                  final tSec = fig.lineAxisTimeSecondsAt(figPt);
-                  if (tSec != null) {
-                    media.seekToEegTime(tSec, notifyExternal: true);
+                  final hit2 = fig.lineAxisSessionTimeAt(figPt);
+                  if (hit2 != null) {
+                    media.seekToSessionTime(
+                      fig.result.sessions[hit2.session].path,
+                      hit2.sec,
+                    );
                   }
                 }
               },
@@ -2310,8 +2344,15 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                           painter: _FigurePainter(
                             fig,
                             ppi,
-                            cursorMinutes: widget.mediaController!.segments.isNotEmpty
-                                ? widget.mediaController!.eegSec / 60.0
+                            sessionCursorMinutes:
+                                widget.mediaController!.segments.isNotEmpty
+                                ? [
+                                    for (final s in fig.result.sessions)
+                                      widget.mediaController!.sessionLocalSec(s.path) == null
+                                          ? null
+                                          : widget.mediaController!.sessionLocalSec(s.path)! /
+                                                60.0,
+                                  ]
                                 : null,
                           ),
                         ),
@@ -2491,16 +2532,14 @@ class _TopoStatsViewState extends State<TopoStatsView> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              for (final g in active)
+              for (final g in active) ...[
                 _buildGroupCard(g, ppi, active.length > 1),
-              if (_showAudioStrip &&
-                  widget.mediaController != null &&
-                  widget.mediaController!.segments.isNotEmpty)
-                _buildSyncedAudioStrip(
-                  active.isNotEmpty
-                      ? active.first.figure!.widthIn * ppi
-                      : math.max(700.0, c.maxWidth - 40),
-                ),
+                if (_showAudioStrip &&
+                    widget.mediaController != null &&
+                    widget.mediaController!.segments.isNotEmpty &&
+                    g.figure != null)
+                  _buildAlignedMediaStrips(g.figure!, ppi),
+              ],
               if (_activeFiles.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 16),
@@ -2654,19 +2693,137 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     );
   }
 
-  Widget _buildSyncedAudioStrip(double targetWidth) {
+  Future<void> _runTrackingForSessions() async {
+    final ctrl = widget.mediaController;
+    if (ctrl == null || _trackingRunning) return;
+    final seen = <String>{};
+    final sessions = <TopoSession>[
+      for (final g in _groups)
+        if (g.result != null)
+          for (final s in g.result!.sessions)
+            if (seen.add(s.path)) s,
+    ];
+    setState(() {
+      _trackingRunning = true;
+      _trackingMsg = null;
+    });
+    final notes = <String>[];
+    var done = 0;
+    for (final s in sessions) {
+      try {
+        await ctrl.runTracking(
+          sessionPath: s.path,
+          sessionDurationSec: s.durationMin * 60.0,
+        );
+        done++;
+      } catch (e) {
+        notes.add('${s.name}: ${'$e'.replaceFirst('Bad state: ', '')}');
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _trackingRunning = false;
+      _trackingMsg = done == 0
+          ? 'Speech tracking not computed. ${notes.join(' | ')}'
+          : (notes.isEmpty
+                ? null
+                : 'Computed for $done session(s); skipped: ${notes.join(' | ')}');
+    });
+  }
+
+  String _clockText(double epochSec) {
+    final d = DateTime.fromMicrosecondsSinceEpoch((epochSec * 1e6).round());
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${two(d.hour)}:${two(d.minute)}:${two(d.second)}';
+  }
+
+  /// Audio waveform/envelope lanes and the Neural Speech Tracking time series,
+  /// drawn in the exact horizontal span of each session's feature line plot so
+  /// a vertical line through the plot and the strips is the same instant.
+  Widget _buildAlignedMediaStrips(TopoFigure fig, double ppi) {
     final ctrl = widget.mediaController!;
     return ListenableBuilder(
       listenable: ctrl,
       builder: (context, _) {
-        final seg = ctrl.activeSegment;
-        if (seg == null || seg.waveformMax.isEmpty) {
-          return const SizedBox.shrink();
+        final sessions = fig.result.sessions;
+        final figW = fig.widthIn * ppi;
+        final unknownClock = <String>[];
+
+        // lanes[r][i] = segment placement for session i on lane r
+        final lanes = <List<({SyncedMediaSegment seg, double startSec})?>>[];
+        for (var i = 0; i < sessions.length; i++) {
+          final axisEnd = sessions[i].durationMin * 60.0;
+          if (ctrl.sessionStartEpoch(sessions[i].path) == null) {
+            unknownClock.add(sessions[i].name);
+            continue;
+          }
+          final hits = [
+            for (final p in ctrl.segmentsForSession(sessions[i].path))
+              if (p.startSec < axisEnd && p.startSec + p.seg.durationSeconds > 0) p,
+          ];
+          for (var r = 0; r < hits.length; r++) {
+            while (lanes.length <= r) {
+              lanes.add(List.filled(sessions.length, null));
+            }
+            lanes[r][i] = hits[r];
+          }
         }
+
+        void seekAt(double dx) {
+          for (var i = 0; i < sessions.length; i++) {
+            final ax = fig.lineAxes[i];
+            final l = ax.left * ppi, r = ax.right * ppi;
+            if (dx >= l && dx <= r && r > l) {
+              ctrl.seekToSessionTime(
+                sessions[i].path,
+                (dx - l) / (r - l) * sessions[i].durationMin * 60.0,
+              );
+              return;
+            }
+          }
+        }
+
+        final cursorWall = ctrl.cursorEpoch;
+        final trackingRows = <Widget>[];
+        final haveSeries = [
+          for (final s in sessions)
+            if (ctrl.trackingFor(s.path)?.series != null) s,
+        ];
+        if (haveSeries.isNotEmpty) {
+          trackingRows.add(
+            GestureDetector(
+              onTapDown: (d) => seekAt(d.localPosition.dx),
+              onHorizontalDragUpdate: (d) => seekAt(d.localPosition.dx),
+              child: SizedBox(
+                width: figW,
+                height: 64,
+                child: Stack(
+                  children: [
+                    for (var i = 0; i < sessions.length; i++)
+                      if (ctrl.trackingFor(sessions[i].path)?.series != null)
+                        Positioned.fill(
+                          child: CustomPaint(
+                            painter: TrackingSeriesPainter(
+                              series: ctrl.trackingFor(sessions[i].path)!.series!,
+                              axisStartSec: 0,
+                              axisEndSec: sessions[i].durationMin * 60.0,
+                              left: fig.lineAxes[i].left * ppi,
+                              right: fig.lineAxes[i].right * ppi,
+                              cursorSec: ctrl.sessionLocalSec(sessions[i].path),
+                            ),
+                          ),
+                        ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+
         return Container(
-          width: targetWidth,
+          width: figW,
           margin: const EdgeInsets.only(bottom: 16),
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+          padding: const EdgeInsets.fromLTRB(0, 8, 0, 10),
           decoration: BoxDecoration(
             color: _panel,
             borderRadius: BorderRadius.circular(8),
@@ -2675,67 +2832,108 @@ class _TopoStatsViewState extends State<TopoStatsView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  const Icon(Icons.graphic_eq, size: 14, color: Colors.cyanAccent),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      'Synced Audio Waveform & Envelope · ${seg.label} '
-                      '(offset ${seg.offsetSeconds.toStringAsFixed(1)} s, cursor ${ctrl.eegSec.toStringAsFixed(1)} s)',
-                      style: const TextStyle(color: _text, fontSize: 11, fontWeight: FontWeight.w600),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  IconButton(
-                    icon: Icon(ctrl.playing ? Icons.pause : Icons.play_arrow, size: 16, color: _amber),
-                    visualDensity: VisualDensity.compact,
-                    tooltip: ctrl.playing ? 'Pause media' : 'Play media',
-                    onPressed: ctrl.togglePlay,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Container(
-                height: 76,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF020617),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: LayoutBuilder(
-                  builder: (ctx, box) => GestureDetector(
-                    onTapDown: (d) {
-                      if (box.maxWidth <= 0) return;
-                      final frac = (d.localPosition.dx / box.maxWidth).clamp(0.0, 1.0);
-                      ctrl.seekToEegTime(
-                        seg.offsetSeconds + frac * seg.durationSeconds,
-                        notifyExternal: true,
-                      );
-                    },
-                    onHorizontalDragUpdate: (d) {
-                      if (box.maxWidth <= 0) return;
-                      final frac = (d.localPosition.dx / box.maxWidth).clamp(0.0, 1.0);
-                      ctrl.seekToEegTime(
-                        seg.offsetSeconds + frac * seg.durationSeconds,
-                        notifyExternal: true,
-                      );
-                    },
-                    child: CustomPaint(
-                      painter: AudioWaveformEnvelopePainter(
-                        minBins: seg.waveformMin,
-                        maxBins: seg.waveformMax,
-                        envelope: seg.envelopePreview,
-                        cursorFrac: seg.durationSeconds > 0
-                            ? ((ctrl.eegSec - seg.offsetSeconds) / seg.durationSeconds)
-                                .clamp(0.0, 1.0)
-                            : 0.0,
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    const Icon(Icons.graphic_eq, size: 14, color: Colors.cyanAccent),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Synced audio & speech tracking · aligned to the plot time axis · '
+                        'cursor ${_clockText(cursorWall)} (clock)',
+                        style: const TextStyle(
+                          color: _text,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      child: const SizedBox.expand(),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        ctrl.playing ? Icons.pause : Icons.play_arrow,
+                        size: 16,
+                        color: _amber,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      tooltip: ctrl.playing ? 'Pause media' : 'Play media',
+                      onPressed: ctrl.togglePlay,
+                    ),
+                  ],
+                ),
+              ),
+              if (unknownClock.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 2, 12, 4),
+                  child: Text(
+                    'Recording start time unknown for: ${unknownClock.join(', ')} — '
+                    'media cannot be placed on these plots.',
+                    style: const TextStyle(color: Colors.amberAccent, fontSize: 10),
+                  ),
+                ),
+              if (lanes.isEmpty && unknownClock.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(12, 2, 12, 4),
+                  child: Text(
+                    'None of the loaded media overlaps the plotted recordings.',
+                    style: TextStyle(color: Colors.amberAccent, fontSize: 10),
+                  ),
+                ),
+              for (final lane in lanes)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: GestureDetector(
+                    onTapDown: (d) => seekAt(d.localPosition.dx),
+                    onHorizontalDragUpdate: (d) => seekAt(d.localPosition.dx),
+                    child: SizedBox(
+                      width: figW,
+                      height: 60,
+                      child: Stack(
+                        children: [
+                          for (var i = 0; i < sessions.length; i++)
+                            if (lane[i] != null)
+                              Positioned.fill(
+                                child: CustomPaint(
+                                  painter: SessionAlignedAudioPainter(
+                                    minBins: lane[i]!.seg.waveformMin,
+                                    maxBins: lane[i]!.seg.waveformMax,
+                                    envelope: lane[i]!.seg.envelopePreview,
+                                    segStartSec: lane[i]!.startSec,
+                                    segDurationSec: lane[i]!.seg.durationSeconds,
+                                    axisEndSec: sessions[i].durationMin * 60.0,
+                                    left: fig.lineAxes[i].left * ppi,
+                                    right: fig.lineAxes[i].right * ppi,
+                                    cursorSec: ctrl.sessionLocalSec(sessions[i].path),
+                                    label:
+                                        '${lane[i]!.seg.isVideo ? '🎬' : '🎧'} '
+                                        '${lane[i]!.seg.audioSourceDescription} · '
+                                        '${lane[i]!.seg.alignmentSource}',
+                                  ),
+                                ),
+                              ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ),
+              ...trackingRows,
+              if (haveSeries.isEmpty && lanes.isNotEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(12, 2, 12, 0),
+                  child: Text(
+                    'Neural speech tracking time series not computed yet — click “Speech Tracking” in the toolbar.',
+                    style: TextStyle(color: _muted, fontSize: 10),
+                  ),
+                ),
+              if (_trackingMsg != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 2, 12, 0),
+                  child: Text(
+                    _trackingMsg!,
+                    style: const TextStyle(color: Colors.amberAccent, fontSize: 10),
+                  ),
+                ),
             ],
           ),
         );
@@ -2753,16 +2951,30 @@ class _TopoStatsViewState extends State<TopoStatsView> {
 }
 
 class _FigurePainter extends CustomPainter {
-  _FigurePainter(this.fig, this.ppi, {this.cursorMinutes});
+  _FigurePainter(this.fig, this.ppi, {this.sessionCursorMinutes});
   final TopoFigure fig;
   final double ppi;
-  final double? cursorMinutes;
+  final List<double?>? sessionCursorMinutes;
   @override
-  void paint(Canvas canvas, Size size) =>
-      fig.paint(canvas, ppi, cursorMinutes: cursorMinutes);
+  void paint(Canvas canvas, Size size) => fig.paint(
+    canvas,
+    ppi,
+    sessionCursorMinutes: sessionCursorMinutes,
+  );
+  static bool _sameCursors(List<double?>? a, List<double?>? b) {
+    if (identical(a, b)) return true;
+    if (a == null || b == null || a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   @override
   bool shouldRepaint(_FigurePainter old) =>
-      old.fig != fig || old.ppi != ppi || old.cursorMinutes != cursorMinutes;
+      old.fig != fig ||
+      old.ppi != ppi ||
+      !_sameCursors(old.sessionCursorMinutes, sessionCursorMinutes);
 }
 
 class _HoverPainter extends CustomPainter {

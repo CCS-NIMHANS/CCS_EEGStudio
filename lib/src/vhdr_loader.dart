@@ -567,6 +567,11 @@ class VhdrLoader {
     );
 
     final provenance = <String, dynamic>{};
+    // Wall-clock start of the recording (BrainVision "New Segment" marker), kept in
+    // provenance so cleaned copies and feature files can still be synced to video/audio.
+    final startIso = _recordingStartIso(resolution.resolvedMarkerPath ??
+        vhdrPath.replaceAll(RegExp(r'\.vhdr$', caseSensitive: false), '.vmrk'));
+    if (startIso != null) provenance['recording_start_iso'] = startIso;
     if (resolution.issues.isNotEmpty) {
       provenance['vhdr_mapping_issues'] = [
         for (final issue in resolution.issues) issue.toJson(),
@@ -584,6 +589,24 @@ class VhdrLoader {
       markers: markers,
       provenance: provenance,
     );
+  }
+
+  /// Local wall-clock start ("YYYY-MM-DDThh:mm:ss.uuuuuu", no zone) from the
+  /// `New Segment` marker of a `.vmrk`, or null when absent.
+  String? _recordingStartIso(String vmrkPath) {
+    try {
+      final f = File(vmrkPath);
+      if (!f.existsSync()) return null;
+      final m = RegExp(r'New Segment[^\r\n]*?,(\d{14})(\d{0,6})\s*$', multiLine: true)
+          .firstMatch(f.readAsStringSync());
+      if (m == null) return null;
+      final t = m.group(1)!;
+      final us = (m.group(2) ?? '').padRight(6, '0');
+      return '${t.substring(0, 4)}-${t.substring(4, 6)}-${t.substring(6, 8)}'
+          'T${t.substring(8, 10)}:${t.substring(10, 12)}:${t.substring(12, 14)}.$us';
+    } catch (_) {
+      return null;
+    }
   }
 
   List<EegMarker> _loadVmrk(

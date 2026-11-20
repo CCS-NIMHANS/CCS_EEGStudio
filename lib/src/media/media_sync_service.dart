@@ -27,6 +27,12 @@ class SyncedMediaSegment {
   String? extractedWavPath;
   final String timestampSource;
 
+  String? _alignmentOverride;
+
+  /// Short label of how the clock alignment was obtained (file name, auto-aligned, manual…).
+  String get alignmentSource => _alignmentOverride ?? timestampSource;
+  set alignmentSource(String v) => _alignmentOverride = v;
+
   /// How the alignment was obtained, e.g. "start time from file name" or
   /// "auto-aligned to video audio (r=0.62, z=11)". Shown next to the envelope.
   String syncNote;
@@ -201,7 +207,11 @@ class MediaSyncService {
   /// its cleaned copy, or a feature CSV. Follows `.ccshistory` `source_path`
   /// links back to the original BrainVision file. Returns the time and how it
   /// was obtained; never guesses from file modification times.
-  static Future<(DateTime?, String)> resolveStartForPath(String path, {int depth = 0}) async {
+  static Future<(DateTime?, String)> resolveStartForPath(
+    String path, {
+    int depth = 0,
+    List<String> extraRoots = const [],
+  }) async {
     if (depth > 6) return (null, 'unknown');
     final lower = path.toLowerCase();
 
@@ -226,7 +236,7 @@ class MediaSyncService {
 
     // 2. Cleaned recording / feature CSV: sidecar provenance
     final rec = lower.endsWith('.features.csv') ? findRecordingForFeatures(path) : path;
-    for (final base in <String>{path, if (rec != null) rec}) {
+    for (final base in <String>{path, ?rec}) {
       for (final sc in ['$base.ccshistory', '$base.ccsmeta', '$base.json.ccshistory']) {
         final f = File(sc);
         if (!await f.exists()) continue;
@@ -250,7 +260,62 @@ class MediaSyncService {
     // 3. Full date+time in the file name (YYYYMMDD_HHMMSS etc.)
     final fromName = parseTimestampFromFilename(path);
     if (fromName != null) return (fromName, 'file name');
+
+    // 4. Last resort: find the original BrainVision .vmrk with the same recording
+    //    name in nearby folders (cleaned files are often moved away from the raw data).
+    if (depth == 0) {
+      final key = stemKey(path);
+      final roots = <String>[
+        ..._ancestors(path, 3),
+        for (final e in extraRoots) ..._ancestors(e, 3),
+      ];
+      final f = await _findVmrkByStem(key, roots);
+      if (f != null) {
+        try {
+          final dt = parseVmrkStart(await f.readAsString());
+          if (dt != null) {
+            return (dt, 'matching EEG marker file ${f.path.split(RegExp(r'[\\/]')).last}');
+          }
+        } catch (_) {}
+      }
+    }
     return (null, 'unknown');
+  }
+
+  static List<String> _ancestors(String path, int levels) {
+    final out = <String>[];
+    var dir = File(path).parent;
+    for (var i = 0; i < levels; i++) {
+      out.add(dir.path);
+      final up = dir.parent;
+      if (up.path == dir.path) break;
+      dir = up;
+    }
+    return out;
+  }
+
+  static Future<File?> _findVmrkByStem(String key, Iterable<String> roots) async {
+    final seen = <String>{};
+    var budget = 20000;
+    for (final root in roots) {
+      final queue = <(Directory, int)>[(Directory(root), 0)];
+      while (queue.isNotEmpty && budget > 0) {
+        final (dir, depth) = queue.removeAt(0);
+        if (!seen.add(dir.path)) continue;
+        try {
+          await for (final e in dir.list(followLinks: false)) {
+            budget--;
+            final name = e.path.split(RegExp(r'[\\/]')).last;
+            if (name.startsWith('.')) continue;
+            if (e is File && name.toLowerCase().endsWith('.vmrk') && stemKey(e.path) == key) {
+              return e;
+            }
+            if (e is Directory && depth < 4) queue.add((e, depth + 1));
+          }
+        } catch (_) {}
+      }
+    }
+    return null;
   }
 
   static String? _findIso(Map meta, int depth) {
