@@ -1427,23 +1427,66 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         return;
       }
 
-      if (mounted) {
-        setState(
-          () => _status =
-              'Loading ${candidates.length} saved ERP file(s) from $dirPath…',
-        );
+      var paths = candidates;
+      final perFile = candidates.where((p) {
+        final name = p.split(RegExp(r'[\\/]')).last.toLowerCase();
+        return name != 'erp_results.ccserp' && name != 'erp_results.json';
+      }).toList();
+      if (perFile.isNotEmpty) {
+        paths = perFile;
       }
-      final res = await Isolate.run(() => loadErpFolderInWorker(candidates));
-      if (!mounted) return;
 
-      if (res.loadedFiles == 0 || res.merged.isEmpty) {
+      final multi = paths.length > 1;
+      final resultsList = <Map<String, dynamic>>[];
+      const batchSize = 64;
+      for (var start = 0; start < paths.length; start += batchSize) {
+        final end = math.min(start + batchSize, paths.length);
+        final batch = paths.sublist(start, end);
+        if (mounted) {
+          setState(() {
+            _progress = start / paths.length;
+            _status =
+                'Loading saved ERP results: $start / ${paths.length} file(s)…';
+          });
+        }
+        final workers = math.min(8, math.max(1, batch.length));
+        final subSize = (batch.length / workers).ceil();
+        final chunks = <List<String>>[];
+        for (var i = 0; i < batch.length; i += subSize) {
+          chunks.add(batch.sublist(i, math.min(i + subSize, batch.length)));
+        }
+        final decoded = await Future.wait([
+          for (final c in chunks)
+            Isolate.run(
+              () => _decodeErpChunkInWorker((paths: c, stripGroups: multi)),
+            ),
+        ]);
+        for (final d in decoded) {
+          resultsList.addAll(d);
+        }
+      }
+      if (!mounted) return;
+      if (resultsList.isEmpty) {
         setState(
           () => _status = 'No valid ccs-erp-workbench-v1 files in $dirPath',
         );
         return;
       }
-
-      final merged = res.merged;
+      setState(() {
+        _progress = 0.95;
+        _status = 'Merging ${resultsList.length} saved ERP recording(s)…';
+      });
+      final merged = await Isolate.run(
+        () => _ErpWorkbenchViewState.mergeErpResults(resultsList),
+      );
+      if (!mounted) return;
+      if (merged.isEmpty) {
+        setState(
+          () => _status = 'No valid ccs-erp-workbench-v1 files in $dirPath',
+        );
+        return;
+      }
+      final loadedCount = resultsList.length;
       final loadedPaths = [
         for (final f in (merged['files'] as List? ?? []))
           if (f is Map && (f['path']?.toString().isNotEmpty ?? false))
@@ -1462,7 +1505,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         }
         final nF = (merged['files'] as List? ?? []).length;
         _status =
-            'Loaded $nF recording(s) from ${res.loadedFiles} ERP file(s) in $dirPath.';
+            'Loaded $nF recording(s) from $loadedCount ERP file(s) in $dirPath.';
       });
     } catch (e) {
       if (mounted) setState(() => _status = 'Error loading ERP folder: $e');
@@ -3774,6 +3817,37 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     icon: const Icon(Icons.stop_circle, size: 15),
                     label: const Text('Cancel', style: TextStyle(fontSize: 11)),
                     style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                  ),
+                ],
+              ),
+            ),
+          if (!_busy &&
+              (_status.startsWith('Error') ||
+                  _status.startsWith('No ') ||
+                  _status.startsWith('Loaded ')))
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              color: _status.startsWith('Loaded ')
+                  ? const Color(0xFF064E3B).withValues(alpha: 0.45)
+                  : const Color(0xFF7F1D1D).withValues(alpha: 0.45),
+              child: Row(
+                children: [
+                  Icon(
+                    _status.startsWith('Loaded ')
+                        ? Icons.check_circle_outline
+                        : Icons.error_outline,
+                    size: 14,
+                    color: _status.startsWith('Loaded ')
+                        ? Colors.greenAccent
+                        : Colors.amberAccent,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _status,
+                      style: const TextStyle(fontSize: 11, color: Colors.white),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),

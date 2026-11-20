@@ -63,7 +63,7 @@ Future<String?> pickDirectorySafe({
     return await FilePicker.getDirectoryPath(
       dialogTitle: dialogTitle,
       initialDirectory: initialDir,
-      lockParentWindow: true,
+      lockParentWindow: !Platform.isMacOS,
     );
   } finally {
     _directoryPickerBusy = false;
