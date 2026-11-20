@@ -53,27 +53,62 @@ class ErpConditionConfig {
   }
 }
 
+/// Top-level worker to read & decode a small batch of `.ccserp` / `erp_results.json`
+/// files off the UI isolate without capturing Flutter `State` or `BuildContext`.
+Future<List<Map<String, dynamic>>> _decodeErpChunkInWorker(
+  ({List<String> paths, bool stripGroups}) args,
+) async {
+  final out = <Map<String, dynamic>>[];
+  for (final p in args.paths) {
+    try {
+      final content = await File(p).readAsString();
+      final val = Map<String, dynamic>.from(jsonDecode(content) as Map);
+      if (val['schema'] == 'ccs-erp-workbench-v1') {
+        if (args.stripGroups) {
+          // mergeErpResults recomputes grand-average groups from `files`, so
+          // dropping per-file `groups` avoids holding duplicate wave arrays.
+          val.remove('groups');
+        }
+        out.add(val);
+      }
+    } catch (_) {}
+  }
+  return out;
+}
+
 /// Top-level worker to read, decode, and merge saved `.ccserp` / `erp_results.json`
 /// files off the UI isolate without capturing Flutter `State` or `BuildContext`.
 Future<({Map<String, dynamic> merged, int loadedFiles})> loadErpFolderInWorker(
   List<String> candidatePaths,
 ) async {
-  final resultsList = <Map<String, dynamic>>[];
-  final multi = candidatePaths.length > 1;
-  for (final p in candidatePaths) {
-    try {
-      final content = await File(p).readAsString();
-      final val = Map<String, dynamic>.from(jsonDecode(content) as Map);
-      if (val['schema'] == 'ccs-erp-workbench-v1') {
-        if (multi) {
-          // mergeErpResults recomputes grand-average groups from `files`, so
-          // dropping per-file `groups` avoids holding duplicate wave arrays.
-          val.remove('groups');
-        }
-        resultsList.add(val);
-      }
-    } catch (_) {}
+  // If a folder contains both a combined `erp_results.ccserp` (which can be
+  // hundreds of MB) AND per-recording `*_erp_results.ccserp` files, load the
+  // per-recording files in parallel instead of decoding the huge combined file
+  // on top of them.
+  var paths = candidatePaths;
+  final perFile = candidatePaths.where((p) {
+    final name = p.split(RegExp(r'[\\/]')).last.toLowerCase();
+    return name != 'erp_results.ccserp' && name != 'erp_results.json';
+  }).toList();
+  if (perFile.isNotEmpty) {
+    paths = perFile;
   }
+  final multi = paths.length > 1;
+  final workers = math.min(8, math.max(1, paths.length));
+  final chunkSize = (paths.length / workers).ceil();
+  final chunks = <List<String>>[];
+  for (var i = 0; i < paths.length; i += chunkSize) {
+    chunks.add(
+      paths.sublist(i, math.min(i + chunkSize, paths.length)),
+    );
+  }
+  final decodedChunks = await Future.wait([
+    for (final c in chunks)
+      Isolate.run(() => _decodeErpChunkInWorker((paths: c, stripGroups: multi))),
+  ]);
+  final resultsList = <Map<String, dynamic>>[
+    for (final chunk in decodedChunks) ...chunk,
+  ];
   if (resultsList.isEmpty) {
     return (merged: <String, dynamic>{}, loadedFiles: 0);
   }

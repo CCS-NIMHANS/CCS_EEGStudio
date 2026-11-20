@@ -84,4 +84,33 @@ void main() {
     expect(find.text('Load Saved ERP Folder…'), findsOneWidget);
     expect(find.text('Group Statistics'), findsOneWidget);
   });
+
+  test('loads real TestBin_20261119 ccserp files via loadErpFolderInWorker', () async {
+    const dirPath = '/Volumes/CCS Storage/CCS_UserFolders/neethi/SKYMeditation_2026/AOBD_Analysis/TestBin_20261119';
+    final dir = Directory(dirPath);
+    if (!dir.existsSync()) return;
+    final entries = await dir
+        .list(recursive: false, followLinks: false)
+        .where((e) => e is File)
+        .cast<File>()
+        .toList();
+    final candidates = entries
+        .where((f) {
+          final lower = f.path.toLowerCase();
+          return lower.endsWith('.ccserp') ||
+              (lower.endsWith('.json') && lower.contains('erp_results'));
+        })
+        .map((f) => f.path)
+        .toList()
+      ..sort();
+    // ignore: avoid_print
+    print('Found ${candidates.length} candidates');
+    final sw = Stopwatch()..start();
+    final res = await Isolate.run(() => loadErpFolderInWorker(candidates));
+    sw.stop();
+    // ignore: avoid_print
+    print('Loaded ${res.loadedFiles} files in ${sw.elapsedMilliseconds} ms');
+    expect(res.loadedFiles, greaterThan(0));
+    expect((res.merged['files'] as List).length, greaterThan(0));
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }
