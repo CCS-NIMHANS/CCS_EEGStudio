@@ -601,6 +601,11 @@ class _AmplitudeLegend extends StatelessWidget {
             '${rms ? '0' : (-limit).toStringAsPrecision(3)} $unit',
             style: const TextStyle(fontSize: 10),
           ),
+          if (!rms)
+            const Text(
+              '0',
+              style: TextStyle(fontSize: 10, color: Colors.white70),
+            ),
           Text(
             '${limit.toStringAsPrecision(3)} $unit',
             style: const TextStyle(fontSize: 10),
@@ -708,45 +713,46 @@ class _GlassBrain extends StatelessWidget {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, box) {
-      final width = compact ? box.maxWidth / 2 : box.maxWidth / 3,
-          height = compact ? box.maxHeight / 2 : box.maxHeight;
-      return Wrap(
+      final width = box.maxWidth / 3,
+          height = box.maxHeight;
+      return Row(
         children: [
           for (var view = 0; view < 3; view++)
-            SizedBox(
-              width: width,
-              height: height,
-              child: GestureDetector(
-                onTapDown: (d) {
-                  String? nearest;
-                  double distance = double.infinity;
-                  for (final region in (atlas['regions'] as List).cast<Map>()) {
-                    final name = region['name'] as String;
-                    if (!labels.contains(name)) continue;
-                    final point = _project(
-                      (region['centers'] as List)[view] as List,
-                      Size(width, height),
-                    );
-                    final delta = (point - d.localPosition).distance;
-                    if (delta < distance) {
-                      distance = delta;
-                      nearest = name;
+            Expanded(
+              child: SizedBox(
+                height: height,
+                child: GestureDetector(
+                  onTapDown: (d) {
+                    String? nearest;
+                    double distance = double.infinity;
+                    for (final region in (atlas['regions'] as List).cast<Map>()) {
+                      final name = region['name'] as String;
+                      if (!labels.contains(name)) continue;
+                      final point = _project(
+                        (region['centers'] as List)[view] as List,
+                        Size(width, height),
+                      );
+                      final delta = (point - d.localPosition).distance;
+                      if (delta < distance) {
+                        distance = delta;
+                        nearest = name;
+                      }
                     }
-                  }
-                  if (nearest != null && distance < 25) onSelect(nearest);
-                },
-                child: CustomPaint(
-                  painter: _BrainPainter(
-                    atlas,
-                    view,
-                    labels,
-                    values,
-                    colors,
-                    chosen,
-                    limit,
-                    rms,
+                    if (nearest != null && distance < 25) onSelect(nearest);
+                  },
+                  child: CustomPaint(
+                    painter: _BrainPainter(
+                      atlas,
+                      view,
+                      labels,
+                      values,
+                      colors,
+                      chosen,
+                      limit,
+                      rms,
+                    ),
+                    child: const SizedBox.expand(),
                   ),
-                  child: const SizedBox.expand(),
                 ),
               ),
             ),
@@ -816,24 +822,26 @@ class _BrainPainter extends CustomPainter {
     for (final r in (atlas['regions'] as List).cast<Map>()) {
       final name = r['name'] as String, idx = labels.indexOf(name);
       if (idx < 0) continue;
-      final selected = chosen.isEmpty || chosen.contains(name),
-          color = colors[name] ?? Colors.grey;
+      final isExplicit = chosen.contains(name);
+      final selected = chosen.isEmpty || isExplicit;
       for (final points in (r['outlines'] as List)[view] as List) {
         line(
           points as List,
           Paint()
             ..style = PaintingStyle.stroke
-            ..color = color.withValues(alpha: selected ? 0.65 : 0.08)
-            ..strokeWidth = chosen.contains(name) ? 1.7 : .6,
+            ..color = Colors.white.withValues(alpha: isExplicit ? 0.38 : 0.09)
+            ..strokeWidth = isExplicit ? 1.2 : 0.5,
         );
       }
       if (selected) {
         final amount = (values[idx] / limit).clamp(-1.0, 1.0);
+        // Hide near-zero nodes (<25% of scale limit) so only prominent activations stand out.
+        if (!isExplicit && amount.abs() < 0.25) continue;
         final activity = _amplitudeColor(values[idx], limit, rms);
         canvas.drawCircle(
           _project((r['centers'] as List)[view] as List, size),
-          3 + amount.abs() * 4,
-          Paint()..color = activity.withValues(alpha: .75),
+          2.5 + amount.abs() * 4.5,
+          Paint()..color = activity.withValues(alpha: 0.85),
         );
       }
     }

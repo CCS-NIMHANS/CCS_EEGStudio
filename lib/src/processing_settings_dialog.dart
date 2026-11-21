@@ -286,11 +286,58 @@ Future<bool> showProcessingSettings(
                     title: const Text('GEDAI · optional additional cleaning'),
                     initiallyExpanded: section == 'GEDAI',
                     children: [
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: const [
+                          'auto-',
+                          'auto',
+                          'auto+',
+                          '0.5',
+                          '1.0',
+                          '2.0',
+                          '3.0',
+                          '5.0',
+                          '8.0',
+                        ].contains(gedaiThreshold.text.trim())
+                            ? gedaiThreshold.text.trim()
+                            : 'custom',
+                        decoration: const InputDecoration(
+                          labelText: 'GEDAI threshold preset',
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'auto-',
+                            child: Text('Gentle (auto- · ~99th pct, conservative)'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'auto',
+                            child: Text('Standard (auto · ~95th pct, balanced)'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'auto+',
+                            child: Text('Strong (auto+ · ~90th pct, aggressive)'),
+                          ),
+                          DropdownMenuItem(value: '0.5', child: Text('Numeric: 0.5 SD')),
+                          DropdownMenuItem(value: '1.0', child: Text('Numeric: 1.0 SD')),
+                          DropdownMenuItem(value: '2.0', child: Text('Numeric: 2.0 SD')),
+                          DropdownMenuItem(value: '3.0', child: Text('Numeric: 3.0 SD')),
+                          DropdownMenuItem(value: '5.0', child: Text('Numeric: 5.0 SD')),
+                          DropdownMenuItem(value: '8.0', child: Text('Numeric: 8.0 SD')),
+                          DropdownMenuItem(value: 'custom', child: Text('Custom numeric (0–12)…')),
+                        ],
+                        onChanged: (v) {
+                          if (v == null) return;
+                          setState(() {
+                            gedaiThreshold.text = v == 'custom' ? '1.5' : v;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
                       field(
                         gedaiThreshold,
-                        'GEDAI threshold',
+                        'GEDAI threshold value (0–12 or auto-/auto/auto+)',
                         help:
-                            'auto- is the less aggressive automatic mode. GEDAI is an additional cleaner after ICA/ASR; no mode guarantees preservation of neural activity.',
+                            'Choose a preset above or enter a numeric threshold (0–12 SD; lower = stronger cleaning).',
                       ),
                       const Text(
                         'Disabled in new configurations. Existing saved choices are retained. Compare with GEDAI off before accepting strong power reductions: the alpha-power warning measures signal change, not artifact-removal accuracy. Saved event trials retain their own boundaries.',
@@ -358,6 +405,14 @@ Future<bool> showProcessingSettings(
                         'ICA cleaning (choose the algorithm in the Preprocessing panel)',
                         style: TextStyle(fontWeight: FontWeight.w600),
                       ),
+                      const Padding(
+                        padding: EdgeInsets.only(top: 4, bottom: 6),
+                        child: Text(
+                          'Decomposition copy high-pass filter: 1.0 Hz FIR (reuses main filter if ≥ 1.0 Hz). '
+                          'Stage 2 safety caps: stops if >10% of components or >30% of signal variance would be removed.',
+                          style: TextStyle(fontSize: 11, color: Colors.white70),
+                        ),
+                      ),
                       CheckboxListTile(
                         dense: true,
                         contentPadding: EdgeInsets.zero,
@@ -412,16 +467,16 @@ Future<bool> showProcessingSettings(
                         field(icaOtherLo, 'Component threshold (floor)'),
                         field(
                           icaFitCutoff,
-                          'ASR cutoff for the ICA fit copy (SD)',
+                          'Bad segment removal cutoff for the ICA fit copy (SD)',
                           help:
-                              'MATLAB ica2_BurstCriterion (default 15); burst and window rejection apply to this copy only.',
+                              'ASR-based burst and bad-segment rejection (MATLAB ica2_BurstCriterion, default 15 SD) applied to the 1 Hz ICA fit copy only.',
                         ),
                         CheckboxListTile(
                           dense: true,
                           contentPadding: EdgeInsets.zero,
-                          title: const Text('Fit ICA on ASR-cleaned data'),
+                          title: const Text('Fit ICA after bad segment removal (ASR)'),
                           subtitle: const Text(
-                            'As the MATLAB pipeline: bursts are rejected from the copy ICA is fitted on only.',
+                            'As the MATLAB pipeline: bursts/bad segments are rejected from the 1 Hz copy ICA is fitted on only.',
                           ),
                           value: icaFitAsr,
                           onChanged: (v) => setState(() => icaFitAsr = v!),
@@ -518,10 +573,18 @@ Future<bool> showProcessingSettings(
                         child: Text('sLORETA (resolution-normalized)'),
                       ),
                       DropdownMenuItem(
+                        value: 'eloreta',
+                        child: Text('eLORETA (exact zero-localization-error)'),
+                      ),
+                      DropdownMenuItem(
                         value: 'lcmv',
                         child: Text(
                           'LCMV (unit gain; 5% covariance regularization)',
                         ),
+                      ),
+                      DropdownMenuItem(
+                        value: 'xpikan',
+                        child: Text('XPIKAN (3-shell Physics-Informed NN)'),
                       ),
                     ],
                     onChanged: (v) => setState(() => sourceMethod = v!),
@@ -554,7 +617,56 @@ Future<bool> showProcessingSettings(
                   field(
                     snr,
                     'Inverse regularization SNR',
-                    help: 'Positive value; default 3.',
+                    help: 'Positive value; default 3 (λ² = 1/SNR²).',
+                  ),
+                  Builder(
+                    builder: (_) {
+                      final snrVal = double.tryParse(snr.text.trim()) ?? 3.0;
+                      final lambda2 = snrVal > 0 ? (1.0 / (snrVal * snrVal)) : 0.111;
+                      final customModel = sourceModel.text.trim();
+                      final fwdLabel = sourceMethod == 'xpikan'
+                          ? 'XPIKAN 3-shell PINN (concentric spherical)'
+                          : customModel.isEmpty
+                              ? 'MNE fsaverage 3-shell BEM'
+                              : 'Custom JSON (${customModel.split(RegExp(r"[\\/]")).last})';
+                      final atlasLabel = customModel.isEmpty
+                          ? 'Desikan-Killiany 68 cortical ROIs (DK68)'
+                          : 'Custom atlas from JSON';
+                      final covLabel = sourceMethod == 'lcmv'
+                          ? 'Data covariance (5% trace regularization)'
+                          : 'Identity noise covariance';
+                      return Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(top: 8, bottom: 8),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.white12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Publication Model Specification',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.cyanAccent,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Forward model: $fwdLabel\n'
+                              'Conductivities: Brain 0.33 S/m · Skull 0.0042 S/m · Scalp 0.33 S/m (radii 0.87 / 0.92 / 1.00)\n'
+                              'Atlas map: $atlasLabel\n'
+                              'Inverse: ${sourceMethod.toUpperCase()} · fixed surface-normal orientations · SNR $snrVal (λ² = ${lambda2.toStringAsFixed(4)}) · $covLabel',
+                              style: const TextStyle(fontSize: 10.5, color: Colors.white70, height: 1.35),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                   if (sourceModel.text.trim().isEmpty)
                     ExpansionTile(

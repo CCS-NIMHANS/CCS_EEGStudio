@@ -110,6 +110,43 @@ pub fn inverse_operator_with_coords(
         };
         return xpikan_inverse_operator(l, data, snr, coords);
     }
+    if method == "eloreta" {
+        // Exact Low-Resolution Brain Electromagnetic Tomography (Pascual-Marqui, 2007)
+        // Fixed-point iteration for scalar source weights w_i = sqrt(L_i^T M L_i)
+        // where M = (L W^{-1} L^T + alpha I)^{-1}.
+        let p = l.ncols();
+        let mut weights = vec![1.0_f64; p];
+        let mut last_m = DMatrix::identity(m, m);
+        for _iter in 0..20 {
+            let mut gw = DMatrix::zeros(m, m);
+            for i in 0..p {
+                let inv_w = 1.0 / weights[i].max(1e-12);
+                let col = l.column(i);
+                gw += (&col * col.transpose()) * inv_w;
+            }
+            gw += DMatrix::identity(m, m) * alpha;
+            let inv_m = gw.try_inverse().ok_or("eLORETA Gram matrix is singular")?;
+            let mut max_rel = 0.0_f64;
+            for i in 0..p {
+                let col = l.column(i);
+                let val = (col.transpose() * &inv_m * col)[(0, 0)].max(1e-12).sqrt();
+                let rel = (val - weights[i]).abs() / weights[i].max(1e-12);
+                if rel > max_rel {
+                    max_rel = rel;
+                }
+                weights[i] = val;
+            }
+            last_m = inv_m;
+            if max_rel < 1e-5 {
+                break;
+            }
+        }
+        let mut w = l.transpose() * &last_m;
+        for i in 0..p {
+            w.row_mut(i).scale_mut(1.0 / weights[i].max(1e-12));
+        }
+        return Ok(w);
+    }
     if !["mne", "dspm", "sloreta"].contains(&method) {
         return Err(format!("Unknown inverse method: {method}"));
     }
@@ -402,5 +439,52 @@ mod tests {
         assert_eq!(rois.len(), 68);
         assert_eq!(roi_labels.len(), 68);
         assert!(rois.iter().flat_map(|c| c.iter()).all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn eloreta_inverse_localizes_synthetic_dipole_cleanly() {
+        let m = 16_usize;
+        let n_dip = 12_usize;
+        let coords: Vec<[f64; 3]> = (0..m)
+            .map(|i| {
+                let phi = 2.0 * std::f64::consts::PI * (i as f64 / m as f64);
+                let z = ((i % 4) as f64 - 1.5) * 0.45;
+                let r_xy = (1.0 - z * z).max(0.1).sqrt();
+                [r_xy * phi.cos(), r_xy * phi.sin(), z]
+            })
+            .collect();
+        let dip_pos: Vec<[f64; 3]> = (0..n_dip)
+            .map(|d| {
+                let phi = 2.0 * std::f64::consts::PI * (d as f64 / n_dip as f64);
+                [0.65 * phi.cos(), 0.65 * phi.sin(), if d % 2 == 0 { 0.35 } else { -0.35 }]
+            })
+            .collect();
+        let l = DMatrix::from_fn(m, n_dip, |r, c| {
+            let dx = coords[r][0] - dip_pos[c][0];
+            let dy = coords[r][1] - dip_pos[c][1];
+            let dz = coords[r][2] - dip_pos[c][2];
+            let d2 = (dx * dx + dy * dy + dz * dz).max(0.05);
+            (coords[r][0] * dip_pos[c][0] + coords[r][1] * dip_pos[c][1] + coords[r][2] * dip_pos[c][2])
+                / (d2 * d2.sqrt())
+        });
+        let target_dip = 4_usize;
+        let n_samp = 80_usize;
+        let data = DMatrix::from_fn(m, n_samp, |r, t| {
+            let s = (2.0 * std::f64::consts::PI * 10.0 * t as f64 / 200.0).sin();
+            l[(r, target_dip)] * 10.0 * s
+        });
+        let w = inverse_operator_with_coords(&l, &data, 5.0, "eloreta", Some(&coords)).unwrap();
+        assert_eq!(w.nrows(), n_dip);
+        assert_eq!(w.ncols(), m);
+        assert!(w.iter().all(|v| v.is_finite()));
+        let s_est = &w * &data;
+        let powers: Vec<f64> = (0..n_dip).map(|d| s_est.row(d).norm_squared()).collect();
+        let peak_dip = powers
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .unwrap()
+            .0;
+        assert_eq!(peak_dip, target_dip);
     }
 }

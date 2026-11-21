@@ -86,6 +86,50 @@ class _IcaReviewState extends State<_IcaReview> {
     final values = [
       for (final row in mixing) ((row as List)[ic] as num).toDouble(),
     ];
+
+    String majorLabel(int idx) {
+      if (idx >= probabilities.length || classes.isEmpty) return 'IC ${idx + 1}';
+      final row = (probabilities[idx] as List)
+          .map((v) => (v as num).toDouble())
+          .toList();
+      var bestIdx = 0;
+      for (var j = 1; j < row.length && j < classes.length; j++) {
+        if (row[j] > row[bestIdx]) bestIdx = j;
+      }
+      return '${classes[bestIdx]} ${(row[bestIdx] * 100).toStringAsFixed(0)}%';
+    }
+
+    double? stageVarianceLostPct() {
+      if (count == 0 || mixing.isEmpty) return null;
+      var totalVar = 0.0;
+      var removedVar = 0.0;
+      for (var k = 0; k < count; k++) {
+        var colNorm2 = 0.0;
+        for (final row in mixing) {
+          final list = row as List;
+          if (k < list.length) {
+            final v = (list[k] as num).toDouble();
+            colNorm2 += v * v;
+          }
+        }
+        var traceVar = 1.0;
+        if (k < traces.length && traces[k] is List && (traces[k] as List).isNotEmpty) {
+          final tr = (traces[k] as List).map((v) => (v as num).toDouble()).toList();
+          final mean = tr.reduce((a, b) => a + b) / tr.length;
+          traceVar = tr.fold<double>(0.0, (s, v) => s + (v - mean) * (v - mean)) / tr.length;
+        }
+        final compVar = colNorm2 * traceVar;
+        totalVar += compVar;
+        if (removed.contains(k + 1)) removedVar += compVar;
+      }
+      if (totalVar <= 0) return null;
+      return (100.0 * removedVar / totalVar).clamp(0.0, 100.0);
+    }
+
+    final totalRemovedBoth =
+        (_map(report['blink_stage'])['removed'] as List? ?? []).length +
+        (_map(report['other_stage'])['removed'] as List? ?? []).length;
+    final varLost = stageVarianceLostPct();
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -110,7 +154,20 @@ class _IcaReviewState extends State<_IcaReview> {
             'Inspect retained and removed components. ICLabel scores are model estimates; review the map and trace together.',
           ),
           icaOcularDiagnostic(widget.recording),
-          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(
+              'Total removed (all stages): $totalRemovedBoth component(s) · '
+              'This stage: ${removed.length}/$count removed'
+              '${varLost == null ? '' : ' · ~${varLost.toStringAsFixed(1)}% signal variance removed'}',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.cyanAccent,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
           SegmentedButton<String>(
             segments: const [
               ButtonSegment(
@@ -148,20 +205,30 @@ class _IcaReviewState extends State<_IcaReview> {
                     width: 160,
                     child: ListView.builder(
                       itemCount: count,
-                      itemBuilder: (_, i) => ListTile(
-                        selected: i == ic,
-                        title: Text('IC ${i + 1}'),
-                        subtitle: Text(
-                          removed.contains(i + 1) ? 'Removed' : 'Retained',
-                        ),
-                        leading: Icon(
-                          removed.contains(i + 1)
-                              ? Icons.remove_circle_outline
-                              : Icons.check_circle_outline,
-                          size: 18,
-                        ),
-                        onTap: () => setState(() => component = i),
-                      ),
+                      itemBuilder: (_, i) {
+                        final isRemoved = removed.contains(i + 1);
+                        return ListTile(
+                          selected: i == ic,
+                          title: Text('IC ${i + 1}'),
+                          subtitle: Text(
+                            majorLabel(i),
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: isRemoved ? Colors.redAccent : null,
+                            ),
+                          ),
+                          leading: Icon(
+                            isRemoved
+                                ? Icons.cancel
+                                : Icons.check_circle,
+                            color: isRemoved
+                                ? Colors.redAccent
+                                : Colors.greenAccent,
+                            size: 18,
+                          ),
+                          onTap: () => setState(() => component = i),
+                        );
+                      },
                     ),
                   ),
                   const VerticalDivider(),

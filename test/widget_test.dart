@@ -196,8 +196,22 @@ void main() {
 
     await tester.tap(find.text('Preprocess'));
     await tester.pumpAndSettle();
-    expect(find.text('CHANNEL TYPES'), findsOneWidget);
-    await tester.tap(find.text('CHANNEL TYPES'));
+    final prepOpts = find.text('Preprocessing Options', skipOffstage: false);
+    if (prepOpts.evaluate().isNotEmpty) {
+      await tester.ensureVisible(prepOpts);
+      await tester.tap(prepOpts);
+      await tester.pumpAndSettle();
+    }
+    final setupFinder = find.text('1. Channel setup & montage', skipOffstage: false);
+    if (setupFinder.evaluate().isNotEmpty) {
+      await tester.ensureVisible(setupFinder);
+      await tester.tap(setupFinder);
+      await tester.pumpAndSettle();
+    }
+    final typesFinder = find.text('CHANNEL TYPES', skipOffstage: false);
+    await tester.ensureVisible(typesFinder);
+    expect(typesFinder, findsOneWidget);
+    await tester.tap(typesFinder);
     await tester.pumpAndSettle();
     expect(
       find.text('Load a recording to detect channel types.'),

@@ -28,6 +28,7 @@ import 'vhdr_loader.dart' show VhdrMappingIssue, repairVhdrMapping;
 
 import 'channel_types.dart';
 import 'topostats/mne_constants.dart';
+import 'topostats/topo_interp.dart' show isStandard1020Channel, topoPositions;
 import 'eeg_viewer.dart';
 import 'extraction_service.dart';
 import 'media/media_sync_service.dart';
@@ -3120,6 +3121,73 @@ class _FeatureHomeState extends State<FeatureHome>
       _batchChannels == null
       ? r
       : _batchChannels!.apply(await RecordingLoader().loadFull(r));
+  /// Standard EGI HydroCel GSN 128/64 -> 10-20 equivalent mapping for common fiducial sites.
+  static const Map<String, String> _kEgiTo1020 = {
+    'E22': 'Fp1', 'E9': 'Fp2', 'E11': 'Fz', 'E24': 'F3', 'E124': 'F4',
+    'E33': 'F7', 'E122': 'F8', 'E36': 'C3', 'E104': 'C4', 'E45': 'T7',
+    'E108': 'T8', 'E52': 'P3', 'E92': 'P4', 'E58': 'P7', 'E96': 'P8',
+    'E62': 'Pz', 'E70': 'O1', 'E83': 'O2', 'E129': 'Cz', 'VREF': 'Cz',
+    'E57': 'LM', 'E100': 'RM',
+  };
+
+  Widget _channelHeadmapPreview(List<String> labels, {double height = 170}) {
+    final located = <String>[];
+    final unlocated = <String>[];
+    for (final raw in labels) {
+      final name = raw.trim();
+      if (name.isEmpty) continue;
+      if (isStandard1020Channel(name)) {
+        located.add(name);
+      } else {
+        unlocated.add(name);
+      }
+    }
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A1628),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.radar, size: 13, color: _accentGreen),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  'Headmap: ${located.length} plotted · ${unlocated.length} unlocated',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: height,
+            child: CustomPaint(
+              painter: _ChannelHeadmapPainter(located),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          if (unlocated.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Cannot plot (${unlocated.length}): ${unlocated.take(10).join(', ')}${unlocated.length > 10 ? '…' : ''}',
+              style: const TextStyle(fontSize: 10, color: Colors.amberAccent),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Future<void> _editBatchChannels([String? example]) async {
     final files = {..._batchPrepFiles, ..._batchFeatFiles}.toList();
     if (files.isEmpty) {
@@ -3142,11 +3210,9 @@ class _FeatureHomeState extends State<FeatureHome>
         label: TextEditingController(
           text:
               _batchChannels?.names[label] ??
-              (label.toUpperCase().startsWith('EEG ') &&
-                      !RegExp(
-                        r'^EEG\s+[AM][12]-',
-                        caseSensitive: false,
-                      ).hasMatch(label)
+              ((_channels.labels.contains(label)
+                      ? _channels.isEeg(label)
+                      : classifyChannel(label).isEeg)
                   ? suggestedEegName(label)
                   : ''),
         ),
@@ -3207,11 +3273,16 @@ class _FeatureHomeState extends State<FeatureHome>
               ],
             ),
             content: SizedBox(
-              width: 620,
-              height: 520,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              width: 880,
+              height: 550,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  Expanded(
+                    flex: 3,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
                   DropdownButton<String>(
                     isExpanded: true,
                     value: example ?? files.first,
@@ -3331,6 +3402,30 @@ class _FeatureHomeState extends State<FeatureHome>
                         onPressed: () {
                           for (final e in controls.entries) {
                             e.value.text = suggestedEegName(e.key);
+                          }
+                          setDialogState(() {});
+                        },
+                      ),
+                      ActionChip(
+                        avatar: const Icon(
+                          Icons.grid_on,
+                          size: 13,
+                          color: Colors.cyanAccent,
+                        ),
+                        label: const Text(
+                          'EGI GSN -> 10-20',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        tooltip:
+                            'Map common EGI HydroCel GSN channels (E22, E9, E11, E36, E104, E62, VREF…) to 10-20 equivalents',
+                        onPressed: () {
+                          for (final e in controls.entries) {
+                            final up = e.key.trim().toUpperCase();
+                            if (_kEgiTo1020.containsKey(up)) {
+                              e.value.text = _kEgiTo1020[up]!;
+                            } else if (isStandard1020Channel(e.key.trim())) {
+                              e.value.text = e.key.trim();
+                            }
                           }
                           setDialogState(() {});
                         },
@@ -3560,6 +3655,33 @@ class _FeatureHomeState extends State<FeatureHome>
                 ],
               ),
             ),
+                  const VerticalDivider(width: 20),
+                  Expanded(
+                    flex: 2,
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _channelHeadmapPreview(
+                            [
+                              for (final c in controls.values)
+                                if (c.text.trim().isNotEmpty) c.text.trim(),
+                            ],
+                            height: 280,
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            '• Green dots show channels placed on the 10-05/10-20 scalp headmap.\n'
+                            '• Unlocated channels (e.g. EGI E1..E128, ECG, Resp) cannot be plotted on headmaps until renamed or excluded (leave blank).',
+                            style: TextStyle(fontSize: 10.5, color: _textMuted, height: 1.35),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             actions: [
               TextButton.icon(
                 icon: const Icon(Icons.folder_open, size: 14),
@@ -3655,7 +3777,22 @@ class _FeatureHomeState extends State<FeatureHome>
         ...loadedNames,
         for (final e in controls.entries) e.key: e.value.text.trim(),
       });
-      setState(() => _batchChannels = mapping);
+      setState(() {
+        _batchChannels = mapping;
+        for (final e in controls.entries) {
+          if (_channels.labels.contains(e.key)) {
+            final keep = e.value.text.trim().isNotEmpty;
+            _channels = _channels.withKind(
+              e.key,
+              keep
+                  ? ChannelKind.eeg
+                  : (classifyChannel(e.key).isEeg
+                        ? ChannelKind.other
+                        : classifyChannel(e.key)),
+            );
+          }
+        }
+      });
       if (_directInput != null || _raw != null) {
         await _applyChannelMappingToActiveRecording(mapping);
       }
@@ -4024,7 +4161,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   if (activeModule == _Module.loadRaw) _buildLoadRawContent(),
                   if (activeModule == _Module.preprocess) _buildStage1Content(),
                   if (activeModule == _Module.epochs) _buildEpochsContent(),
-                  if (activeModule == _Module.preprocess) _buildChannelsCard(),
+                  // Channel types & montage merged into "1. Channel setup & montage".
                   if (activeModule == _Module.sourceSpace)
                     _buildStage2Content(),
                 ],
@@ -4894,6 +5031,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   ('mne', 'Minimum norm'),
                   ('dspm', 'dSPM'),
                   ('sloreta', 'sLORETA'),
+                  ('eloreta', 'eLORETA'),
                   ('lcmv', 'LCMV'),
                   ('xpikan', 'XPIKAN (Physics-Informed NN)'),
                 ],
@@ -4908,6 +5046,17 @@ class _FeatureHomeState extends State<FeatureHome>
                   final snr = double.tryParse(v);
                   if (snr != null && snr > 0) _cfg.sourceSnr = snr;
                 },
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  '${_cfg.sourceMethod == 'xpikan' ? 'XPIKAN 3-shell PINN' : _cfg.sourceModelPath.trim().isEmpty ? 'MNE fsaverage 3-shell BEM' : 'Custom forward JSON'} · '
+                  'σ = 0.33 / 0.0042 / 0.33 S/m (r = 0.87 / 0.92 / 1.00) · '
+                  '${_cfg.sourceModelPath.trim().isEmpty ? 'DK68 (68 ROIs)' : 'Custom atlas'} · '
+                  'fixed normals · λ² = ${(1.0 / (_cfg.sourceSnr * _cfg.sourceSnr)).toStringAsFixed(4)} · '
+                  '${_cfg.sourceMethod == 'lcmv' ? '5% reg. data cov' : 'identity noise cov'}',
+                  style: const TextStyle(fontSize: 10.5, color: Colors.white70, height: 1.3),
+                ),
               ),
               Align(
                 alignment: Alignment.centerRight,
@@ -5324,6 +5473,17 @@ class _FeatureHomeState extends State<FeatureHome>
                   ),
               ],
             ),
+            if ((_directInput ?? _raw ?? _activeRecording) != null) ...[
+              const SizedBox(height: 8),
+              _channelHeadmapPreview(
+                (_directInput ?? _raw ?? _activeRecording)!.labels
+                    .where(_channels.isEeg)
+                    .toList(),
+                height: 140,
+              ),
+            ],
+            const SizedBox(height: 6),
+            _buildChannelsCard(),
             if (_batchChannels != null)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
@@ -5852,26 +6012,41 @@ class _FeatureHomeState extends State<FeatureHome>
           [
             DropdownButtonFormField<String>(
               key: ValueKey('gedai-mode-${_cfg.gedaiThreshold}'),
-              initialValue:
-                  ['auto-', 'auto', 'auto+'].contains(_cfg.gedaiThreshold)
+              initialValue: const [
+                'auto-',
+                'auto',
+                'auto+',
+                '0.5',
+                '1.0',
+                '2.0',
+                '3.0',
+                '5.0',
+                '8.0',
+              ].contains(_cfg.gedaiThreshold)
                   ? _cfg.gedaiThreshold
                   : 'custom',
               decoration: const InputDecoration(labelText: 'GEDAI strength'),
               items: const [
-                DropdownMenuItem(value: 'auto-', child: Text('Gentle (auto-)')),
-                DropdownMenuItem(value: 'auto', child: Text('Standard (auto)')),
-                DropdownMenuItem(value: 'auto+', child: Text('Strong (auto+)')),
+                DropdownMenuItem(value: 'auto-', child: Text('Gentle (auto- · ~99th pct)')),
+                DropdownMenuItem(value: 'auto', child: Text('Standard (auto · ~95th pct)')),
+                DropdownMenuItem(value: 'auto+', child: Text('Strong (auto+ · ~90th pct)')),
+                DropdownMenuItem(value: '0.5', child: Text('Numeric: 0.5 SD')),
+                DropdownMenuItem(value: '1.0', child: Text('Numeric: 1.0 SD')),
+                DropdownMenuItem(value: '2.0', child: Text('Numeric: 2.0 SD')),
+                DropdownMenuItem(value: '3.0', child: Text('Numeric: 3.0 SD')),
+                DropdownMenuItem(value: '5.0', child: Text('Numeric: 5.0 SD')),
+                DropdownMenuItem(value: '8.0', child: Text('Numeric: 8.0 SD')),
                 DropdownMenuItem(
                   value: 'custom',
-                  child: Text('Numeric threshold…'),
+                  child: Text('Custom numeric (0–12)…'),
                 ),
               ],
               onChanged: _running
                   ? null
-                  : (v) => _gedaiThreshold.text = v == 'custom' ? '0' : v!,
+                  : (v) => _gedaiThreshold.text = v == 'custom' ? '1.5' : v!,
             ),
             if (!['auto-', 'auto', 'auto+'].contains(_cfg.gedaiThreshold))
-              _field(_gedaiThreshold, 'Threshold (0–12)'),
+              _field(_gedaiThreshold, 'Threshold (0–12 SD; lower = stronger)'),
             const Text(
               'Gentle broadband pass; input reference restored before the requested re-reference step.',
               style: TextStyle(fontSize: 11),
@@ -9954,4 +10129,69 @@ class _FeatureHomeState extends State<FeatureHome>
     DurationMode.bins => 'Fixed-size bins',
     DurationMode.middleTwoMinutes => 'Middle 2 minutes',
   };
+}
+
+class _ChannelHeadmapPainter extends CustomPainter {
+  const _ChannelHeadmapPainter(this.locatedLabels);
+  final List<String> locatedLabels;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final side = size.width < size.height ? size.width : size.height;
+    final r = (side * 0.40).clamp(24.0, 200.0);
+    final cx = size.width / 2;
+    final cy = size.height / 2 + 4;
+    final headPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..color = Colors.white38
+      ..strokeWidth = 1.4;
+    canvas.drawCircle(Offset(cx, cy), r, headPaint);
+    // Nose
+    final nose = Path()
+      ..moveTo(cx - r * 0.12, cy - r * 0.99)
+      ..lineTo(cx, cy - r * 1.13)
+      ..lineTo(cx + r * 0.12, cy - r * 0.99);
+    canvas.drawPath(nose, headPaint);
+    // Ears
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx - r * 1.03, cy), width: r * 0.1, height: r * 0.34),
+      headPaint,
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx + r * 1.03, cy), width: r * 0.1, height: r * 0.34),
+      headPaint,
+    );
+    if (locatedLabels.isEmpty) return;
+    final pts = topoPositions(locatedLabels);
+    final dotPaint = Paint()..color = const Color(0xFF22C55E);
+    for (var i = 0; i < pts.length; i++) {
+      // MNE standard_1020 head radius is ~0.095 m; normalize onto our circle.
+      final dx = cx + (pts[i].x / 0.115) * r;
+      final dy = cy - (pts[i].y / 0.115) * r;
+      canvas.drawCircle(Offset(dx, dy), 3.2, dotPaint);
+      if (pts.length <= 64) {
+        final tp = TextPainter(
+          text: TextSpan(
+            text: locatedLabels[i],
+            style: const TextStyle(fontSize: 8.5, color: Colors.white70),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(dx - tp.width / 2, dy + 3.5));
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ChannelHeadmapPainter old) =>
+      old.locatedLabels.length != locatedLabels.length ||
+      !_listEquals(old.locatedLabels, locatedLabels);
+
+  static bool _listEquals(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 }
