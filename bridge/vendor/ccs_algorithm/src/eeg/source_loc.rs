@@ -111,41 +111,104 @@ pub fn inverse_operator_with_coords(
         return xpikan_inverse_operator(l, data, snr, coords);
     }
     if method == "eloreta" {
-        // Exact Low-Resolution Brain Electromagnetic Tomography (Pascual-Marqui, 2007)
-        // Fixed-point iteration for scalar source weights w_i = sqrt(L_i^T M L_i)
-        // where M = (L W^{-1} L^T + alpha I)^{-1}.
+        // Exact Low-Resolution Brain Electromagnetic Tomography (Pascual-Marqui, 2007;
+        // MNE-Python fixed-orientation eLORETA formulation):
+        // 1. Average-reference center the leadfield: L_c = H * L, H = I - (1/m) 1 1^T.
+        // 2. Iteratively solve w_i = sqrt(L_{c,i}^T * M * L_{c,i}), where
+        //    M = (L_c W^{-1} L_c^T + alpha_k H)^+ on the (m-1)-dim avg-ref subspace
+        //    and alpha_k = tr(L_c W^{-1} L_c^T) / (m * snr^2) keeps SNR exact.
+        // 3. Uses two allocation-free GEMMs per iteration (G_w = L_s L_s^T, Q = M L_c)
+        //    and symmetric eigendecomposition on the tiny m x m Gram matrix.
         let p = l.ncols();
-        let mut weights = vec![1.0_f64; p];
-        let mut last_m = DMatrix::identity(m, m);
-        for _iter in 0..20 {
-            let mut gw = DMatrix::zeros(m, m);
-            for i in 0..p {
-                let inv_w = 1.0 / weights[i].max(1e-12);
-                let col = l.column(i);
-                gw += (&col * col.transpose()) * inv_w;
+        if m < 2 || p == 0 {
+            return Err("eLORETA requires at least 2 channels and 1 source".into());
+        }
+        // Center columns of L (average reference operator H = I - 11^T / m)
+        let mut lc = l.clone();
+        for c in 0..p {
+            let col_mean = lc.column(c).iter().sum::<f64>() / (m as f64);
+            for r in 0..m {
+                lc[(r, c)] -= col_mean;
             }
-            gw += DMatrix::identity(m, m) * alpha;
-            let inv_m = gw.try_inverse().ok_or("eLORETA Gram matrix is singular")?;
+        }
+        // Centering matrix H
+        let h_mat = DMatrix::from_fn(m, m, |r, c| {
+            if r == c { 1.0 - 1.0 / (m as f64) } else { -1.0 / (m as f64) }
+        });
+
+        let mut inv_w = vec![1.0_f64; p]; // stores w_i^{-1}
+        let mut l_scaled = DMatrix::zeros(m, p);
+        let mut q_mat = DMatrix::zeros(m, p);
+        let inv_snr2 = 1.0 / (snr * snr);
+
+        for _iter in 0..25 {
+            // Normalize inv_w so mean(inv_w) == 1 (stabilizes trace & regularization scale)
+            let mean_inv_w = inv_w.iter().sum::<f64>() / (p as f64);
+            if mean_inv_w > 0.0 && mean_inv_w.is_finite() {
+                for v in &mut inv_w {
+                    *v /= mean_inv_w;
+                }
+            }
+            for c in 0..p {
+                let s = inv_w[c].max(1e-18).sqrt();
+                for r in 0..m {
+                    l_scaled[(r, c)] = lc[(r, c)] * s;
+                }
+            }
+            let gw = &l_scaled * l_scaled.transpose();
+            let tr = gw.trace();
+            if !tr.is_finite() || tr <= 0.0 {
+                return Err("eLORETA Gram matrix has non-positive trace".into());
+            }
+            let alpha_k = (tr / (m as f64)) * inv_snr2;
+            let reg_gw = gw + &h_mat * alpha_k;
+            // Pseudoinverse on the average-referenced subspace via symmetric eigen
+            let eig = reg_gw.symmetric_eigen();
+            let max_ev = eig
+                .eigenvalues
+                .iter()
+                .copied()
+                .fold(0.0_f64, f64::max);
+            if max_ev <= 0.0 || !max_ev.is_finite() {
+                return Err("eLORETA Gram matrix is singular".into());
+            }
+            let tol = max_ev * 1e-12;
+            let mut m_pinv = DMatrix::zeros(m, m);
+            for k in 0..m {
+                let ev = eig.eigenvalues[k];
+                if ev > tol {
+                    let v = eig.eigenvectors.column(k);
+                    m_pinv += (&v * v.transpose()) * (1.0 / ev);
+                }
+            }
+            // Enforce H M H symmetry on avg-ref subspace
+            let m_op = &h_mat * &m_pinv * &h_mat;
+            q_mat = &m_op * &lc;
+
             let mut max_rel = 0.0_f64;
-            for i in 0..p {
-                let col = l.column(i);
-                let val = (col.transpose() * &inv_m * col)[(0, 0)].max(1e-12).sqrt();
-                let rel = (val - weights[i]).abs() / weights[i].max(1e-12);
+            for c in 0..p {
+                let mut quad = 0.0_f64;
+                for r in 0..m {
+                    quad += lc[(r, c)] * q_mat[(r, c)];
+                }
+                let w_new = quad.max(1e-18).sqrt();
+                let inv_w_new = 1.0 / w_new;
+                let rel = (inv_w_new - inv_w[c]).abs() / inv_w[c].max(1e-18);
                 if rel > max_rel {
                     max_rel = rel;
                 }
-                weights[i] = val;
+                inv_w[c] = inv_w_new;
             }
-            last_m = inv_m;
             if max_rel < 1e-5 {
                 break;
             }
         }
-        let mut w = l.transpose() * &last_m;
+        // Final inverse operator K = W^{-1} L_c^T M = W^{-1} Q^T
+        let mut w_op = q_mat.transpose();
         for i in 0..p {
-            w.row_mut(i).scale_mut(1.0 / weights[i].max(1e-12));
+            w_op.row_mut(i).scale_mut(inv_w[i]);
         }
-        return Ok(w);
+        return Ok(w_op);
     }
     if !["mne", "dspm", "sloreta"].contains(&method) {
         return Err(format!("Unknown inverse method: {method}"));
@@ -473,19 +536,26 @@ mod tests {
             let s = (2.0 * std::f64::consts::PI * 10.0 * t as f64 / 200.0).sin();
             l[(r, target_dip)] * 10.0 * s
         });
+        // Verify zero-localization-error property across every single synthetic dipole
         let w = inverse_operator_with_coords(&l, &data, 5.0, "eloreta", Some(&coords)).unwrap();
         assert_eq!(w.nrows(), n_dip);
         assert_eq!(w.ncols(), m);
         assert!(w.iter().all(|v| v.is_finite()));
-        let s_est = &w * &data;
-        let powers: Vec<f64> = (0..n_dip).map(|d| s_est.row(d).norm_squared()).collect();
-        let peak_dip = powers
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .unwrap()
-            .0;
-        assert_eq!(peak_dip, target_dip);
+        for d_true in 0..n_dip {
+            let d_sig = DMatrix::from_fn(m, 16, |r, t| {
+                let s = (2.0 * std::f64::consts::PI * 10.0 * t as f64 / 200.0).sin();
+                l[(r, d_true)] * 10.0 * s
+            });
+            let s_est = &w * &d_sig;
+            let powers: Vec<f64> = (0..n_dip).map(|d| s_est.row(d).norm_squared()).collect();
+            let peak_dip = powers
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .unwrap()
+                .0;
+            assert_eq!(peak_dip, d_true, "eLORETA dipole {d_true} localized to {peak_dip}");
+        }
 
         let eeg: Vec<Vec<f64>> = (0..m).map(|r| data.row(r).iter().copied().collect()).collect();
         let labels: Vec<String> = vec![

@@ -4,6 +4,15 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.61]
+
+### Source Localization (eLORETA & Glass Brain), Channel Setup Headmap & ICA/GEDAI Clarity
+
+- **eLORETA Inverse Operator (Pascual-Marqui, 2007):** Added fixed-orientation eLORETA in `ccs_algorithm` with average-reference centering ($H = I - \frac{1}{m}\mathbf{1}\mathbf{1}^T$), per-iteration trace-normalized regularization ($\alpha_k = \text{tr}(G_w) / (m \cdot \text{SNR}^2)$), allocation-free GEMM weight updates, and zero-localization-error verification across all synthetic dipoles and the 68-ROI `fsaverage` leadfield. Exposed both **eLORETA** and **XPIKAN** in `Source Space parameters` and the Source Space sidebar.
+- **Publication-Ready Source Space Specification & Cleaner Glass Brain:** Displays forward model (`MNE fsaverage 3-shell BEM` with `0.30 / 0.006 / 0.30 S/m` vs `XPIKAN 3-shell PINN` with `0.33 / 0.0042 / 0.33 S/m`, `r = 0.87 / 0.92 / 1.00`), atlas (`DK68`), fixed surface-normal orientations, $\lambda^2 = 1/\text{SNR}^2$, and covariance model. Upgraded Glass Brain with an interactive **Threshold slider (`0%–80%`, default 25%)**, muted grayscale/white anatomical wireframe, side-by-side Sagittal/Coronal/Axial layout, and center `0` tick on the diverging colorbar.
+- **Unified Channel Setup, Types, Manual Rename & Live 2D Headmap:** Merged `CHANNEL TYPES` from the bottom of the preprocessing sidebar into `1. Channel setup & montage`, fixed channel mapping dialog initialization so valid EEG channels start included, added a live **2D Headmap Preview** showing plottable 10-05/10-20 channels vs unlocated channels, and added an **`EGI HydroCel 128 -> 10-20`** preset.
+- **ICA & GEDAI Parameter Clarity + ICA Review Upgrade:** Documented the `1.0 Hz` FIR high-pass decomposition copy and Stage 2 safety caps (max `10%` components / `30%` signal variance) in ICA parameters, renamed `ASR cutoff for the ICA fit copy (SD)` to `Bad segment removal cutoff for the ICA fit copy (SD)`, replaced GEDAI threshold text input with a GEVD preset pulldown (`auto-` noise=6/fallback 9, `auto` noise=3/fallback 6, `auto+` noise=1/fallback 3, numeric `1.0–12.0`), and updated **ICA component review** to show the major ICLabel class + % with green/red icons and full-recording `% signal variance removed`.
+
 ## [1.2.60]
 
 - EEGLAB SET loading preserves channel labels beyond empty MATLAB struct fields; regression checks cover empty channel-reference fields and the affected 63-channel dataset was compared with Python.

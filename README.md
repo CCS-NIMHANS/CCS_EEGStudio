@@ -70,6 +70,12 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 
 ---
 
+## ✨ What's New in v1.2.61
+
+- **eLORETA Inverse Model & Cleaner Glass Brain:** Implemented computationally efficient, average-reference-centered fixed-orientation **eLORETA** (Pascual-Marqui, 2007) alongside MNE, dSPM, sLORETA, LCMV, and XPIKAN; added a publication-ready model specification card (forward model, shell conductivities, atlas, $\lambda^2$, covariance) and upgraded Glass Brain with an interactive threshold slider, muted wireframe, single-row Sagittal/Coronal/Axial layout, and center `0` colorbar tick.
+- **Unified Channel Setup, Live 2D Headmap & EGI Mapping:** Merged `CHANNEL TYPES` into `1. Channel setup & montage` with a live 2D headmap showing plottable vs unlocated channels, manual rename/type controls, and an `EGI HydroCel 128 -> 10-20` preset.
+- **ICA & GEDAI Transparency:** Added explicit ICA high-pass (`1.0 Hz`) and safety-cap (`10%` components / `30%` variance) notes, renamed ICA-copy ASR to bad-segment removal, added GEDAI GEVD threshold presets, and upgraded ICA Component Review to show major ICLabel classes + `%` and total signal variance removed.
+
 ## ✨ What's New in v1.2.60
 
 - Preserve all SET channel labels, including datasets with empty channel metadata.
