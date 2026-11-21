@@ -1,3 +1,4 @@
+import 'erp/group_figure_studio.dart';
 import 'extraction_service.dart';
 import 'topostats/topostats_batch.dart' show preferSessionFeatureCsvs;
 import 'filename_metadata.dart';
@@ -62,30 +63,43 @@ Future<Map<String, dynamic>> runDartPermutationsInWorker(
 ) => Isolate.run(() => runDartPermutationsInIsolate(payload));
 
 Future<Map<String, dynamic>> inspectGroupDatasetInWorker(
-  String csv, String metadata, String key,
-) => Isolate.run(() => ErpGroupStatsEngine.inspectDataset(
-  csvPath: csv, metadataPath: metadata, metadataKey: key,
-));
+  String csv,
+  String metadata,
+  String key,
+) => Isolate.run(
+  () => ErpGroupStatsEngine.inspectDataset(
+    csvPath: csv,
+    metadataPath: metadata,
+    metadataKey: key,
+  ),
+);
 
 /// Read Excel with the app's bundled reader so Python needs no Excel plugin.
-Future<String> prepareGroupMetadataForPython(String path, Directory runtime) async {
+Future<String> prepareGroupMetadataForPython(
+  String path,
+  Directory runtime,
+) async {
   if (!path.toLowerCase().endsWith('.xlsx')) return path;
   final table = await TabularSheetReader.read(path);
   String cell(String value) => '"${value.replaceAll('"', '""')}"';
-  final csv = [table.headers, ...table.rows]
-      .map((row) => row.map(cell).join(',')).join('\n');
+  final csv = [
+    table.headers,
+    ...table.rows,
+  ].map((row) => row.map(cell).join(',')).join('\n');
   final file = File('${runtime.path}/participant_groups.csv');
   await file.writeAsString(csv);
   return file.path;
 }
 
-String groupMetricLabel(String name) => const {
-  'mean_amplitude_ERP': 'Mean amplitude (µV)',
-  'signed_auc_ERP': 'Signed area under the curve (µV·s)',
-  'peak_amplitude_ERP': 'Peak amplitude (µV)',
-  'peak_latency_ms_ERP': 'Peak latency (ms)',
-  'fractional_area_latency_ms_ERP': 'Fractional-area latency (ms)',
-}[name] ?? name;
+String groupMetricLabel(String name) =>
+    const {
+      'mean_amplitude_ERP': 'Mean amplitude (µV)',
+      'signed_auc_ERP': 'Signed area under the curve (µV·s)',
+      'peak_amplitude_ERP': 'Peak amplitude (µV)',
+      'peak_latency_ms_ERP': 'Peak latency (ms)',
+      'fractional_area_latency_ms_ERP': 'Fractional-area latency (ms)',
+    }[name] ??
+    name;
 
 class GroupStatisticsWorkbench extends StatefulWidget {
   const GroupStatisticsWorkbench({
@@ -114,27 +128,59 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   String? get _participantGroupColumn {
     final counts = _dartInspection?['factor_counts'] as Map? ?? {};
     for (final column in counts.keys) {
-      if (!const {'group', 'cohort', 'arm', 'groupid', 'group_id'}.contains('$column'.toLowerCase())) continue;
-      final values = (counts[column] as Map).keys.map((k) => '$k'.trim().toLowerCase());
-      if (values.any((v) => !const {'', 'unknown', 'unassigned', 'nan', 'none'}.contains(v))) return '$column';
+      if (!const {
+        'group',
+        'cohort',
+        'arm',
+        'groupid',
+        'group_id',
+      }.contains('$column'.toLowerCase()))
+        continue;
+      final values = (counts[column] as Map).keys.map(
+        (k) => '$k'.trim().toLowerCase(),
+      );
+      if (values.any(
+        (v) => !const {'', 'unknown', 'unassigned', 'nan', 'none'}.contains(v),
+      ))
+        return '$column';
     }
     return null;
   }
 
   Set<String> get _unassignedGroupLabels {
-    final counts = (_dartInspection?['factor_counts'] as Map?)?[_participantGroupColumn] as Map? ?? {};
-    return counts.keys.map((k) => '$k').where((k) => const {'', 'unknown', 'unassigned', 'nan', 'none'}.contains(k.toLowerCase().trim())).toSet();
+    final counts =
+        (_dartInspection?['factor_counts'] as Map?)?[_participantGroupColumn]
+            as Map? ??
+        {};
+    return counts.keys
+        .map((k) => '$k')
+        .where(
+          (k) => const {
+            '',
+            'unknown',
+            'unassigned',
+            'nan',
+            'none',
+          }.contains(k.toLowerCase().trim()),
+        )
+        .toSet();
   }
 
-  bool get _groupsReady => _unassignedGroupLabels.every((label) => (_dartExcludedLevels[_participantGroupColumn] ?? {}).contains(label));
+  bool get _groupsReady => _unassignedGroupLabels.every(
+    (label) =>
+        (_dartExcludedLevels[_participantGroupColumn] ?? {}).contains(label),
+  );
 
   void _setExcludeUnassigned(bool exclude) {
     setState(() {
       final group = _participantGroupColumn;
       if (group != null) {
         final levels = _dartExcludedLevels.putIfAbsent(group, () => {});
-        if (exclude) { levels.addAll(_unassignedGroupLabels); }
-        else { levels.removeAll(_unassignedGroupLabels); }
+        if (exclude) {
+          levels.addAll(_unassignedGroupLabels);
+        } else {
+          levels.removeAll(_unassignedGroupLabels);
+        }
       }
     });
   }
@@ -149,7 +195,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       _dartAnalysisResults = null;
       _pythonReady = false;
       _workflowStep = 0;
-      _statusMessage = 'Data changed. Review data again before running an analysis.';
+      _statusMessage =
+          'Data changed. Review data again before running an analysis.';
     });
   }
 
@@ -189,8 +236,11 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   final List<String> _dartFactors = [];
   final Map<String, Set<String>> _dartExcludedLevels = {};
   final Map<String, List<String>> _dartLevelOrder = {};
-  final TextEditingController _permCountCtrl = TextEditingController(text: '1000');
+  final TextEditingController _permCountCtrl = TextEditingController(
+    text: '1000',
+  );
   bool _includeInteractions = true;
+  bool _fittedFactorial = true;
   StatsPlotLayoutConfig _plotConfig = const StatsPlotLayoutConfig();
   Map<String, dynamic>? _dartAnalysisResults;
   String? _selectedDartMetric;
@@ -323,19 +373,26 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     for (final dir in [Directory(path), erpDir]) {
       if (!await dir.exists()) continue;
       await for (final entry in dir.list(followLinks: false)) {
-        if (entry is File && entry.path.endsWith('_conditions_group_input.csv')) erpTables.add(entry.path);
+        if (entry is File && entry.path.endsWith('_conditions_group_input.csv'))
+          erpTables.add(entry.path);
       }
     }
     if (erpTables.isNotEmpty) {
       String? selected = erpTables.first;
       if (erpTables.length > 1 && mounted) {
-        selected = await showDialog<String>(context: context, builder: (ctx) => SimpleDialog(
-          title: const Text('Choose an ERP measurement table'),
-          children: [for (final table in erpTables) SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, table),
-            child: Text(File(table).uri.pathSegments.last),
-          )],
-        ));
+        selected = await showDialog<String>(
+          context: context,
+          builder: (ctx) => SimpleDialog(
+            title: const Text('Choose an ERP measurement table'),
+            children: [
+              for (final table in erpTables)
+                SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, table),
+                  child: Text(File(table).uri.pathSegments.last),
+                ),
+            ],
+          ),
+        );
       }
       if (selected == null || !mounted) return;
       setState(() => _csvPathController.text = selected!);
@@ -344,11 +401,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     }
     final files = <String>[];
     await for (final entry in Directory(path).list(followLinks: false)) {
-      if (entry is File && entry.path.endsWith('.features.csv')) files.add(entry.path);
+      if (entry is File && entry.path.endsWith('.features.csv'))
+        files.add(entry.path);
     }
     files.sort();
     if (files.isEmpty) {
-      _showSnack('No ERP measurement tables or recording feature CSVs found. Choose the saved analysis folder, or select a measurement CSV directly.');
+      _showSnack(
+        'No ERP measurement tables or recording feature CSVs found. Choose the saved analysis folder, or select a measurement CSV directly.',
+      );
       return;
     }
     final dir = Directory('$path/Group_Statistics');
@@ -385,15 +445,21 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       }
     }
     if (!mounted) return;
-    final rows = await showDialog<List<Map<String, String>>>(context: context,
-      builder: (_) => FilenameMetadataDialog(names: names.toList()));
+    final rows = await showDialog<List<Map<String, String>>>(
+      context: context,
+      builder: (_) => FilenameMetadataDialog(names: names.toList()),
+    );
     if (rows == null || !mounted) return;
     final runtime = await _runtimeDirectory;
     final path = '${runtime.path}/reviewed_filename_labels.csv';
-    final reviewed = [for (final row in rows) <String, String>{
-      for (final entry in row.entries) if (entry.key != 'Subject') entry.key: entry.value,
-      'participant_id': row['Subject'] ?? '',
-    }];
+    final reviewed = [
+      for (final row in rows)
+        <String, String>{
+          for (final entry in row.entries)
+            if (entry.key != 'Subject') entry.key: entry.value,
+          'participant_id': row['Subject'] ?? '',
+        },
+    ];
     await File(path).writeAsString(filenameMetadataCsv(reviewed));
     if (!mounted) return;
     setState(() {
@@ -441,7 +507,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     try {
       final dartInsp = await inspectGroupDatasetInWorker(
-        csvPath, _metadataPathController.text.trim(), _metadataKeyController.text.trim(),
+        csvPath,
+        _metadataPathController.text.trim(),
+        _metadataKeyController.text.trim(),
       );
       if (!mounted) return;
       _applyDartInspection(dartInsp);
@@ -458,7 +526,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
       final args = [script, '--csv', csvPath, '--inspect-only'];
       if (_metadataPathController.text.trim().isNotEmpty) {
-        args.addAll(['--metadata-csv', await prepareGroupMetadataForPython(_metadataPathController.text.trim(), await _runtimeDirectory)]);
+        args.addAll([
+          '--metadata-csv',
+          await prepareGroupMetadataForPython(
+            _metadataPathController.text.trim(),
+            await _runtimeDirectory,
+          ),
+        ]);
       }
       if (_metadataKeyController.text.trim().isNotEmpty) {
         args.addAll(['--metadata-key', _metadataKeyController.text.trim()]);
@@ -516,7 +590,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             : 'Data could not be loaded: $e';
       });
     } finally {
-      if (mounted) setState(() { _isInspecting = false; });
+      if (mounted)
+        setState(() {
+          _isInspecting = false;
+        });
     }
   }
 
@@ -527,10 +604,29 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     final rawLevels = (insp['factor_levels'] as Map<String, dynamic>? ?? {});
 
     final nonSubjFactors = factorCols.where((f) {
-      if (f == subjCol || const {'subjid', 'subject', 'subject_id', 'participant_id', 'sl.no.', 'sno', 'index', 'epoch', 'epoch_label', 'bin', 'bin_idx'}.contains(f.toLowerCase())) return false;
+      if (f == subjCol ||
+          const {
+            'subjid',
+            'subject',
+            'subject_id',
+            'participant_id',
+            'sl.no.',
+            'sno',
+            'index',
+            'epoch',
+            'epoch_label',
+            'bin',
+            'bin_idx',
+          }.contains(f.toLowerCase()))
+        return false;
       final fl = f.toLowerCase();
-      if (const {'filename', 'file', 'source_file', 'source_path', 'path'}
-          .contains(fl)) {
+      if (const {
+        'filename',
+        'file',
+        'source_file',
+        'source_path',
+        'path',
+      }.contains(fl)) {
         return false;
       }
       final lvls = rawLevels[f] as List? ?? const [];
@@ -541,27 +637,62 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       _dartInspection = insp;
       _dartFactors
         ..clear()
-        ..addAll(nonSubjFactors.where((f) => const {'group', 'condition', 'session', 'sessn'}.contains(f.toLowerCase())));
-      if (nonSubjFactors.any((f) => f.toLowerCase() == 'session') && nonSubjFactors.any((f) => f.toLowerCase() == 'condition')) _usePermutation = true;
+        ..addAll(
+          nonSubjFactors.where(
+            (f) => const {
+              'group',
+              'condition',
+              'session',
+              'sessn',
+            }.contains(f.toLowerCase()),
+          ),
+        );
+      if (nonSubjFactors.any((f) => f.toLowerCase() == 'session') &&
+          nonSubjFactors.any((f) => f.toLowerCase() == 'condition'))
+        _usePermutation = true;
       _dartExcludedLevels.clear();
       _dartLevelOrder.clear();
       _selectedSubjectIdCol = subjCol;
-      _selectedSubgroupCol = nonSubjFactors.where((f) => const {'condition', 'epoch_condition', 'session'}.contains(f.toLowerCase())).firstOrNull ?? 'None';
+      _selectedSubgroupCol =
+          nonSubjFactors
+              .where(
+                (f) => const {
+                  'condition',
+                  'epoch_condition',
+                  'session',
+                }.contains(f.toLowerCase()),
+              )
+              .firstOrNull ??
+          'None';
       if (_selectedGroupCol == null && nonSubjFactors.isNotEmpty) {
-        _selectedGroupCol = nonSubjFactors.where((f) => const {'group', 'cohort', 'arm'}.contains(f.toLowerCase())).firstOrNull ?? nonSubjFactors.first;
+        _selectedGroupCol =
+            nonSubjFactors
+                .where(
+                  (f) => const {
+                    'group',
+                    'cohort',
+                    'arm',
+                  }.contains(f.toLowerCase()),
+                )
+                .firstOrNull ??
+            nonSubjFactors.first;
       }
       if (_selectedMetrics.isEmpty && metricCols.isNotEmpty) {
         _selectedMetrics.add(metricCols.first);
       }
       _inspectionData = {
         'total_rows': insp['row_count'],
-        'unique_subjects': ((insp['factor_levels'] as Map?)?[subjCol] as List?)?.length ?? 0,
+        'unique_subjects':
+            ((insp['factor_levels'] as Map?)?[subjCol] as List?)?.length ?? 0,
         'categorical_columns': nonSubjFactors,
         'subject_candidates': factorCols,
         'metric_columns': metricCols,
         'covariates': <String>[],
-        'channel_count': ((insp['factor_levels'] as Map?)?['Chan'] as List?)?.length ?? 0,
-        'recording_count': ((insp['factor_levels'] as Map?)?['filename'] as List?)?.length ?? 0,
+        'channel_count':
+            ((insp['factor_levels'] as Map?)?['Chan'] as List?)?.length ?? 0,
+        'recording_count':
+            ((insp['factor_levels'] as Map?)?['filename'] as List?)?.length ??
+            0,
       };
 
       // Smart default plot role assignment:
@@ -570,7 +701,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           .where((f) => candidates.any((c) => f.toLowerCase().contains(c)))
           .firstOrNull;
       final seriesF = pick(['group', 'arm']) ?? nonSubjFactors.firstOrNull;
-      final xF = pick(['electrode', 'channel', 'roi', 'condition', 'session']) ??
+      final xF =
+          pick(['electrode', 'channel', 'roi', 'condition', 'session']) ??
           (nonSubjFactors.length > 1 ? nonSubjFactors[1] : seriesF);
       final colF = nonSubjFactors
           .where((f) => f != seriesF && f != xF)
@@ -584,9 +716,216 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     });
   }
 
+  Future<void> _openGroupedFigures({bool difference = false}) async {
+    final inspection = _dartInspection;
+    if (inspection == null) return;
+    final csv = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => ErpGroupFigureStudio(
+          inspection: inspection,
+          csvPath: _csvPathController.text,
+          config: _plotConfig,
+          levelOrder: _dartLevelOrder,
+          excludedLevels: _dartExcludedLevels,
+          findPython: _findPythonExecutable,
+          differenceOnly: difference,
+        ),
+      ),
+    );
+    if (difference && csv != null && mounted) {
+      _csvPathController.text = csv;
+      await _inspectCsv();
+      if (mounted)
+        setState(() {
+          _dartFactors.removeWhere(
+            (f) =>
+                ((_dartInspection?['factor_levels'] as Map?)?[f] as List? ?? [])
+                    .length <
+                2,
+          );
+          _usePermutation = true;
+          _workflowStep = 1;
+        });
+    }
+  }
+
+  Future<void> _exportFactorialResults() async {
+    if (_dartAnalysisResults == null) return;
+    final path = await FilePicker.saveFile(
+      dialogTitle: 'Save fitted effects, contrasts & plot labels',
+      fileName: 'erp_factorial_results.json',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+    if (path == null) return;
+    final value = {
+      ..._dartAnalysisResults!,
+      'display_labels': {
+        'factors': _plotConfig.factorLabels,
+        'levels': _plotConfig.levelLabels,
+        'series_colors': _plotConfig.seriesColors,
+      },
+      'level_order': _dartLevelOrder,
+    };
+    await File(
+      path,
+    ).writeAsString(const JsonEncoder.withIndent('  ').convert(value));
+    final contrasts = StringBuffer(
+      'metric,factor,stratum,group_a,group_b,mean_diff,t_stat,p_raw,p_adj,test\n',
+    );
+    String cell(Object? v) => '"${'$v'.replaceAll('"', '""')}"';
+    for (final r in value['results'] as List)
+      for (final c in r['posthoc'] as List) {
+        contrasts.writeln(
+          [
+            r['metric'],
+            c['factor'],
+            jsonEncode(c['stratum'] ?? {}),
+            c['group_a'],
+            c['group_b'],
+            c['mean_diff'],
+            c['t_stat'],
+            c['p_raw'],
+            c['p_adj'],
+            c['test'],
+          ].map(cell).join(','),
+        );
+      }
+    await File('$path.contrasts.csv').writeAsString('$contrasts');
+    if (mounted)
+      _showSnack('Saved results, labels and corrected contrast CSV.');
+  }
+
+  Future<Map<String, dynamic>> _fitFactorialModel(
+    Map<String, dynamic> payload,
+  ) async {
+    final python = await _findPythonExecutable();
+    if (python == null)
+      throw StateError(
+        'Fitted GLM/LMM needs Python with numpy, pandas, scipy, statsmodels and matplotlib. Configure CCS_EEG_PYTHON or choose the native factorial permutation approximation.',
+      );
+    final runtime = await _runtimeDirectory;
+    final sep = Platform.pathSeparator;
+    final script = File('${runtime.path}${sep}erp_factorial_models.py');
+    await script.writeAsString(
+      await rootBundle.loadString('assets/erp_factorial_models.py'),
+    );
+    final input = File('${runtime.path}${sep}factorial_input.json');
+    final output = File('${runtime.path}${sep}factorial_output.json');
+    await input.writeAsString(jsonEncode(payload));
+    final process = await Process.run(python, [
+      script.path,
+      input.path,
+      output.path,
+    ]);
+    if (process.exitCode != 0) throw StateError('${process.stderr}');
+    return Map<String, dynamic>.from(
+      jsonDecode(await output.readAsString()) as Map,
+    );
+  }
+
+  Future<void> _editPlotLabels() async {
+    final raw = Map<String, dynamic>.from(
+      _dartInspection?['factor_levels'] as Map? ?? {},
+    );
+    final factors = Map<String, String>.from(_plotConfig.factorLabels);
+    final levels = {
+      for (final e in _plotConfig.levelLabels.entries)
+        e.key: Map<String, String>.from(e.value),
+    };
+    final colors = Map<String, int>.from(_plotConfig.seriesColors);
+    final apply = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Factor labels, level labels & colours'),
+        content: SizedBox(
+          width: 650,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Display labels leave source codes and statistical identities unchanged. Example: Session 03 → Baseline.',
+                ),
+                for (final factor in raw.keys.where(_dartFactors.contains)) ...[
+                  TextFormField(
+                    initialValue: factors[factor] ?? factor,
+                    decoration: InputDecoration(labelText: 'Factor: $factor'),
+                    onChanged: (v) => factors[factor] = v.isEmpty ? factor : v,
+                  ),
+                  for (final value in (raw[factor] as List).map((v) => '$v'))
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextFormField(
+                            initialValue: levels[factor]?[value] ?? value,
+                            decoration: InputDecoration(
+                              labelText: '$factor · $value',
+                            ),
+                            onChanged: (v) =>
+                                levels.putIfAbsent(factor, () => {})[value] =
+                                    v.isEmpty ? value : v,
+                          ),
+                        ),
+                        if (factor == _plotConfig.seriesFactor)
+                          SizedBox(
+                            width: 125,
+                            child: TextFormField(
+                              initialValue: colors[value] == null
+                                  ? ''
+                                  : (colors[value]! & 0xffffff)
+                                        .toRadixString(16)
+                                        .padLeft(6, '0'),
+                              decoration: const InputDecoration(
+                                labelText: 'Colour RRGGBB',
+                              ),
+                              onChanged: (v) {
+                                final c = int.tryParse(
+                                  v.replaceFirst('#', ''),
+                                  radix: 16,
+                                );
+                                if (c != null &&
+                                    v.replaceFirst('#', '').length == 6)
+                                  colors[value] = 0xff000000 | c;
+                              },
+                            ),
+                          ),
+                      ],
+                    ),
+                  const Divider(),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Apply labels & colours'),
+          ),
+        ],
+      ),
+    );
+    if (apply == true && mounted)
+      setState(
+        () => _plotConfig = _plotConfig.copyWith(
+          factorLabels: factors,
+          levelLabels: levels,
+          seriesColors: colors,
+        ),
+      );
+  }
+
   Future<void> _runDartPermutationAnalysis() async {
     final insp = _dartInspection;
-    if (!_groupsReady) { _showSnack('Review missing group labels in Data & groups first.'); return; }
+    if (!_groupsReady) {
+      _showSnack('Review missing group labels in Data & groups first.');
+      return;
+    }
     if (insp == null) {
       _showSnack('Inspect a CSV dataset first.');
       return;
@@ -601,8 +940,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     }
     setState(() {
       _isAnalyzing = true;
-      _progressStatus = 'Running Permutation GLM / LMM…';
-      _statusMessage = 'Running N-way permutation models in isolate…';
+      _progressStatus = _fittedFactorial
+          ? 'Fitting GLM / LMM…'
+          : 'Running factorial permutations…';
+      _statusMessage = _fittedFactorial
+          ? 'Fitting models and corrected contrasts in Python…'
+          : 'Running N-way factorial permutations in isolate…';
     });
     try {
       final headers = (insp['headers'] as List).cast<String>();
@@ -621,7 +964,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           if (e.value.isNotEmpty) e.key: List<String>.from(e.value),
       };
       final order = <String, List<String>>{
-        for (final e in _dartLevelOrder.entries) e.key: List<String>.from(e.value),
+        for (final e in _dartLevelOrder.entries)
+          e.key: List<String>.from(e.value),
       };
       final payload = <String, dynamic>{
         'headers': headers,
@@ -637,13 +981,21 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         'customLevelOrder': order,
       };
 
-      final res = await runDartPermutationsInWorker(payload);
+      final res = _fittedFactorial
+          ? await _fitFactorialModel(payload)
+          : await runDartPermutationsInWorker(payload);
+      res['display_labels'] = {
+        'factors': _plotConfig.factorLabels,
+        'levels': _plotConfig.levelLabels,
+        'series_colors': _plotConfig.seriesColors,
+      };
       if (!mounted) return;
       if (res.containsKey('error')) {
         _showSnack('${res['error']}');
         return;
       }
-      final resultsList = (res['results'] as List? ?? []).cast<Map<String, dynamic>>();
+      final resultsList = (res['results'] as List? ?? [])
+          .cast<Map<String, dynamic>>();
       setState(() {
         _dartAnalysisResults = res;
         _workflowStep = 2;
@@ -652,7 +1004,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             : null;
         _dartResultTab = 0;
         _statusMessage =
-            'Permutation GLM / LMM complete (${resultsList.length} metric(s), $nPerm permutations).';
+            '${_fittedFactorial ? 'Fitted GLM/LMM' : 'Factorial permutation'} complete (${resultsList.length} metric(s)).';
       });
     } catch (e) {
       _showSnack('Permutation analysis failed: $e');
@@ -662,7 +1014,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   }
 
   Future<void> _runAnalysis() async {
-    if (!_groupsReady || !_pythonReady) { _showSnack('Review data and missing group labels before running.'); return; }
+    if (!_groupsReady || !_pythonReady) {
+      _showSnack('Review data and missing group labels before running.');
+      return;
+    }
     final csvPath = _csvPathController.text.trim();
     if (csvPath.isEmpty || !File(csvPath).existsSync()) {
       _showSnack('Please select a valid CSV file.');
@@ -730,7 +1085,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         _reportFormat,
       ];
       if (_metadataPathController.text.trim().isNotEmpty) {
-        args.addAll(['--metadata-csv', await prepareGroupMetadataForPython(_metadataPathController.text.trim(), await _runtimeDirectory)]);
+        args.addAll([
+          '--metadata-csv',
+          await prepareGroupMetadataForPython(
+            _metadataPathController.text.trim(),
+            await _runtimeDirectory,
+          ),
+        ]);
       }
       if (_metadataKeyController.text.trim().isNotEmpty) {
         args.addAll(['--metadata-key', _metadataKeyController.text.trim()]);
@@ -869,177 +1230,248 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-          _buildHeaderCard(),
-          const SizedBox(height: 12),
-          Wrap(spacing: 8, children: [
-            for (var step = 0; step < 3; step++) ChoiceChip(
-              label: Text(const ['1. Data & groups', '2. Design & run', '3. Results'][step]),
-              selected: _workflowStep == step,
-              onSelected: _isInspecting || _isAnalyzing || (step > 0 && _inspectionData == null) ? null
-                  : (_) => setState(() => _workflowStep = step),
-            ),
-          ]),
-          const SizedBox(height: 12),
-          if (_workflowStep == 0) ...[
-            _buildDataSourceCard(),
-            if (_dartInspection != null) _buildDataReview(),
-            const SizedBox(height: 12),
-            Align(alignment: Alignment.centerRight, child: FilledButton.icon(
-              onPressed: _inspectionData == null || _isInspecting ? null : () => setState(() => _workflowStep = 1),
-              icon: const Icon(Icons.arrow_forward), label: const Text('Continue to analysis design'),
-            )),
-          ],
-          const SizedBox(height: 12),
-          if (_inspectionData != null && _workflowStep == 1) ...[
-            SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: false, label: Text('Standard comparison + report')),
-                ButtonSegment(value: true, label: Text('Several labels + interactive results')),
-              ],
-              selected: {_usePermutation},
-              onSelectionChanged: _isAnalyzing ? null : (v) => setState(() => _usePermutation = v.first),
-            ),
-            const SizedBox(height: 12),
-            Padding(padding: const EdgeInsets.all(12), child: Text(
-              _usePermutation
-                ? 'Compare ${_dartFactors.join(", ")} together. Measurements with the same $_selectedSubjectIdCol belong to the same person.'
-                : 'Compare values of $_selectedGroupCol${_selectedSubgroupCol == "None" ? "" : " and $_selectedSubgroupCol"}. Rows with the same $_selectedSubjectIdCol belong to the same person.',
-            )),
-            if (!_groupsReady) const Padding(padding: EdgeInsets.all(12), child: Text('Some participants have no group label. Return to Data & groups to assign or exclude them before running.')),
-            if (!_usePermutation) _buildConfigurationCard(),
-            if (_usePermutation) Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text('For this analysis, each participant can have multiple sessions and stimulus conditions.'),
-            ),
-            const SizedBox(height: 12),
-            _buildMetricsSelectionCard(),
-            const SizedBox(height: 12),
-            if (!_usePermutation) Card(
-              elevation: 0,
-              color: const Color(0xFF111827),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: const Color(0xFF334155)),
-              ),
-              child: ExpansionTile(
-                tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                initiallyExpanded:
-                    !((_inspectionData?['has_composite_roi'] == true) ||
-                        ((_inspectionData?['channel_count'] as num? ?? 0) <= 1)),
-                leading: const Icon(Icons.sensors, size: 20, color: Color(0xFF38BDF8)),
-                title: const Text(
-                  'Advanced: EEG Channel Scope & Filtering',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Colors.white),
-                ),
-                subtitle: Text(
-                  _inspectionData?['has_composite_roi'] == true
-                      ? 'Composite ERP ROIs detected — keeping CSV ROI rows intact (scope: $_channelScope)'
-                      : 'Channel aggregation scope: $_channelScope',
-                  style: TextStyle(fontSize: 11.5, color: Colors.white70),
-                ),
+              _buildHeaderCard(),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
                 children: [
+                  for (var step = 0; step < 3; step++)
+                    ChoiceChip(
+                      label: Text(
+                        const [
+                          '1. Data & groups',
+                          '2. Design & run',
+                          '3. Results',
+                        ][step],
+                      ),
+                      selected: _workflowStep == step,
+                      onSelected:
+                          _isInspecting ||
+                              _isAnalyzing ||
+                              (step > 0 && _inspectionData == null)
+                          ? null
+                          : (_) => setState(() => _workflowStep = step),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (_workflowStep == 0) ...[
+                _buildDataSourceCard(),
+                if (_dartInspection != null) _buildDataReview(),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
+                    onPressed: _inspectionData == null || _isInspecting
+                        ? null
+                        : () => setState(() => _workflowStep = 1),
+                    icon: const Icon(Icons.arrow_forward),
+                    label: const Text('Continue to analysis design'),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              if (_inspectionData != null && _workflowStep == 1) ...[
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(
+                      value: false,
+                      label: Text('Standard comparison + report'),
+                    ),
+                    ButtonSegment(
+                      value: true,
+                      label: Text('Several labels + interactive results'),
+                    ),
+                  ],
+                  selected: {_usePermutation},
+                  onSelectionChanged: _isAnalyzing
+                      ? null
+                      : (v) => setState(() => _usePermutation = v.first),
+                ),
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    _usePermutation
+                        ? 'Compare ${_dartFactors.join(", ")} together. Measurements with the same $_selectedSubjectIdCol belong to the same person.'
+                        : 'Compare values of $_selectedGroupCol${_selectedSubgroupCol == "None" ? "" : " and $_selectedSubgroupCol"}. Rows with the same $_selectedSubjectIdCol belong to the same person.',
+                  ),
+                ),
+                if (!_groupsReady)
+                  const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Text(
+                      'Some participants have no group label. Return to Data & groups to assign or exclude them before running.',
+                    ),
+                  ),
+                if (!_usePermutation) _buildConfigurationCard(),
+                if (_usePermutation)
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        DropdownButtonFormField<String>(
-                          key: ValueKey('ch_scope_$_channelScope'),
-                          initialValue: _channelScope,
-                          isExpanded: true,
-                          decoration: const InputDecoration(
-                            labelText: 'Channel Scope & Grouping',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                            helperMaxLines: 2,
-                            helperText:
-                                'ROIs groups standard 10-20 electrodes into 5 regions. All keeps derivations / composite ROIs intact. Mean averages whole scalp.',
-                          ),
-                          items: const [
-                            DropdownMenuItem(
-                              value: 'roi',
-                              child: Text(
-                                'Neurophysiological ROIs (Frontal, Central, Temporal, Parietal, Occipital)',
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            DropdownMenuItem(
-                              value: 'mean',
-                              child: Text(
-                                'Global Scalp Average (1 observation per recording)',
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            DropdownMenuItem(
-                              value: 'all',
-                              child: Text(
-                                'Analyze all channels / composite ROIs as-is',
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                          onChanged: (v) => setState(() => _channelScope = v ?? 'roi'),
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      'For this analysis, each participant can have multiple sessions and stimulus conditions.',
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                _buildMetricsSelectionCard(),
+                const SizedBox(height: 12),
+                if (!_usePermutation)
+                  Card(
+                    elevation: 0,
+                    color: const Color(0xFF111827),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(color: const Color(0xFF334155)),
+                    ),
+                    child: ExpansionTile(
+                      tilePadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 2,
+                      ),
+                      initiallyExpanded:
+                          !((_inspectionData?['has_composite_roi'] == true) ||
+                              ((_inspectionData?['channel_count'] as num? ??
+                                      0) <=
+                                  1)),
+                      leading: const Icon(
+                        Icons.sensors,
+                        size: 20,
+                        color: Color(0xFF38BDF8),
+                      ),
+                      title: const Text(
+                        'Advanced: EEG Channel Scope & Filtering',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13.5,
+                          color: Colors.white,
                         ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: _excludeChannelsController,
+                      ),
+                      subtitle: Text(
+                        _inspectionData?['has_composite_roi'] == true
+                            ? 'Composite ERP ROIs detected — keeping CSV ROI rows intact (scope: $_channelScope)'
+                            : 'Channel aggregation scope: $_channelScope',
+                        style: TextStyle(fontSize: 11.5, color: Colors.white70),
+                      ),
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              DropdownButtonFormField<String>(
+                                key: ValueKey('ch_scope_$_channelScope'),
+                                initialValue: _channelScope,
+                                isExpanded: true,
                                 decoration: const InputDecoration(
-                                  labelText: 'Exclude channels (optional)',
-                                  hintText: 'e.g. Cz, Pz, POL \$A1 (comma separated)',
+                                  labelText: 'Channel Scope & Grouping',
                                   border: OutlineInputBorder(),
                                   isDense: true,
+                                  helperMaxLines: 2,
+                                  helperText:
+                                      'ROIs groups standard 10-20 electrodes into 5 regions. All keeps derivations / composite ROIs intact. Mean averages whole scalp.',
                                 ),
+                                items: const [
+                                  DropdownMenuItem(
+                                    value: 'roi',
+                                    child: Text(
+                                      'Neurophysiological ROIs (Frontal, Central, Temporal, Parietal, Occipital)',
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  DropdownMenuItem(
+                                    value: 'mean',
+                                    child: Text(
+                                      'Global Scalp Average (1 observation per recording)',
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  DropdownMenuItem(
+                                    value: 'all',
+                                    child: Text(
+                                      'Analyze all channels / composite ROIs as-is',
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                                onChanged: (v) =>
+                                    setState(() => _channelScope = v ?? 'roi'),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: TextField(
-                                controller: _includeChannelsController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Include only channels (optional)',
-                                  hintText: 'e.g. F3, F4, C3, C4 (comma separated)',
-                                  border: OutlineInputBorder(),
-                                  isDense: true,
-                                ),
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _excludeChannelsController,
+                                      decoration: const InputDecoration(
+                                        labelText:
+                                            'Exclude channels (optional)',
+                                        hintText:
+                                            'e.g. Cz, Pz, POL \$A1 (comma separated)',
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _includeChannelsController,
+                                      decoration: const InputDecoration(
+                                        labelText:
+                                            'Include only channels (optional)',
+                                        hintText:
+                                            'e.g. F3, F4, C3, C4 (comma separated)',
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ],
                     ),
                   ),
+                const SizedBox(height: 12),
+                if (_dartInspection != null && _usePermutation) ...[
+                  _buildConfigurablePlotAndPreviewCard(),
+                  const SizedBox(height: 12),
                 ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (_dartInspection != null && _usePermutation) ...[
-              _buildConfigurablePlotAndPreviewCard(),
-              const SizedBox(height: 12),
-            ],
-            if (_selectedMetrics.isEmpty)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 6),
-                child: Text(
-                  'Choose the subject/group fields and select outcomes above to enable Run.',
-                  style: TextStyle(color: Color(0xFF475569)),
+                if (_selectedMetrics.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      'Choose the subject/group fields and select outcomes above to enable Run.',
+                      style: TextStyle(color: Color(0xFF475569)),
+                    ),
+                  ),
+                _buildActionRunCard(),
+                const SizedBox(height: 12),
+              ],
+              if (_workflowStep == 2 &&
+                  _dartAnalysisResults == null &&
+                  _analysisResults == null)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'No results yet. Go to Design & run to choose a comparison and run the analysis.',
+                  ),
                 ),
-              ),
-            _buildActionRunCard(),
-            const SizedBox(height: 12),
-          ],
-          if (_workflowStep == 2 && _dartAnalysisResults == null && _analysisResults == null)
-            const Padding(padding: EdgeInsets.all(16), child: Text('No results yet. Go to Design & run to choose a comparison and run the analysis.')),
-          if (_workflowStep == 2 && _dartAnalysisResults != null) ...[
-            _buildDartResultsCard(),
-            const SizedBox(height: 12),
-          ],
-          if (_workflowStep == 2 && _analysisResults != null) ...[
-            _buildResultsCard(),
-            const SizedBox(height: 12),
-          ],
+              if (_workflowStep == 2 && _dartAnalysisResults != null) ...[
+                TextButton.icon(
+                  onPressed: _exportFactorialResults,
+                  icon: const Icon(Icons.save_alt),
+                  label: const Text('Export effects, contrasts & plot labels…'),
+                ),
+                _buildDartResultsCard(),
+                const SizedBox(height: 12),
+              ],
+              if (_workflowStep == 2 && _analysisResults != null) ...[
+                _buildResultsCard(),
+                const SizedBox(height: 12),
+              ],
             ],
           ),
         ),
@@ -1061,50 +1493,141 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     if (subjectIndex >= 0 && groupIndex >= 0) {
       for (final row in rows) {
         final label = '${row[groupIndex]}'.trim();
-        participantsByGroup.putIfAbsent(label.isEmpty ? 'Unassigned' : label, () => {}).add('${row[subjectIndex]}');
+        participantsByGroup
+            .putIfAbsent(label.isEmpty ? 'Unassigned' : label, () => {})
+            .add('${row[subjectIndex]}');
       }
     }
-    String? field(List<String> names) => headers.where((h) => names.contains(h.toLowerCase())).firstOrNull;
+    String? field(List<String> names) =>
+        headers.where((h) => names.contains(h.toLowerCase())).firstOrNull;
     final condition = field(['condition', 'epoch_condition']);
     final session = field(['session', 'sessn']);
-    final fields = [if (participant != null) (participant, 'Participant (person)'), if (group != null) (group, 'Participant group (cohort)'), if (session != null) (session, 'Session (visit)'), if (condition != null) (condition, 'Condition (stimulus / task)')];
-    String value(List row, String? col) { final i = headers.indexOf(col ?? ''); return i >= 0 && i < row.length ? '${row[i]}' : '—'; }
-    return Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('What the app found — and where it came from', style: TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        Text('${(levels[participant] as List? ?? []).length} people · ${insp['row_count']} measurement rows. Each person can have several sessions and conditions.'),
-        const SizedBox(height: 12),
-        for (final entry in fields) Padding(padding: const EdgeInsets.only(bottom: 10), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(entry.$2, style: const TextStyle(fontWeight: FontWeight.w600)),
-          Text('Values: ${(levels[entry.$1] as List? ?? []).take(8).join(", ")}${(levels[entry.$1] as List? ?? []).length > 8 ? " …" : ""}'),
-          Text('Source: ${sources[entry.$1] ?? "Measurement table · ${entry.$1}"}', style: const TextStyle(fontSize: 12)),
-        ])),
-        if (group == null) ...[
-          const Text('No participant cohorts have been assigned. Freq, Rare and Distr are stimulus conditions — they are not groups of people.'),
-          const SizedBox(height: 8),
-          Wrap(spacing: 8, children: [
-            OutlinedButton.icon(onPressed: _pickMetadataFile, icon: const Icon(Icons.table_chart_outlined), label: const Text('Add participant group file…')),
-            TextButton(onPressed: () => setState(() => _workflowStep = 1), child: const Text('Continue with conditions / sessions only')),
-          ]),
-        ] else Text('People per group: ${participantsByGroup.entries.map((e) => "${e.key}: ${e.value.length}").join(" · ")}'),
-        if (_unassignedGroupLabels.isNotEmpty) ...[
-          Text('No group label for: ${participantsByGroup.entries.where((e) => _unassignedGroupLabels.contains(e.key)).expand((e) => e.value).join(", ")}. Add these people to your group file or exclude them.'),
-          CheckboxListTile(contentPadding: EdgeInsets.zero,
-            title: const Text('Exclude participants without group labels from this analysis'),
-            value: _groupsReady, onChanged: (v) => _setExcludeUnassigned(v ?? false)),
-        ],
-        ExpansionTile(title: const Text('Preview recording → person → session → condition → group'), children: [
-          SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(
-            columns: const [DataColumn(label: Text('Recording')), DataColumn(label: Text('Person')), DataColumn(label: Text('Session')), DataColumn(label: Text('Condition')), DataColumn(label: Text('Group'))],
-            rows: [for (final row in rows.take(12)) DataRow(cells: [
-              DataCell(Tooltip(message: value(row, 'filename'), child: Text(filenameBasename(value(row, 'filename'))))),
-              DataCell(Text(value(row, participant))), DataCell(Text(value(row, session))), DataCell(Text(value(row, condition))), DataCell(Text(value(row, group))),
-            ])],
-          )),
-        ]),
-      ],
-    )));
+    final fields = [
+      if (participant != null) (participant, 'Participant (person)'),
+      if (group != null) (group, 'Participant group (cohort)'),
+      if (session != null) (session, 'Session (visit)'),
+      if (condition != null) (condition, 'Condition (stimulus / task)'),
+    ];
+    String value(List row, String? col) {
+      final i = headers.indexOf(col ?? '');
+      return i >= 0 && i < row.length ? '${row[i]}' : '—';
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'What the app found — and where it came from',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${(levels[participant] as List? ?? []).length} people · ${insp['row_count']} measurement rows. Each person can have several sessions and conditions.',
+            ),
+            const SizedBox(height: 12),
+            for (final entry in fields)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      entry.$2,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    Text(
+                      'Values: ${(levels[entry.$1] as List? ?? []).take(8).join(", ")}${(levels[entry.$1] as List? ?? []).length > 8 ? " …" : ""}',
+                    ),
+                    Text(
+                      'Source: ${sources[entry.$1] ?? "Measurement table · ${entry.$1}"}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            if (group == null) ...[
+              const Text(
+                'No participant cohorts have been assigned. Freq, Rare and Distr are stimulus conditions — they are not groups of people.',
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _pickMetadataFile,
+                    icon: const Icon(Icons.table_chart_outlined),
+                    label: const Text('Add participant group file…'),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _workflowStep = 1),
+                    child: const Text(
+                      'Continue with conditions / sessions only',
+                    ),
+                  ),
+                ],
+              ),
+            ] else
+              Text(
+                'People per group: ${participantsByGroup.entries.map((e) => "${e.key}: ${e.value.length}").join(" · ")}',
+              ),
+            if (_unassignedGroupLabels.isNotEmpty) ...[
+              Text(
+                'No group label for: ${participantsByGroup.entries.where((e) => _unassignedGroupLabels.contains(e.key)).expand((e) => e.value).join(", ")}. Add these people to your group file or exclude them.',
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Exclude participants without group labels from this analysis',
+                ),
+                value: _groupsReady,
+                onChanged: (v) => _setExcludeUnassigned(v ?? false),
+              ),
+            ],
+            ExpansionTile(
+              title: const Text(
+                'Preview recording → person → session → condition → group',
+              ),
+              children: [
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: DataTable(
+                    columns: const [
+                      DataColumn(label: Text('Recording')),
+                      DataColumn(label: Text('Person')),
+                      DataColumn(label: Text('Session')),
+                      DataColumn(label: Text('Condition')),
+                      DataColumn(label: Text('Group')),
+                    ],
+                    rows: [
+                      for (final row in rows.take(12))
+                        DataRow(
+                          cells: [
+                            DataCell(
+                              Tooltip(
+                                message: value(row, 'filename'),
+                                child: Text(
+                                  filenameBasename(value(row, 'filename')),
+                                ),
+                              ),
+                            ),
+                            DataCell(Text(value(row, participant))),
+                            DataCell(Text(value(row, session))),
+                            DataCell(Text(value(row, condition))),
+                            DataCell(Text(value(row, group))),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildHeaderCard() {
@@ -1228,7 +1751,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ],
             ),
             const SizedBox(height: 10),
-            const Text('Choose a saved analysis folder or a measurement CSV. For ERP statistics, the measurement table is enough; waveform files do not need to be loaded. Add a group file with one row per participant when group labels are missing.'),
+            const Text(
+              'Choose a saved analysis folder or a measurement CSV. For ERP statistics, the measurement table is enough; waveform files do not need to be loaded. Add a group file with one row per participant when group labels are missing.',
+            ),
             const SizedBox(height: 10),
             Row(
               children: [
@@ -1284,7 +1809,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     ? null
                     : _inferMetadata,
                 icon: const Icon(Icons.auto_fix_high),
-                label: const Text('Identify participants & sessions from filenames…'),
+                label: const Text(
+                  'Identify participants & sessions from filenames…',
+                ),
               ),
             ),
             Row(
@@ -1315,8 +1842,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               const SizedBox(height: 8),
               TextField(
                 controller: _metadataKeyController,
-                    enabled: !_isInspecting && !_isAnalyzing,
-                    onChanged: (_) => _invalidateInspection(),
+                enabled: !_isInspecting && !_isAnalyzing,
+                onChanged: (_) => _invalidateInspection(),
                 decoration: const InputDecoration(
                   labelText: 'Participant ID column in group file (optional)',
                   hintText: 'filename or Subject',
@@ -1352,7 +1879,25 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget _buildConfigurationCard() {
     final catCols =
         (_inspectionData?['categorical_columns'] as List<dynamic>? ?? [])
-            .cast<String>().where((c) => (_dartInspection?['factor_levels']?[c] as List? ?? []).length >= 2 && !const {'filename', 'file', 'subjid', 'subject', 'subject_id', 'participant_id', 'sl.no.', 'epoch', 'epoch_label'}.contains(c.toLowerCase())).toList();
+            .cast<String>()
+            .where(
+              (c) =>
+                  (_dartInspection?['factor_levels']?[c] as List? ?? [])
+                          .length >=
+                      2 &&
+                  !const {
+                    'filename',
+                    'file',
+                    'subjid',
+                    'subject',
+                    'subject_id',
+                    'participant_id',
+                    'sl.no.',
+                    'epoch',
+                    'epoch_label',
+                  }.contains(c.toLowerCase()),
+            )
+            .toList();
     final allCols = [
       ?_selectedGroupCol,
       ...catCols.where((c) => c != _selectedGroupCol),
@@ -1397,7 +1942,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       labelText: 'Main comparison',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      helperText: 'Choose a cohort, condition or session to compare',
+                      helperText:
+                          'Choose a cohort, condition or session to compare',
                     ),
                     items: [
                       for (final col in allCols)
@@ -1444,14 +1990,18 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       labelText: 'Participant ID',
                       border: OutlineInputBorder(),
                       isDense: true,
-                      helperText: 'The same participant keeps the same ID across sessions',
+                      helperText:
+                          'The same participant keeps the same ID across sessions',
                     ),
                     items: [
                       if (_selectedSubjectIdCol != null &&
                           !candidateSubj.contains(_selectedSubjectIdCol))
                         DropdownMenuItem(
                           value: _selectedSubjectIdCol,
-                          child: Text(_selectedSubjectIdCol!, overflow: TextOverflow.ellipsis),
+                          child: Text(
+                            _selectedSubjectIdCol!,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       for (final col in candidateSubj)
                         DropdownMenuItem(
@@ -1547,12 +2097,18 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     items: const [
                       DropdownMenuItem(
                         value: 'fdr',
-                        child: Text('Benjamini-Hochberg FDR (Recommended)', overflow: TextOverflow.ellipsis),
+                        child: Text(
+                          'Benjamini-Hochberg FDR (Recommended)',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
 
                       DropdownMenuItem(
                         value: 'bonferroni',
-                        child: Text('Bonferroni (Strict)', overflow: TextOverflow.ellipsis),
+                        child: Text(
+                          'Bonferroni (Strict)',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ],
                     onChanged: (v) =>
@@ -1572,15 +2128,24 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     items: const [
                       DropdownMenuItem(
                         value: 'both',
-                        child: Text('Both Word (.docx) & PDF (.pdf)', overflow: TextOverflow.ellipsis),
+                        child: Text(
+                          'Both Word (.docx) & PDF (.pdf)',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                       DropdownMenuItem(
                         value: 'docx',
-                        child: Text('Microsoft Word Document (.docx)', overflow: TextOverflow.ellipsis),
+                        child: Text(
+                          'Microsoft Word Document (.docx)',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                       DropdownMenuItem(
                         value: 'pdf',
-                        child: Text('Portable Document Format (.pdf)', overflow: TextOverflow.ellipsis),
+                        child: Text(
+                          'Portable Document Format (.pdf)',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ],
                     onChanged: (v) =>
@@ -1688,7 +2253,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                                 [])
                             .cast<String>())
                       FilterChip(
-                        label: Text(groupMetricLabel(m), style: const TextStyle(fontSize: 11)),
+                        label: Text(
+                          groupMetricLabel(m),
+                          style: const TextStyle(fontSize: 11),
+                        ),
                         selected: _selectedMetrics.contains(m),
                         onSelected: (sel) {
                           setState(() {
@@ -1712,12 +2280,26 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
   Widget _buildConfigurablePlotAndPreviewCard() {
     final insp = _dartInspection!;
-    final allFactorCols = (insp['factor_columns'] as List? ?? []).cast<String>().where((f) {
-      if (const {'filename', 'file', 'path', 'subjid', 'subject', 'subject_id', 'participant_id', 'sl.no.', 'epoch', 'epoch_label'}.contains(f.toLowerCase())) return false;
-      return ((insp['factor_levels'] as Map)[f] as List? ?? []).length >= 2;
-    }).toList();
-    final rawLevels =
-        (insp['factor_levels'] as Map<String, dynamic>? ?? {});
+    final allFactorCols = (insp['factor_columns'] as List? ?? [])
+        .cast<String>()
+        .where((f) {
+          if (const {
+            'filename',
+            'file',
+            'path',
+            'subjid',
+            'subject',
+            'subject_id',
+            'participant_id',
+            'sl.no.',
+            'epoch',
+            'epoch_label',
+          }.contains(f.toLowerCase()))
+            return false;
+          return ((insp['factor_levels'] as Map)[f] as List? ?? []).length >= 2;
+        })
+        .toList();
+    final rawLevels = (insp['factor_levels'] as Map<String, dynamic>? ?? {});
 
     final factorChoices = ['None', ..._dartFactors];
 
@@ -1742,7 +2324,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             for (final f in factorChoices)
               DropdownMenuItem(
                 value: f,
-                child: Text(f, overflow: TextOverflow.ellipsis),
+                child: Text(
+                  _plotConfig.factorLabel(f),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
           ],
           onChanged: onChanged,
@@ -1790,11 +2375,62 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 ),
                 const SizedBox(width: 10),
                 FilterChip(
-                  label: const Text('Interactions', style: TextStyle(fontSize: 11.5)),
+                  label: const Text(
+                    'Interactions',
+                    style: TextStyle(fontSize: 11.5),
+                  ),
                   selected: _includeInteractions,
                   onSelected: (v) => setState(() => _includeInteractions = v),
                 ),
               ],
+            ),
+            Wrap(
+              spacing: 12,
+              children: [
+                ChoiceChip(
+                  label: const Text('Fitted GLM / LMM (Python)'),
+                  selected: _fittedFactorial,
+                  onSelected: _isAnalyzing
+                      ? null
+                      : (v) => setState(() => _fittedFactorial = true),
+                ),
+                ChoiceChip(
+                  label: const Text(
+                    'Native factorial permutations (approximation)',
+                  ),
+                  selected: !_fittedFactorial,
+                  onSelected: _isAnalyzing
+                      ? null
+                      : (v) => setState(() => _fittedFactorial = false),
+                ),
+                TextButton.icon(
+                  onPressed: _isAnalyzing ? null : _editPlotLabels,
+                  icon: const Icon(Icons.edit),
+                  label: const Text('Rename factors / levels & colours…'),
+                ),
+                if ((_dartInspection?['metric_columns'] as List? ?? []).any(
+                  (m) => '$m'.endsWith('_ERP'),
+                )) ...[
+                  OutlinedButton.icon(
+                    onPressed: _isAnalyzing
+                        ? null
+                        : () => _openGroupedFigures(),
+                    icon: const Icon(Icons.image),
+                    label: const Text('Grouped publication figures…'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _isAnalyzing
+                        ? null
+                        : () => _openGroupedFigures(difference: true),
+                    icon: const Icon(Icons.difference),
+                    label: const Text('ERP difference → GLM / LMM…'),
+                  ),
+                ],
+              ],
+            ),
+            const Text(
+              'Fitted models report Wald/OLS tests and fitted-design contrasts. Native split-plot permutations are an ANOVA approximation, not a fitted random-effects LMM. Differences are group B minus group A; adjusted p-values share one family per metric.',
+              style: TextStyle(fontSize: 11),
             ),
             const SizedBox(height: 10),
             const Text(
@@ -1810,7 +2446,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   if (f != _selectedSubjectIdCol)
                     FilterChip(
                       label: Text(
-                        '$f: ${(rawLevels[f] as List? ?? []).take(4).join(", ")}',
+                        '${_plotConfig.factorLabel(f)}: ${(rawLevels[f] as List? ?? []).take(4).map((v) => _plotConfig.levelLabel(f, "$v")).join(", ")}',
                         style: const TextStyle(fontSize: 11.5),
                       ),
                       selected: _dartFactors.contains(f),
@@ -1825,197 +2461,226 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ],
             ),
             const SizedBox(height: 8),
-            for (final f in _dartFactors) Text('$f ← ${(_dartInspection?['column_sources'] as Map? ?? {})[f] ?? "measurement table"}', style: const TextStyle(fontSize: 12)),
+            for (final f in _dartFactors)
+              Text(
+                '$f ← ${(_dartInspection?['column_sources'] as Map? ?? {})[f] ?? "measurement table"}',
+                style: const TextStyle(fontSize: 12),
+              ),
             const SizedBox(height: 12),
             ExpansionTile(
               title: const Text('Optional: plot layout and level filters'),
-              subtitle: const Text('Change axes, panels, level order or exclusions'),
+              subtitle: const Text(
+                'Change axes, panels, level order or exclusions',
+              ),
               children: [
-            const Text(
-              'Plot Role Configuration (Lines, X-Axis Points, Subplot Columns/Rows):',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                roleDropdown(
-                  'X-Axis (Points)',
-                  _plotConfig.xFactor,
-                  (v) => setState(
-                    () => _plotConfig = v == null || v == 'None'
-                        ? _plotConfig.copyWith(clearX: true)
-                        : _plotConfig.copyWith(xFactor: v),
-                  ),
+                const Text(
+                  'Plot Role Configuration (Lines, X-Axis Points, Subplot Columns/Rows):',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(width: 8),
-                roleDropdown(
-                  'Lines / Hue (Series)',
-                  _plotConfig.seriesFactor,
-                  (v) => setState(
-                    () => _plotConfig = v == null || v == 'None'
-                        ? _plotConfig.copyWith(clearSeries: true)
-                        : _plotConfig.copyWith(seriesFactor: v),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                roleDropdown(
-                  'Subplot Columns',
-                  _plotConfig.facetColFactor,
-                  (v) => setState(
-                    () => _plotConfig = v == null || v == 'None'
-                        ? _plotConfig.copyWith(clearFacetCol: true)
-                        : _plotConfig.copyWith(facetColFactor: v),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                roleDropdown(
-                  'Subplot Rows',
-                  _plotConfig.facetRowFactor,
-                  (v) => setState(
-                    () => _plotConfig = v == null || v == 'None'
-                        ? _plotConfig.copyWith(clearFacetRow: true)
-                        : _plotConfig.copyWith(facetRowFactor: v),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 10,
-              runSpacing: 6,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                SegmentedButton<StatsPlotType>(
-                  segments: const [
-                    ButtonSegment(
-                      value: StatsPlotType.line,
-                      label: Text('Line + Error', style: TextStyle(fontSize: 11)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    roleDropdown(
+                      'X-Axis (Points)',
+                      _plotConfig.xFactor,
+                      (v) => setState(
+                        () => _plotConfig = v == null || v == 'None'
+                            ? _plotConfig.copyWith(clearX: true)
+                            : _plotConfig.copyWith(xFactor: v),
+                      ),
                     ),
-                    ButtonSegment(
-                      value: StatsPlotType.bar,
-                      label: Text('Bar + Error', style: TextStyle(fontSize: 11)),
+                    const SizedBox(width: 8),
+                    roleDropdown(
+                      'Lines / Hue (Series)',
+                      _plotConfig.seriesFactor,
+                      (v) => setState(
+                        () => _plotConfig = v == null || v == 'None'
+                            ? _plotConfig.copyWith(clearSeries: true)
+                            : _plotConfig.copyWith(seriesFactor: v),
+                      ),
                     ),
-                    ButtonSegment(
-                      value: StatsPlotType.boxplot,
-                      label: Text('Box Plot', style: TextStyle(fontSize: 11)),
+                    const SizedBox(width: 8),
+                    roleDropdown(
+                      'Subplot Columns',
+                      _plotConfig.facetColFactor,
+                      (v) => setState(
+                        () => _plotConfig = v == null || v == 'None'
+                            ? _plotConfig.copyWith(clearFacetCol: true)
+                            : _plotConfig.copyWith(facetColFactor: v),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    roleDropdown(
+                      'Subplot Rows',
+                      _plotConfig.facetRowFactor,
+                      (v) => setState(
+                        () => _plotConfig = v == null || v == 'None'
+                            ? _plotConfig.copyWith(clearFacetRow: true)
+                            : _plotConfig.copyWith(facetRowFactor: v),
+                      ),
                     ),
                   ],
-                  selected: {_plotConfig.plotType},
-                  onSelectionChanged: (s) => setState(
-                    () => _plotConfig = _plotConfig.copyWith(plotType: s.first),
-                  ),
                 ),
-                FilterChip(
-                  label: Text(
-                    _plotConfig.useSem ? 'Error: SEM' : 'Error: SD',
-                    style: const TextStyle(fontSize: 11),
-                  ),
-                  selected: _plotConfig.useSem,
-                  onSelected: (v) => setState(
-                    () => _plotConfig = _plotConfig.copyWith(useSem: v),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            // Level Order & Exclusion Chips for active factors
-            for (final f in _dartFactors) ...[
-              Builder(
-                builder: (context) {
-                  final raw = (rawLevels[f] as List? ?? []).map((e) => '$e').toList();
-                  final custom = _dartLevelOrder[f];
-                  final ordered = custom != null && custom.isNotEmpty
-                      ? [
-                          for (final l in custom)
-                            if (raw.contains(l)) l,
-                          for (final l in raw)
-                            if (!custom.contains(l)) l,
-                        ]
-                      : raw;
-                  final excl = _dartExcludedLevels[f] ?? <String>{};
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Wrap(
-                      spacing: 6,
-                      runSpacing: 4,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        Text(
-                          '$f order/filter:',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    SegmentedButton<StatsPlotType>(
+                      segments: const [
+                        ButtonSegment(
+                          value: StatsPlotType.line,
+                          label: Text(
+                            'Line + Error',
+                            style: TextStyle(fontSize: 11),
                           ),
                         ),
-                        if (raw.any((l) => l.toLowerCase() == 'unknown'))
-                          ActionChip(
-                            avatar: const Icon(Icons.filter_alt_off, size: 14),
-                            label: Text(
-                              raw
-                                      .where((l) => l.toLowerCase() == 'unknown')
-                                      .every((u) => excl.contains(u))
-                                  ? 'Include "Unknown"'
-                                  : 'Exclude "Unknown"',
-                              style: const TextStyle(fontSize: 11),
-                            ),
-                            onPressed: () => setState(() {
-                              final set = _dartExcludedLevels.putIfAbsent(
-                                f,
-                                () => <String>{},
-                              );
-                              final unknowns = raw
-                                  .where((l) => l.toLowerCase() == 'unknown')
-                                  .toList();
-                              final allExcl = unknowns.every(
-                                (u) => set.contains(u),
-                              );
-                              if (allExcl) {
-                                set.removeAll(unknowns);
-                              } else {
-                                set.addAll(unknowns);
-                              }
-                            }),
+                        ButtonSegment(
+                          value: StatsPlotType.bar,
+                          label: Text(
+                            'Bar + Error',
+                            style: TextStyle(fontSize: 11),
                           ),
-                        for (var i = 0; i < ordered.length; i++)
-                          InputChip(
-                            label: Text(
-                              ordered[i],
-                              style: TextStyle(
+                        ),
+                        ButtonSegment(
+                          value: StatsPlotType.boxplot,
+                          label: Text(
+                            'Box Plot',
+                            style: TextStyle(fontSize: 11),
+                          ),
+                        ),
+                      ],
+                      selected: {_plotConfig.plotType},
+                      onSelectionChanged: (s) => setState(
+                        () => _plotConfig = _plotConfig.copyWith(
+                          plotType: s.first,
+                        ),
+                      ),
+                    ),
+                    FilterChip(
+                      label: Text(
+                        _plotConfig.useSem ? 'Error: SEM' : 'Error: SD',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      selected: _plotConfig.useSem,
+                      onSelected: (v) => setState(
+                        () => _plotConfig = _plotConfig.copyWith(useSem: v),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                // Level Order & Exclusion Chips for active factors
+                for (final f in _dartFactors) ...[
+                  Builder(
+                    builder: (context) {
+                      final raw = (rawLevels[f] as List? ?? [])
+                          .map((e) => '$e')
+                          .toList();
+                      final custom = _dartLevelOrder[f];
+                      final ordered = custom != null && custom.isNotEmpty
+                          ? [
+                              for (final l in custom)
+                                if (raw.contains(l)) l,
+                              for (final l in raw)
+                                if (!custom.contains(l)) l,
+                            ]
+                          : raw;
+                      final excl = _dartExcludedLevels[f] ?? <String>{};
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            Text(
+                              '${_plotConfig.factorLabel(f)} order/filter:',
+                              style: const TextStyle(
                                 fontSize: 11,
-                                decoration: excl.contains(ordered[i])
-                                    ? TextDecoration.lineThrough
-                                    : null,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
-                            selected: !excl.contains(ordered[i]),
-                            onSelected: (sel) => setState(() {
-                              final set = _dartExcludedLevels.putIfAbsent(
-                                f,
-                                () => <String>{},
-                              );
-                              if (sel) {
-                                set.remove(ordered[i]);
-                              } else {
-                                set.add(ordered[i]);
-                              }
-                            }),
-                            onDeleted: i == ordered.length - 1
-                                ? null
-                                : () => setState(() {
-                                    final list = List<String>.from(ordered);
-                                    final item = list.removeAt(i);
-                                    list.insert(i + 1, item);
-                                    _dartLevelOrder[f] = list;
-                                  }),
-                            deleteIcon: const Icon(Icons.arrow_forward, size: 13),
-                            deleteButtonTooltipMessage: 'Move level right',
-                          ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ],
+                            if (raw.any((l) => l.toLowerCase() == 'unknown'))
+                              ActionChip(
+                                avatar: const Icon(
+                                  Icons.filter_alt_off,
+                                  size: 14,
+                                ),
+                                label: Text(
+                                  raw
+                                          .where(
+                                            (l) => l.toLowerCase() == 'unknown',
+                                          )
+                                          .every((u) => excl.contains(u))
+                                      ? 'Include "Unknown"'
+                                      : 'Exclude "Unknown"',
+                                  style: const TextStyle(fontSize: 11),
+                                ),
+                                onPressed: () => setState(() {
+                                  final set = _dartExcludedLevels.putIfAbsent(
+                                    f,
+                                    () => <String>{},
+                                  );
+                                  final unknowns = raw
+                                      .where(
+                                        (l) => l.toLowerCase() == 'unknown',
+                                      )
+                                      .toList();
+                                  final allExcl = unknowns.every(
+                                    (u) => set.contains(u),
+                                  );
+                                  if (allExcl) {
+                                    set.removeAll(unknowns);
+                                  } else {
+                                    set.addAll(unknowns);
+                                  }
+                                }),
+                              ),
+                            for (var i = 0; i < ordered.length; i++)
+                              InputChip(
+                                label: Text(
+                                  _plotConfig.levelLabel(f, ordered[i]),
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    decoration: excl.contains(ordered[i])
+                                        ? TextDecoration.lineThrough
+                                        : null,
+                                  ),
+                                ),
+                                selected: !excl.contains(ordered[i]),
+                                onSelected: (sel) => setState(() {
+                                  final set = _dartExcludedLevels.putIfAbsent(
+                                    f,
+                                    () => <String>{},
+                                  );
+                                  if (sel) {
+                                    set.remove(ordered[i]);
+                                  } else {
+                                    set.add(ordered[i]);
+                                  }
+                                }),
+                                onDeleted: i == ordered.length - 1
+                                    ? null
+                                    : () => setState(() {
+                                        final list = List<String>.from(ordered);
+                                        final item = list.removeAt(i);
+                                        list.insert(i + 1, item);
+                                        _dartLevelOrder[f] = list;
+                                      }),
+                                deleteIcon: const Icon(
+                                  Icons.arrow_forward,
+                                  size: 13,
+                                ),
+                                deleteButtonTooltipMessage: 'Move level right',
+                              ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ],
             ),
           ],
@@ -2033,8 +2698,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       orElse: () => resList.first,
     );
     final levelsMap = <String, List<String>>{};
-    final rawLevels =
-        (active['factor_levels'] as Map<String, dynamic>? ?? {});
+    final rawLevels = (active['factor_levels'] as Map<String, dynamic>? ?? {});
     for (final e in rawLevels.entries) {
       levelsMap[e.key] = (e.value as List).map((x) => '$x').toList();
     }
@@ -2057,11 +2721,15 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           children: [
             Row(
               children: [
-                const Icon(Icons.auto_graph, size: 20, color: Color(0xFF0D9488)),
+                const Icon(
+                  Icons.auto_graph,
+                  size: 20,
+                  color: Color(0xFF0D9488),
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Permutation GLM / LMM Results · ${active['model_type']} (N=${active['n_obs']}, Subjects=${active['n_subjects']})',
+                    '${active['model_type']} · N=${active['n_obs']}, participants=${active['n_subjects']}',
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -2092,9 +2760,26 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ],
             ),
             const SizedBox(height: 10),
-            Text('${groupMetricLabel("${active['metric']}")} · ${active['n_subjects']} participants · ${active['n_obs']} measurement rows'),
+            Text(
+              '${groupMetricLabel("${active['metric']}")} · ${active['n_subjects']} participants · ${active['n_obs']} measurement rows',
+            ),
+            Text(
+              'Test statistic: ${active['test_statistic'] ?? 'F'}. Participant/cell means are used for fitted models. ${active['posthoc_family'] ?? 'Adjusted across all reported contrasts for this metric.'}',
+            ),
+            if (active['inference_note'] != null)
+              Text(
+                '${active['inference_note']}',
+                style: const TextStyle(fontSize: 11),
+              ),
+            for (final warning in (active['warnings'] as List? ?? []))
+              Text(
+                'Model warning: $warning',
+                style: const TextStyle(color: Colors.amber, fontSize: 11),
+              ),
             const SizedBox(height: 6),
-            const Text('Plot shows the included groups. Effects tested asks whether each factor or interaction differs; Pairwise comparisons shows which levels differ. Read the corrected p-values when comparing several levels.'),
+            const Text(
+              'Plot shows the included groups. Effects tested asks whether each factor or interaction differs; Pairwise comparisons shows which levels differ. Read the corrected p-values when comparing several levels.',
+            ),
             const SizedBox(height: 10),
             SegmentedButton<int>(
               segments: const [
@@ -2114,10 +2799,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 metricName: '${active['metric']}',
                 cellDescriptives:
                     (active['cell_descriptives'] as Map<String, dynamic>? ??
-                        {}),
-                activeFactors: (active['factors'] as List? ?? []).cast<String>(),
+                    {}),
+                activeFactors: (active['factors'] as List? ?? [])
+                    .cast<String>(),
                 isDummyPreview: false,
                 height: 380,
+                posthocs: posthocs,
               )
             else if (_dartResultTab == 1)
               SingleChildScrollView(
@@ -2125,7 +2812,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 child: DataTable(
                   columns: const [
                     DataColumn(label: Text('Term')),
-                    DataColumn(label: Text('F')),
+                    DataColumn(label: Text('Statistic (see method)')),
                     DataColumn(label: Text('df')),
                     DataColumn(label: Text('p (param)')),
                     DataColumn(label: Text('p (perm)')),
@@ -2135,14 +2822,21 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     for (final eff in effects)
                       DataRow(
                         cells: [
-                          DataCell(Text('${eff['term']}')),
                           DataCell(
                             Text(
-                              (eff['f_stat'] as num).toStringAsFixed(3),
+                              '${eff['term']}'
+                                  .split(RegExp(r'\s*[×:]\s*'))
+                                  .map(_plotConfig.factorLabel)
+                                  .join(' × '),
                             ),
                           ),
                           DataCell(
-                            Text('${eff['df_num']}, ${eff['df_denom']}'),
+                            Text((eff['f_stat'] as num).toStringAsFixed(3)),
+                          ),
+                          DataCell(
+                            Text(
+                              '${eff['df_num']}${eff['df_denom'] == null ? '' : ', ${eff['df_denom']}'}',
+                            ),
                           ),
                           DataCell(Text(_formatP(eff['p_value'] as num?))),
                           DataCell(
@@ -2158,7 +2852,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                           ),
                           DataCell(
                             Text(
-                              (eff['eta_sq'] as num).toStringAsFixed(3),
+                              (eff['eta_sq'] as num?)?.toStringAsFixed(3) ??
+                                  '—',
                             ),
                           ),
                         ],
@@ -2174,7 +2869,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     DataColumn(label: Text('Factor')),
                     DataColumn(label: Text('Comparison')),
                     DataColumn(label: Text('Diff')),
-                    DataColumn(label: Text('t')),
+                    DataColumn(label: Text('t / z')),
                     DataColumn(label: Text('p (raw)')),
                     DataColumn(label: Text('p (adj)')),
                   ],
@@ -2182,9 +2877,15 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     for (final c in posthocs)
                       DataRow(
                         cells: [
-                          DataCell(Text('${c['factor']}')),
                           DataCell(
-                            Text('${c['group_a']} vs ${c['group_b']}'),
+                            Text(
+                              '${_plotConfig.factorLabel("${c['factor']}")} · ${(c['stratum'] as Map? ?? {}).entries.map((e) => '${_plotConfig.factorLabel("${e.key}")}=${_plotConfig.levelLabel("${e.key}", "${e.value}")}').join(', ')}',
+                            ),
+                          ),
+                          DataCell(
+                            Text(
+                              '${_plotConfig.levelLabel("${c['factor']}", "${c['group_a']}")} vs ${_plotConfig.levelLabel("${c['factor']}", "${c['group_b']}")}',
+                            ),
                           ),
                           DataCell(
                             Text((c['mean_diff'] as num).toStringAsFixed(3)),
@@ -2229,51 +2930,65 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           children: [
             Row(
               children: [
-                if (_usePermutation) Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _isAnalyzing || _isInspecting || !_groupsReady || _selectedMetrics.isEmpty || _dartInspection == null
-                        ? null
-                        : _runDartPermutationAnalysis,
-                    icon: _isAnalyzing
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Icon(Icons.auto_graph),
-                    label: Text(
-                      _isAnalyzing
-                          ? 'Running Permutation GLM/LMM…'
-                          : 'Run comparison',
-                    ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF0D9488),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      textStyle: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
+                if (_usePermutation)
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed:
+                          _isAnalyzing ||
+                              _isInspecting ||
+                              !_groupsReady ||
+                              _selectedMetrics.isEmpty ||
+                              _dartInspection == null
+                          ? null
+                          : _runDartPermutationAnalysis,
+                      icon: _isAnalyzing
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.auto_graph),
+                      label: Text(
+                        _isAnalyzing
+                            ? 'Running Permutation GLM/LMM…'
+                            : 'Run comparison',
+                      ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF0D9488),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        textStyle: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
-                ),
                 const SizedBox(width: 12),
-                if (!_usePermutation) Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _isAnalyzing || _isInspecting || !_pythonReady || !_groupsReady || _selectedMetrics.isEmpty ? null : _runAnalysis,
-                    icon: const Icon(Icons.play_arrow),
-                    label: Text(
-                      _isAnalyzing
-                          ? 'Running Models & Generating Report…'
-                          : 'Run analysis & create report (${_selectedMetrics.length} measurements)',
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+                if (!_usePermutation)
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed:
+                          _isAnalyzing ||
+                              _isInspecting ||
+                              !_pythonReady ||
+                              !_groupsReady ||
+                              _selectedMetrics.isEmpty
+                          ? null
+                          : _runAnalysis,
+                      icon: const Icon(Icons.play_arrow),
+                      label: Text(
+                        _isAnalyzing
+                            ? 'Running Models & Generating Report…'
+                            : 'Run analysis & create report (${_selectedMetrics.length} measurements)',
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
             if (_isAnalyzing) ...[
@@ -2371,10 +3086,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if ((_analysisResults!['report_warnings'] as List? ?? []).isNotEmpty) Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text('Plots and tables were saved, but some report files could not be created. ${(_analysisResults!['report_warnings'] as List).join(" ")}'),
-            ),
+            if ((_analysisResults!['report_warnings'] as List? ?? [])
+                .isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'Plots and tables were saved, but some report files could not be created. ${(_analysisResults!['report_warnings'] as List).join(" ")}',
+                ),
+              ),
             // Top action bar
             Row(
               children: [
@@ -2397,10 +3116,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       ),
                       Text(
                         'Saved to: $outputDir',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: Colors.white60,
-                        ),
+                        style: TextStyle(fontSize: 11, color: Colors.white60),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ],

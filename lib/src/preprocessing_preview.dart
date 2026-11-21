@@ -34,6 +34,15 @@ class PreprocessingPreview {
         'Choose a new output path to preserve original and cached samples.',
       );
     }
+    final destination = File(outputPath).absolute.path;
+    final cache = _directory!.absolute.path;
+    String normalize(String value) =>
+        Platform.isWindows ? value.toLowerCase().replaceAll('\\', '/') : value;
+    if (normalize(destination).startsWith('${normalize(cache)}/')) {
+      throw ArgumentError(
+        'Save the finalised analysis outside the temporary preprocessing cache.',
+      );
+    }
     final full = await RecordingLoader().loadFull(recording);
     await RecordingStorage.save(
       full,
@@ -156,12 +165,16 @@ class PreprocessingPreview {
     final appCacheDir = Platform.isMacOS
         ? '$taskHome/Library/Application Support/CCS EEG Studio/preprocessing_cache'
         : '$taskHome/CCS EEG Studio/preprocessing_cache';
+    final preferred = RecordingStorage.workingDirectory;
     final roots = [
       if (cacheRoot != null)
         cacheRoot!
-      else
+      else if (preferred != null)
+        Directory('$preferred/.ccs_eegstudio_cache')
+      else ...[
         Directory('${input.parent.path}/.ccs_eegstudio_cache'),
-      if (cacheRoot == null) Directory(appCacheDir),
+        Directory(appCacheDir),
+      ],
     ];
     Object? failure;
     for (final root in roots) {
@@ -456,9 +469,15 @@ class PreprocessingPreview {
     await temp.rename('${_directory!.path}/session.json');
   }
 
-  /// Closing/switching input drops memory only. Persistent results remain reusable.
-  Future<void> dispose() async {
+  /// Remove only this input's intermediate cache; exported analysis files are external.
+  Future<void> dispose({bool deleteCache = false}) async {
     _results.clear();
+    if (deleteCache && _directory != null) {
+      final directory = _directory!;
+      _directory = null;
+      _manifest.clear();
+      if (await directory.exists()) await directory.delete(recursive: true);
+    }
   }
 }
 

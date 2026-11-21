@@ -329,6 +329,7 @@ pub fn analyse(
     write_sequence_csv(&output_dir.join(&sequence_name), &results)?;
     write_transitions_csv(&output_dir.join(&transitions_name), &results)?;
     write_categorical_csv(&output_dir.join(&categorical_name), &results)?;
+    write_group_tables(output_dir, &results)?;
     let result = MicrostateResult {
         remove_epoch_dc: options.remove_epoch_dc,
         algorithm: "polarity-invariant modified k-means (EEGLAB Microstate parity)".into(),
@@ -1147,6 +1148,41 @@ fn write_sequence_csv(path: &Path, results: &[RecordingResult]) -> Result<(), St
     Ok(())
 }
 
+fn subject_id(filename: &str) -> String {
+    // A date prefix is not a participant ID. Prefer explicit participant tokens.
+    let re = regex::Regex::new(r"(?i)(?:^|_)(sub-[a-z0-9]+|sub[0-9]+(?:_TKG[0-9]+)?|P[0-9]+|S[0-9]+)(?:_|$)").unwrap();
+    re.captures(filename).map(|c| c[1].to_string()).unwrap_or_else(|| "NA".into())
+}
+
+fn write_group_tables(dir: &Path, results: &[RecordingResult]) -> Result<(), String> {
+    let mut states = fs::File::create(dir.join("MicrostateGroupStates.csv")).map_err(|e|e.to_string())?;
+    let mut syntax = fs::File::create(dir.join("MicrostateGroupSyntax.csv")).map_err(|e|e.to_string())?;
+    let mut transitions = fs::File::create(dir.join("MicrostateGroupTransitions.csv")).map_err(|e|e.to_string())?;
+    let metadata = "filename,subject_id,cognitive_state,drowsiness,time,self_reference,valence,modality,intensity_rating,epoch";
+    writeln!(states,"{metadata},n_states,state,coverage_fraction,mean_duration_ms,occurrence_hz,gev_fraction,mean_gfp_normalized,mean_spatial_correlation,gev_total_fraction,normalized_lz,duration_variance_samples2,entropy_production").map_err(|e|e.to_string())?;
+    writeln!(syntax,"{metadata},n_states,word_length,legacy_windows,word_windows,entropy_bits,observed_count,observed_share,chance_share,markov_share,observed_over_chance,observed_over_markov").map_err(|e|e.to_string())?;
+    writeln!(transitions,"{metadata},n_states,from_state,to_state,joint_probability").map_err(|e|e.to_string())?;
+    for r in results {
+        let stem = safe_stem(&r.filename);
+        let mut meta = extract_metadata(&stem);
+        meta[0] = subject_id(&stem);
+        let prefix = std::iter::once(csv(&r.filename)).chain(meta.iter().map(|x|csv(x))).collect::<Vec<_>>().join(",");
+        for st in &r.states {
+            writeln!(states,"{prefix},{},{},{},{},{},{},{},{},{},{},{},{}",r.states.len(),csv(&st.label),st.coverage,st.mean_duration_ms,st.occurrence_hz,st.gev,st.mean_gfp,st.mean_spatial_correlation,r.gev_total,r.sequence_metrics.normalized_lz,r.sequence_metrics.duration_variance_samples2,r.sequence_metrics.entropy_production).map_err(|e|e.to_string())?;
+        }
+        for c in &r.syntax.classes {
+            // Zero windows is missing evidence, not a measured zero share.
+            let share = if r.syntax.windows == 0 {String::new()} else {c.empirical.to_string()};
+            writeln!(syntax,"{prefix},{},{},{},{},{},{},{},{},{},{},{}",r.states.len(),r.syntax.word_length,r.syntax.legacy_windows,r.syntax.windows,c.entropy_bits,c.count,share,c.theoretical,c.markov,c.ratio_theoretical.map(|v|v.to_string()).unwrap_or_default(),c.ratio_markov.map(|v|v.to_string()).unwrap_or_default()).map_err(|e|e.to_string())?;
+        }
+        for (i,row) in r.transition_matrix.iter().enumerate() {for (j,p) in row.iter().enumerate() {
+            writeln!(transitions,"{prefix},{},{},{},{}",r.states.len(),csv(&r.states[i].label),csv(&r.states[j].label),p).map_err(|e|e.to_string())?;
+        }}
+    }
+    fs::write(dir.join("GroupTables_README.txt"), "MicrostateGroupStates.csv: one row per recording and shared-template state.\nMicrostateGroupSyntax.csv: one row per recording and entropy class, including counts, chance and first-order Markov expectations. Shares are fractions; ratios are descriptive, not significance tests. Empty observed_share means no valid word windows.\nMicrostateGroupTransitions.csv: joint probabilities of adjacent sample labels (includes self-transitions); not row-conditional transition probabilities.\nsubject_id is inferred from explicit sub-/Sub/P/S filename tokens; NA means unknown. Inspect IDs and metadata before analysis. Files without recognized cognitive-state naming retain NA metadata. Repeated sessions are not independent subjects. Duration variance is in samples squared. Compare states only within the same shared template.\n").map_err(|e|e.to_string())?;
+    Ok(())
+}
+
 fn extract_metadata(filename: &str) -> Vec<String> {
     for state in ["AttentiveMW", "MW", "Attentive"] {
         let marker = format!("_{state}_");
@@ -1155,10 +1191,10 @@ fn extract_metadata(filename: &str) -> Vec<String> {
             while parts.len() < 8 {
                 parts.push("");
             }
-            let subject = prefix.split('_').next().unwrap_or(prefix);
+            let subject = subject_id(prefix);
             let value = |i: usize| if parts[i].is_empty() { "NA" } else { parts[i] };
             return vec![
-                subject,
+                subject.as_str(),
                 state,
                 value(0),
                 value(1),
@@ -1495,6 +1531,35 @@ impl NumpyMt19937 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn group_tables_join_metadata_and_keep_missing_syntax_distinct_from_zero() {
+        let dir = std::env::temp_dir().join(format!("ccs-group-export-{}",std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let make = |filename: &str, trials: Vec<Vec<usize>>| RecordingResult {
+            filename: filename.into(), sample_rate: 250., sample_count: 100, gev_total: 0.75,
+            states: vec![StateStats {label:"A".into(),mean_gfp:1.,occurrence_hz:2.,mean_duration_ms:100.,coverage:0.5,gev:0.4,mean_spatial_correlation:0.8},StateStats {label:"B".into(),mean_gfp:1.,occurrence_hz:2.,mean_duration_ms:100.,coverage:0.5,gev:0.35,mean_spatial_correlation:0.8}],
+            transition_matrix:vec![vec![0.3,0.2],vec![0.2,0.3]], sequence:vec![],state_probabilities:vec![],
+            sequence_metrics:SequenceStats {lz_complexity:3,shuffled_lz_complexity:4,normalized_lz:0.75,duration_variance_samples2:42.,entropy_production:0.1},
+            sequence_plot:String::new(),sample_csv:String::new(), syntax:crate::microstate_syntax::analyse(&trials,2,3,false).unwrap(),
+        };
+        write_group_tables(&dir,&[make("186142024_paradigm_P005_MW_Drowsy_Past_Self_Positive_Verbal_4_epoch01.set",vec![vec![0,1,0,1]]),make("sub-krithika_ses-S001.set",vec![vec![0]])]).unwrap();
+        let syntax=fs::read_to_string(dir.join("MicrostateGroupSyntax.csv")).unwrap();
+        let rows=syntax.lines().map(|l|l.split(',').collect::<Vec<_>>()).collect::<Vec<_>>();
+        let col=|name| rows[0].iter().position(|x|*x==name).unwrap();
+        assert_eq!(rows.len(),3);
+        for row in &rows[1..] {assert_eq!(row.len(),rows[0].len());}
+        assert_eq!(rows[1][col("subject_id")],"P005");
+        assert_eq!(rows[1][col("observed_count")],"2");
+        assert_eq!(rows[1][col("observed_share")],"1");
+        assert_eq!(rows[2][col("subject_id")],"sub-krithika");
+        assert_eq!(rows[2][col("word_windows")],"0");
+        assert_eq!(rows[2][col("observed_share")],"");
+        let states=fs::read_to_string(dir.join("MicrostateGroupStates.csv")).unwrap();
+        assert_eq!(states.lines().count(),5);
+        let transitions=fs::read_to_string(dir.join("MicrostateGroupTransitions.csv")).unwrap();
+        assert_eq!(transitions.lines().count(),9);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn scalp_landmarks_are_nose_up_and_left_is_left() {
         let meta = super::load_metamaps().unwrap();
         let labels = ["Fz", "Cz", "Oz", "C3", "C4", "Fp1", "Fp2"].map(str::to_string);
@@ -1561,6 +1626,9 @@ mod tests {
             vec!["S01", "MW", "Drowsy", "Past", "Self", "Positive", "Verbal", "4", "epoch01"]
         );
         assert_eq!(extract_metadata("unmatched"), vec!["NA"; 9]);
+        assert_eq!(subject_id("186142024_paradigm_P005_MW_PC_Drowsy"), "P005");
+        assert_eq!(subject_id("Sub06_TKG06_2_Meditation"), "Sub06_TKG06");
+        assert_eq!(subject_id("sub-krithika_ses-S001_task-Default"), "sub-krithika");
     }
     #[test]
     fn spherical_spline_reproduces_source_electrodes() {

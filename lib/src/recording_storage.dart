@@ -10,6 +10,7 @@ enum RecordingFileFormat { ccseeg, fif, edf }
 /// EDF/FIF retain application-only metadata in JSON-content .ccsmeta files.
 /// Signal files and settings can therefore never be confused by their extension.
 class RecordingStorage {
+  static String? workingDirectory;
   static RecordingFileFormat preferredFormat = RecordingFileFormat.edf;
   static String get extension => preferredFormat.name;
   static String get preferencesPath {
@@ -23,6 +24,7 @@ class RecordingStorage {
       final value = jsonDecode(
         await File(path ?? preferencesPath).readAsString(),
       );
+      workingDirectory = value['working_directory'] as String?;
       preferredFormat = RecordingFileFormat.values.firstWhere(
         (f) => f.name == value['recording_format'],
       );
@@ -41,8 +43,18 @@ class RecordingStorage {
     }
     final file = File(path ?? preferencesPath);
     await file.parent.create(recursive: true);
-    await file.writeAsString(jsonEncode({'recording_format': value.name}));
+    await file.writeAsString(
+      jsonEncode({
+        'recording_format': value.name,
+        'working_directory': workingDirectory,
+      }),
+    );
     preferredFormat = value;
+  }
+
+  static Future<void> setWorkingDirectory(String? value) async {
+    workingDirectory = value;
+    await setPreferredFormat(preferredFormat);
   }
 
   static String withExtension(String path, [RecordingFileFormat? format]) {
@@ -358,9 +370,10 @@ Future<Map<String, dynamic>> _writeEdf(EegRecording r, File file) async {
         for (var s = 0; s < samples; s++) {
           final index = record * samples + s;
           final value = index < r.sampleCount ? r.preview[c][index] : padVal;
-          final q = ((value - lo) / span * 65535 - 32768)
-              .round()
-              .clamp(-32768, 32767);
+          final q = ((value - lo) / span * 65535 - 32768).round().clamp(
+            -32768,
+            32767,
+          );
           buffer.setInt16(s * 2, q, Endian.little);
         }
         await out.writeFrom(buffer.buffer.asUint8List());

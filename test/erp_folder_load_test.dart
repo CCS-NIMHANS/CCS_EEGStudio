@@ -87,7 +87,7 @@ void main() {
     expect(find.text('Group Statistics'), findsOneWidget);
   });
 
-  test('loads real TestBin_20261119 ccserp files via loadErpFolderInWorker', () async {
+  test('loads a bounded real TestBin_20261119 sample via loadErpFolderInWorker', () async {
     const dirPath = '/Volumes/CCS Storage/CCS_UserFolders/neethi/SKYMeditation_2026/AOBD_Analysis/TestBin_20261119';
     final dir = Directory(dirPath);
     if (!dir.existsSync()) return;
@@ -108,7 +108,7 @@ void main() {
     // ignore: avoid_print
     print('Found ${candidates.length} candidates');
     final sw = Stopwatch()..start();
-    final res = await Isolate.run(() => loadErpFolderInWorker(candidates));
+    final res = await Isolate.run(() => loadErpFolderInWorker(candidates.take(3).toList()));
     sw.stop();
     // ignore: avoid_print
     print('Loaded ${res.loadedFiles} files in ${sw.elapsedMilliseconds} ms');

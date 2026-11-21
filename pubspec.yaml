@@ -1,7 +1,7 @@
 name: ccs_eeg_app
 description: Lightweight EEG feature extraction and connectivity desktop app.
 publish_to: none
-version: 1.2.59+60
+version: 1.2.60+61
 
 environment:
   sdk: ^3.11.0
@@ -28,6 +28,8 @@ dev_dependencies:
 flutter:
   assets:
     - assets/group_stats.py
+    - assets/erp_factorial_models.py
+    - assets/erp_group_figures.py
     - assets/source_regions.json
     - assets/source_review_geometry.json
   uses-material-design: true

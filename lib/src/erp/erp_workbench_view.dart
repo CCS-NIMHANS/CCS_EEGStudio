@@ -1449,8 +1449,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     }
   }
 
-  Future<void> _openResultFolder() async {
-    final dirPath = await pickDirectorySafe(
+  Future<void> _openResultFolder({String? directory}) async {
+    final dirPath = directory ?? await pickDirectorySafe(
       dialogTitle: 'Open ERP results folder',
       currentDirectory: _output.text,
       fallbackFilePath: _paths.firstOrNull,
@@ -1611,8 +1611,43 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     try {
       final allFiles = discoverErpRecordings(directory, firstSubjects: 0);
       if (allFiles.isEmpty) {
-        if (mounted) {
-          setState(() => _status = 'No supported recordings found in $directory');
+        final saved = !await Directory(directory)
+            .list(followLinks: false)
+            .where(
+              (entry) =>
+                  entry is File &&
+                  (entry.path.toLowerCase().endsWith('.ccserp') ||
+                      entry.path.endsWith('erp_results.json')),
+            )
+            .isEmpty;
+        if (!mounted) return;
+        if (saved) {
+          final open = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Saved ERP results found'),
+              content: const Text(
+                'Measure ERP needs EEG recordings or saved epochs. This folder contains completed ERP results. Open Results & groups to plot or compare them.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Open Results & groups'),
+                ),
+              ],
+            ),
+          );
+          if (open == true && mounted)
+            await _openResultFolder(directory: directory);
+        } else {
+          setState(
+            () => _status =
+                'No EEG recordings or saved epochs found in $directory. Completed .ccserp results belong in Results & groups.',
+          );
         }
         return;
       }

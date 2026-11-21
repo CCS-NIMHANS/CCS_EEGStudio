@@ -55,6 +55,75 @@ EegRecording _recording({
 
 void main() {
   test(
+    'working-folder override also moves the persistent engine cache',
+    () async {
+      final root = await Directory.systemTemp.createTemp('cache-drive-');
+      addTearDown(() => root.delete(recursive: true));
+      final previous = RecordingStorage.workingDirectory;
+      addTearDown(() => RecordingStorage.workingDirectory = previous);
+      final sep = Platform.pathSeparator;
+      RecordingStorage.workingDirectory = '${root.path}${sep}working';
+      final raw = _recording(path: '${root.path}${sep}input.ccseeg');
+      await RecordingStorage.save(raw, raw.path);
+      final session = PreprocessingPreview(raw);
+      await session.initialize();
+      expect(
+        session.cachePath!.startsWith(RecordingStorage.workingDirectory!),
+        true,
+      );
+      await session.dispose(deleteCache: true);
+    },
+  );
+  test(
+    'closing a temporary preview deletes only cache and retains finalised output',
+    () async {
+      final root = await Directory.systemTemp.createTemp('close-preview-');
+      addTearDown(() => root.delete(recursive: true));
+      final sep = Platform.pathSeparator;
+      final raw = _recording(path: '${root.path}${sep}raw.ccseeg');
+      await RecordingStorage.save(raw, raw.path);
+      final session = PreprocessingPreview(
+        raw,
+        cacheRoot: Directory('${root.path}${sep}cache'),
+      );
+      final steps = <String, Map<String, dynamic>>{
+        'filter': {'filter': true, 'low_hz': 1.0},
+      };
+      final result = await session.compute(
+        service: _Engine(),
+        steps: steps,
+        settings: AnalysisConfig().toPreprocessingOptions().toJson(),
+        onProgress: (_, _) {},
+      );
+      final cache = session.cachePath!;
+      await expectLater(
+        session.finalize(
+          recording: result,
+          outputPath: '$cache${sep}export.edf',
+          steps: steps,
+        ),
+        throwsArgumentError,
+      );
+      final output = '${root.path}${sep}final.edf';
+      await session.finalize(
+        recording: result,
+        outputPath: output,
+        steps: steps,
+      );
+      await session.dispose(deleteCache: true);
+      expect(await Directory(cache).exists(), false);
+      expect(await File(raw.path).exists(), true);
+      expect(await File(output).exists(), true);
+      final reopened = PreprocessingPreview(
+        raw,
+        cacheRoot: Directory('${root.path}${sep}cache'),
+      );
+      await reopened.initialize();
+      expect(reopened.baseline.provenance.containsKey('preprocessing'), false);
+      expect(await reopened.restore(service: _Engine()), isNull);
+    },
+  );
+  test(
     'finalisation exports cached samples and restores the handoff without an engine rerun',
     () async {
       final root = await Directory.systemTemp.createTemp('finalize-preview-');

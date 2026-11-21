@@ -152,6 +152,7 @@ fn text(data: &[u8], tag_type: u32) -> String {
 
 fn matrix_element(bytes: &[u8], offset: usize) -> Option<(MatValue, usize)> {
     let tag = Tag::read(bytes, offset)?;
+    if tag.tag_type == MI_MATRIX && tag.data.is_empty() {return Some((MatValue::default(),tag.next_offset));}
     (tag.tag_type == MI_MATRIX)
         .then(|| matrix(tag.data, 0, tag.data.len()).map(|(v, _)| (v, tag.next_offset)))?
 }
@@ -290,4 +291,35 @@ pub fn load(path: &Path) -> Result<HashMap<String, MatValue>, String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod empty_struct_fields_regression {
+    fn element(kind: u32, data: &[u8]) -> Vec<u8> {
+        let mut out = kind.to_le_bytes().to_vec();
+        out.extend((data.len() as u32).to_le_bytes());
+        out.extend(data);
+        out.resize((out.len()+7)/8*8,0);
+        out
+    }
+    fn matrix(class: u8, dims: [u32;2], payload: Vec<u8>) -> Vec<u8> {
+        let mut out = element(6, &[class,0,0,0,0,0,0,0]);
+        out.extend(element(5, &dims.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>()));
+        out.extend(element(1,b""));
+        out.extend(payload);
+        element(14,&out)
+    }
+    #[test]
+    fn empty_channel_field_does_not_truncate_later_labels() {
+        let mut fields = element(5,&8u32.to_le_bytes());
+        fields.extend(element(1,b"labels\0\0ref\0\0\0\0\0"));
+        for label in ["Fp1","Fz","F3"] {
+            fields.extend(matrix(4,[1,label.len() as u32],element(2,label.as_bytes())));
+            fields.extend(element(14,&[]));
+        }
+        let data=matrix(2,[1,3],fields);
+        let (value,_) = super::matrix_element(&data,0).unwrap();
+        assert_eq!(value.fields["labels"].iter().map(|v|v.text.as_str()).collect::<Vec<_>>(),vec!["Fp1","Fz","F3"]);
+        assert_eq!(value.fields["ref"].len(),3);
+    }
 }

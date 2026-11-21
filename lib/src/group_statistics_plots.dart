@@ -12,6 +12,9 @@ class StatsPlotLayoutConfig {
     this.facetRowFactor,
     this.plotType = StatsPlotType.line,
     this.useSem = true,
+    this.factorLabels = const {},
+    this.levelLabels = const {},
+    this.seriesColors = const {},
   });
 
   final String? xFactor;
@@ -20,6 +23,13 @@ class StatsPlotLayoutConfig {
   final String? facetRowFactor;
   final StatsPlotType plotType;
   final bool useSem;
+  final Map<String, String> factorLabels;
+  final Map<String, Map<String, String>> levelLabels;
+  final Map<String, int> seriesColors;
+  String factorLabel(String? raw) =>
+      raw == null ? 'None' : factorLabels[raw] ?? raw;
+  String levelLabel(String? factor, String raw) =>
+      levelLabels[factor]?[raw] ?? raw;
 
   StatsPlotLayoutConfig copyWith({
     String? xFactor,
@@ -32,18 +42,93 @@ class StatsPlotLayoutConfig {
     bool clearFacetRow = false,
     StatsPlotType? plotType,
     bool? useSem,
+    Map<String, String>? factorLabels,
+    Map<String, Map<String, String>>? levelLabels,
+    Map<String, int>? seriesColors,
   }) {
     return StatsPlotLayoutConfig(
       xFactor: clearX ? null : (xFactor ?? this.xFactor),
       seriesFactor: clearSeries ? null : (seriesFactor ?? this.seriesFactor),
-      facetColFactor:
-          clearFacetCol ? null : (facetColFactor ?? this.facetColFactor),
-      facetRowFactor:
-          clearFacetRow ? null : (facetRowFactor ?? this.facetRowFactor),
+      facetColFactor: clearFacetCol
+          ? null
+          : (facetColFactor ?? this.facetColFactor),
+      facetRowFactor: clearFacetRow
+          ? null
+          : (facetRowFactor ?? this.facetRowFactor),
       plotType: plotType ?? this.plotType,
       useSem: useSem ?? this.useSem,
+      factorLabels: factorLabels ?? this.factorLabels,
+      levelLabels: levelLabels ?? this.levelLabels,
+      seriesColors: seriesColors ?? this.seriesColors,
     );
   }
+}
+
+typedef StatsPlotBracket = ({
+  int xA,
+  int seriesA,
+  int xB,
+  int seriesB,
+  String label,
+});
+
+List<StatsPlotBracket> statsPlotBrackets({
+  required StatsPlotLayoutConfig config,
+  required List<Map<String, dynamic>> contrasts,
+  required List<String> factors,
+  required Map<String, List<String>> levels,
+  String? row,
+  String? column,
+}) {
+  final out = <StatsPlotBracket>[];
+  final xs = levels[config.xFactor] ?? ['All'],
+      ss = levels[config.seriesFactor] ?? ['All'];
+  for (final p in contrasts) {
+    if ((p['p_adj'] as num? ?? 1) >= .05) continue;
+    final f = '${p['factor']}';
+    if (f != config.xFactor && f != config.seriesFactor) continue;
+    final stratum = Map<String, dynamic>.from(p['stratum'] as Map? ?? {});
+    if (config.facetColFactor != null &&
+        stratum[config.facetColFactor] != column)
+      continue;
+    if (config.facetRowFactor != null && stratum[config.facetRowFactor] != row)
+      continue;
+    final roles = {
+      config.xFactor,
+      config.seriesFactor,
+      config.facetColFactor,
+      config.facetRowFactor,
+    };
+    if (stratum.keys.any((key) => !roles.contains(key))) continue;
+    if (stratum.isEmpty &&
+        factors.any((other) => other != f && roles.contains(other)))
+      continue;
+    final isX = f == config.xFactor;
+    final xa = isX
+        ? xs.indexOf('${p['group_a']}')
+        : xs.indexOf('${stratum[config.xFactor] ?? 'All'}');
+    final xb = isX ? xs.indexOf('${p['group_b']}') : xa;
+    final sa = isX
+        ? ss.indexOf('${stratum[config.seriesFactor] ?? 'All'}')
+        : ss.indexOf('${p['group_a']}');
+    final sb = isX ? sa : ss.indexOf('${p['group_b']}');
+    if ([xa, xb, sa, sb].any((v) => v < 0)) continue;
+    final q = (p['p_adj'] as num).toDouble();
+    final mark = q < .001
+        ? '***'
+        : q < .01
+        ? '**'
+        : '*';
+    out.add((
+      xA: xa,
+      xB: xb,
+      seriesA: sa,
+      seriesB: sb,
+      label:
+          '${isX ? config.levelLabel(config.seriesFactor, ss[sa]) : config.levelLabel(config.xFactor, xs[xa])} $mark',
+    ));
+  }
+  return out;
 }
 
 /// Configurable multi-factor statistical plot widget.
@@ -59,6 +144,7 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
     this.activeFactors = const [],
     this.isDummyPreview = false,
     this.height = 360,
+    this.posthocs = const [],
   });
 
   final StatsPlotLayoutConfig config;
@@ -68,6 +154,7 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
   final List<String> activeFactors;
   final bool isDummyPreview;
   final double height;
+  final List<Map<String, dynamic>> posthocs;
 
   static const _palette = [
     Color(0xFF38BDF8),
@@ -81,14 +168,22 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
   ];
 
   List<String> _levelsOf(String? factor) {
-    if (factor == null || factor.isEmpty || factor == 'None') return const ['All'];
+    if (factor == null || factor.isEmpty || factor == 'None')
+      return const ['All'];
     final lvls = factorLevels[factor];
     return (lvls != null && lvls.isNotEmpty) ? lvls : const ['All'];
   }
 
   /// Aggregates cell descriptives (or generates deterministic dummy data)
   /// for a specific (facetRow, facetCol, series, x) cell.
-  ({double mean, double err, double q1, double median, double q3, List<double> vals})?
+  ({
+    double mean,
+    double err,
+    double q1,
+    double median,
+    double q3,
+    List<double> vals,
+  })?
   _cellStats({
     required String? rowVal,
     required String? colVal,
@@ -169,6 +264,54 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
     );
   }
 
+  List<Widget> _annotations() {
+    if (isDummyPreview) return [];
+    final significant = posthocs
+        .where((p) => (p['p_adj'] as num? ?? 1) < .05)
+        .toList();
+    return [
+      ExpansionTile(
+        title: Text(
+          'Corrected contrast details · ${significant.length} significant',
+        ),
+        subtitle: const Text(
+          'Markers show up to eight matching cell contrasts per panel. Expand for all adjusted comparisons.',
+        ),
+        children: [
+          Text(
+            'Post-hoc comparisons: adjusted p < .05 (${significant.length}). Simple effects apply only to the named cohort/session cells; marginal contrasts collapse other factors.',
+            style: const TextStyle(fontSize: 11),
+          ),
+          if (significant.isEmpty)
+            const Text(
+              'No significant adjusted pairwise contrasts.',
+              style: TextStyle(fontSize: 11),
+            ),
+          for (final p in significant)
+            Text(() {
+              final factor = '${p['factor']}';
+              final stratum = Map<String, dynamic>.from(
+                p['stratum'] as Map? ?? {},
+              );
+              final context = stratum.entries
+                  .map(
+                    (e) =>
+                        '${config.factorLabel(e.key)}=${config.levelLabel(e.key, "${e.value}")}',
+                  )
+                  .join(', ');
+              final q = (p['p_adj'] as num).toDouble();
+              final mark = q < .001
+                  ? '***'
+                  : q < .01
+                  ? '**'
+                  : '*';
+              return '$mark ${config.factorLabel(factor)}: ${config.levelLabel(factor, "${p['group_a']}")} ↔ ${config.levelLabel(factor, "${p['group_b']}")} · ${context.isEmpty ? 'marginal' : context} · adjusted p=${q.toStringAsPrecision(3)}';
+            }(), style: const TextStyle(fontSize: 11, color: Colors.tealAccent)),
+        ],
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final xLevels = _levelsOf(config.xFactor);
@@ -196,7 +339,8 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
             if (st == null) continue;
             yMin = math.min(yMin, st.mean - st.err * 1.3);
             yMax = math.max(yMax, st.mean + st.err * 1.3);
-            if (config.plotType == StatsPlotType.boxplot && st.vals.isNotEmpty) {
+            if (config.plotType == StatsPlotType.boxplot &&
+                st.vals.isNotEmpty) {
               yMin = math.min(yMin, st.vals.first);
               yMax = math.max(yMax, st.vals.last);
             }
@@ -252,7 +396,7 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
                 ),
               Expanded(
                 child: Text(
-                  '$metricName  ·  X: ${config.xFactor ?? "None"}  |  Lines/Hue: ${config.seriesFactor ?? "None"}  |  Cols: ${config.facetColFactor ?? "None"}${config.facetRowFactor != null ? "  |  Rows: ${config.facetRowFactor}" : ""}',
+                  '$metricName  ·  X: ${config.factorLabel(config.xFactor)}  |  Lines/Hue: ${config.factorLabel(config.seriesFactor)}  |  Cols: ${config.factorLabel(config.facetColFactor)}${config.facetRowFactor != null ? "  |  Rows: ${config.facetRowFactor}" : ""}',
                   style: const TextStyle(
                     fontSize: 11.5,
                     fontWeight: FontWeight.w600,
@@ -270,7 +414,7 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
               runSpacing: 4,
               children: [
                 Text(
-                  '${config.seriesFactor}:',
+                  '${config.factorLabel(config.seriesFactor)}:',
                   style: const TextStyle(fontSize: 11, color: Colors.white70),
                 ),
                 for (var s = 0; s < seriesLevels.length; s++)
@@ -281,13 +425,16 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
                         width: 10,
                         height: 10,
                         decoration: BoxDecoration(
-                          color: _palette[s % _palette.length],
+                          color: Color(
+                            config.seriesColors[seriesLevels[s]] ??
+                                _palette[s % _palette.length].toARGB32(),
+                          ),
                           shape: BoxShape.circle,
                         ),
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        seriesLevels[s],
+                        config.levelLabel(config.seriesFactor, seriesLevels[s]),
                         style: const TextStyle(fontSize: 11),
                       ),
                     ],
@@ -306,7 +453,7 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
                           RotatedBox(
                             quarterTurns: 3,
                             child: Text(
-                              '${config.facetRowFactor}: ${rowLevels[r]}',
+                              '${config.factorLabel(config.facetRowFactor)}: ${config.levelLabel(config.facetRowFactor, rowLevels[r])}',
                               style: const TextStyle(
                                 fontSize: 10.5,
                                 fontWeight: FontWeight.bold,
@@ -322,7 +469,7 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
                                 children: [
                                   if (config.facetColFactor != null)
                                     Text(
-                                      '${config.facetColFactor}: ${colLevels[c]}',
+                                      '${config.factorLabel(config.facetColFactor)}: ${config.levelLabel(config.facetColFactor, colLevels[c])}',
                                       style: const TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.w600,
@@ -334,12 +481,40 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
                                     child: CustomPaint(
                                       size: Size.infinite,
                                       painter: _FacetPlotPainter(
-                                        xLevels: xLevels,
+                                        xLevels: xLevels
+                                            .map(
+                                              (x) => config.levelLabel(
+                                                config.xFactor,
+                                                x,
+                                              ),
+                                            )
+                                            .toList(),
                                         seriesLevels: seriesLevels,
+                                        brackets: statsPlotBrackets(
+                                          config: config,
+                                          contrasts: posthocs,
+                                          factors: activeFactors,
+                                          levels: factorLevels,
+                                          row: config.facetRowFactor == null
+                                              ? null
+                                              : rowLevels[r],
+                                          column: config.facetColFactor == null
+                                              ? null
+                                              : colLevels[c],
+                                        ),
                                         plotType: config.plotType,
                                         yMin: yMin,
                                         yMax: yMax,
-                                        palette: _palette,
+                                        palette: [
+                                          for (final (index, level)
+                                              in seriesLevels.indexed)
+                                            Color(
+                                              config.seriesColors[level] ??
+                                                  _palette[index %
+                                                          _palette.length]
+                                                      .toARGB32(),
+                                            ),
+                                        ],
                                         getCell: (sIdx, xIdx) => _cellStats(
                                           rowVal: config.facetRowFactor == null
                                               ? null
@@ -369,6 +544,7 @@ class ConfigurableStatsPlotWidget extends StatelessWidget {
               ],
             ),
           ),
+          ..._annotations(),
         ],
       ),
     );
@@ -384,11 +560,13 @@ class _FacetPlotPainter extends CustomPainter {
     required this.yMax,
     required this.palette,
     required this.getCell,
+    this.brackets = const [],
   });
 
   final List<String> xLevels;
   final List<String> seriesLevels;
   final StatsPlotType plotType;
+  final List<StatsPlotBracket> brackets;
   final double yMin;
   final double yMax;
   final List<Color> palette;
@@ -409,7 +587,7 @@ class _FacetPlotPainter extends CustomPainter {
 
     const leftPad = 38.0;
     const rightPad = 10.0;
-    const topPad = 8.0;
+    final topPad = 24.0 + math.min(brackets.length, 8) * 16;
     const bottomPad = 24.0;
     final plotW = math.max(1.0, size.width - leftPad - rightPad);
     final plotH = math.max(1.0, size.height - topPad - bottomPad);
@@ -424,6 +602,40 @@ class _FacetPlotPainter extends CustomPainter {
       return leftPad + step * (xIdx + 0.5);
     }
 
+    double bracketX(int x, int series) {
+      final step = plotW / xLevels.length;
+      if (plotType == StatsPlotType.line)
+        return xCenter(x) +
+            (seriesLevels.length > 1
+                ? (series - (seriesLevels.length - 1) / 2) * 4
+                : 0);
+      return xCenter(x) +
+          (series - (seriesLevels.length - 1) / 2) *
+              step *
+              .7 /
+              seriesLevels.length;
+    }
+
+    for (final (i, b) in brackets.take(8).indexed) {
+      final a = bracketX(b.xA, b.seriesA),
+          z = bracketX(b.xB, b.seriesB),
+          y = 16.0 + i * 16;
+      final paint = Paint()
+        ..color = Colors.white70
+        ..strokeWidth = 1;
+      canvas.drawLine(Offset(a, y + 4), Offset(a, y), paint);
+      canvas.drawLine(Offset(a, y), Offset(z, y), paint);
+      canvas.drawLine(Offset(z, y), Offset(z, y + 4), paint);
+      final text = TextPainter(
+        text: TextSpan(
+          text: b.label,
+          style: const TextStyle(fontSize: 9, color: Colors.white),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      text.paint(canvas, Offset((a + z) / 2 - text.width / 2, y - text.height));
+    }
+
     // Axes & grid
     final gridPaint = Paint()
       ..color = Colors.white12
@@ -435,7 +647,11 @@ class _FacetPlotPainter extends CustomPainter {
 
     for (final yVal in [yMin, (yMin + yMax) * 0.5, yMax]) {
       final y = yOf(yVal);
-      canvas.drawLine(Offset(leftPad, y), Offset(leftPad + plotW, y), gridPaint);
+      canvas.drawLine(
+        Offset(leftPad, y),
+        Offset(leftPad + plotW, y),
+        gridPaint,
+      );
       final tp = TextPainter(
         text: TextSpan(
           text: yVal.toStringAsFixed(1),
@@ -521,10 +737,7 @@ class _FacetPlotPainter extends CustomPainter {
               bx + itemW * 0.38,
               math.max(topY, baseY),
             );
-            canvas.drawRect(
-              rect,
-              Paint()..color = col.withValues(alpha: 0.7),
-            );
+            canvas.drawRect(rect, Paint()..color = col.withValues(alpha: 0.7));
             final errPaint = Paint()
               ..color = Colors.white70
               ..strokeWidth = 1.3;
@@ -541,10 +754,7 @@ class _FacetPlotPainter extends CustomPainter {
               bx + itemW * 0.35,
               yOf(st.q1),
             );
-            canvas.drawRect(
-              rect,
-              Paint()..color = col.withValues(alpha: 0.35),
-            );
+            canvas.drawRect(rect, Paint()..color = col.withValues(alpha: 0.35));
             canvas.drawRect(
               rect,
               Paint()

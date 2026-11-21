@@ -464,6 +464,8 @@ class _FeatureHomeState extends State<FeatureHome>
 
   /// Steps ticked in the interactive panel to be run together with "Apply selected".
   final Set<String> _stepSelection = {};
+  bool _keepPreprocessingCache = false;
+  Future<void> _pendingPreviewDisposal = Future.value();
 
   /// Latest settings of every step card, collected while the panel is built.
   final Map<String, Map<String, dynamic>> _stepSettingsCache = {};
@@ -474,10 +476,10 @@ class _FeatureHomeState extends State<FeatureHome>
   ];
 
   /// Applies the exact set of ticked steps in one engine run (cached steps are reused).
-  Future<void> _applySelectedPreviewSteps() async {
-    if (_running || _batchMaximized) return;
+  Future<bool> _applySelectedPreviewSteps() async {
+    if (_running || _batchMaximized) return false;
     final baseline = _raw ?? _activeRecording;
-    if (baseline == null) return;
+    if (baseline == null) return false;
     _previewSession ??= PreprocessingPreview(baseline);
     final next = <String, Map<String, dynamic>>{};
     for (final id in _stepOrder) {
@@ -504,14 +506,11 @@ class _FeatureHomeState extends State<FeatureHome>
         },
       );
       final saved = await _previewSession!.finalizedCopyFor(result);
-      if (!mounted || _stopRequested) return;
+      if (!mounted || _stopRequested) return false;
       setState(() {
         _appliedPreviewSteps
           ..clear()
           ..addAll(next);
-        _stepSelection
-          ..clear()
-          ..addAll(next.keys);
         _stepSelection
           ..clear()
           ..addAll(next.keys);
@@ -524,8 +523,10 @@ class _FeatureHomeState extends State<FeatureHome>
         _sourceInput = null;
         _selection = const ViewerSelection.empty();
       });
+      return true;
     } catch (e) {
       _log('Interactive preprocessing failed; previous waveform retained: $e');
+      return false;
     } finally {
       if (mounted) setState(() => _running = false);
     }
@@ -538,15 +539,53 @@ class _FeatureHomeState extends State<FeatureHome>
     _finalizedPreview = null;
     _appliedPreviewSteps.clear();
     _stepSelection.clear();
-    if (previous != null) unawaited(previous.dispose());
+    _stepSettingsCache.clear();
+    if (previous != null) {
+      final deleteCache = !_keepPreprocessingCache;
+      _pendingPreviewDisposal = _pendingPreviewDisposal
+          .then((_) => previous.dispose(deleteCache: deleteCache))
+          .catchError((Object e) {
+            _log('Could not remove temporary preprocessing cache: $e');
+          });
+    }
   }
 
-  Future<void> _restoreInteractivePreview(EegRecording recording) async {
+  Future<void> _restoreInteractivePreview(
+    EegRecording recording, {
+    bool resume = false,
+  }) async {
     final session = PreprocessingPreview(recording);
     _previewSession = session;
     setState(() => _running = true);
-    _log('Checking persistent preprocessing cache…');
     try {
+      await _pendingPreviewDisposal;
+      if (!resume) {
+        await session.initialize();
+        if (!mounted || !identical(_previewSession, session)) return;
+        setState(() {
+          _interactivePreview = recording;
+          _preprocessed = null;
+          _finalizedPreview = null;
+          _appliedPreviewSteps.clear();
+          _stepSelection
+            ..clear()
+            ..addAll(
+              configuredPreviewSteps(
+                _cfg
+                    .toPreprocessingOptions(
+                      nonEegChannels: _channels.nonEegChannels,
+                    )
+                    .toJson(),
+              ).keys,
+            );
+          _running = false;
+        });
+        _log(
+          'Showing original input. Cached preprocessing is available only through Resume cached preview.',
+        );
+        return;
+      }
+      _log('Checking persistent preprocessing cache…');
       final result = await session.restore(
         service: _service,
         onProgress: (p, m) {
@@ -1532,6 +1571,7 @@ class _FeatureHomeState extends State<FeatureHome>
     if (pick == null || pick.files.isEmpty) return;
     final path = pick.files.first.path;
     if (path == null) return;
+    if (!await _confirmLeaveRecording() || !mounted) return;
     setState(() {
       _running = true;
       _stopRequested = false;
@@ -1717,13 +1757,16 @@ class _FeatureHomeState extends State<FeatureHome>
     }
   }
 
-  void _removeOpenedRecording(EegRecording rec) {
+  Future<void> _removeOpenedRecording(EegRecording rec) async {
     if (_running) return;
+    if ((_raw?.path == rec.path || _activeRecording?.path == rec.path) &&
+        !await _confirmLeaveRecording())
+      return;
     final remaining = _openedRecordings
         .where((item) => item.path != rec.path)
         .toList();
     if (remaining.isEmpty) {
-      _clearPipeline();
+      await _clearPipeline(confirmed: true);
       return;
     }
     setState(() {
@@ -1732,7 +1775,7 @@ class _FeatureHomeState extends State<FeatureHome>
         ..addAll(remaining);
     });
     if (_raw?.path == rec.path || _activeRecording?.path == rec.path) {
-      _selectOpenedRecording(remaining.last);
+      _selectOpenedRecording(remaining.last, confirmed: true);
     }
   }
 
@@ -1783,16 +1826,18 @@ class _FeatureHomeState extends State<FeatureHome>
     }
   }
 
-  void _selectOpenedRecording(
+  Future<void> _selectOpenedRecording(
     EegRecording recording, {
     bool keepModule = false,
-  }) {
+    bool confirmed = false,
+  }) async {
     if (identical(recording, _interactivePreview)) {
       setState(() {
         _directInput = null;
       });
       return;
     }
+    if ((!confirmed && !await _confirmLeaveRecording()) || !mounted) return;
     _resetInteractivePreview();
     _restoreSavedEpochProtocol(recording);
     setState(() {
@@ -2076,9 +2121,45 @@ class _FeatureHomeState extends State<FeatureHome>
     _log('Stopping operation… wait for it to finish before restarting.');
   }
 
-  void _clearPipeline() {
+  Future<bool> _confirmLeaveRecording() async {
+    if (!_previewNeedsFinalizing) return true;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save preprocessing before closing?'),
+        content: const Text(
+          'The displayed preprocessing steps have not been finalised to an analysis file. Save them before closing, or discard the preview. Temporary cache files are removed on close unless Keep cache is selected.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'cancel'),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'discard'),
+            child: const Text('Discard preview'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'save'),
+            child: const Text('Finalise & save…'),
+          ),
+        ],
+      ),
+    );
+    if (action == 'save') {
+      await _saveInteractivePreview();
+      return !_previewNeedsFinalizing;
+    }
+    return action == 'discard';
+  }
+
+  Future<void> _clearPipeline({bool confirmed = false}) async {
     if (_running) return;
+    if (!confirmed && !await _confirmLeaveRecording()) return;
+    if (!mounted) return;
     _resetInteractivePreview();
+    _mediaController?.dispose();
+    _mediaController = null;
     setState(() {
       _raw = null;
       _openedRecordings.clear();
@@ -2088,10 +2169,18 @@ class _FeatureHomeState extends State<FeatureHome>
       _directInput = null;
       _featuresCsv = null;
       _plotsDir = null;
+      _groupInputCsv = null;
+      _batchResultCsvs.clear();
+      _showMediaPanel = false;
+      _mediaCursorSec = null;
+      _workspaceMaximized = false;
+      _waveformMaximized = false;
+      _selectedModule = _Module.loadRaw;
       _channels = ChannelTypeMap.empty();
       _selection = const ViewerSelection.empty();
     });
-    _log('Cleared the pipeline.');
+    await _pendingPreviewDisposal;
+    _log('Started a fresh interactive workspace. Saved files remain on disk.');
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -2099,46 +2188,12 @@ class _FeatureHomeState extends State<FeatureHome>
   // ══════════════════════════════════════════════════════════════════════
 
   Future<void> _runPreprocessing() async {
-    if (_running) return;
-    if (_interactivePreview == null) {
-      final baseline = _raw ?? _activeRecording;
-      if (baseline == null) return;
-      _previewSession ??= PreprocessingPreview(baseline);
-      final options = _cfg
-          .toPreprocessingOptions(nonEegChannels: _channels.nonEegChannels)
-          .toJson();
-      final steps = configuredPreviewSteps(options);
-      setState(() {
-        _running = true;
-        _stopRequested = false;
-        _progress = 0;
-        _logVisible = true;
-      });
-      try {
-        final result = await _previewSession!.compute(
-          service: _service,
-          steps: steps,
-          settings: options,
-          configuration: _cfg.toPreprocessingJson(),
-          onProgress: (p, m) {
-            _log(m);
-            if (mounted) setState(() => _progress = p);
-          },
-        );
-        if (!mounted || _stopRequested) return;
-        setState(() {
-          _interactivePreview = result;
-          _appliedPreviewSteps
-            ..clear()
-            ..addAll(steps);
-        });
-      } catch (e) {
-        _log('Preprocessing: $e');
-        return;
-      } finally {
-        if (mounted) setState(() => _running = false);
-      }
-    }
+    if (_running || _raw == null) return;
+    // Interactive finalisation uses exactly the visible checked steps. The
+    // configured batch defaults must never be substituted for an empty set.
+    final applied = await _applySelectedPreviewSteps();
+    if (!applied || !mounted || _running || _appliedPreviewSteps.isEmpty)
+      return;
     await _saveInteractivePreview();
   }
 
@@ -2673,10 +2728,21 @@ class _FeatureHomeState extends State<FeatureHome>
                         ),
                         top: _mediaPanelRect.top.clamp(
                           0.0,
-                          (area.maxHeight - _mediaPanelRect.height.clamp(220.0, area.maxHeight)).clamp(0.0, area.maxHeight),
+                          (area.maxHeight -
+                                  _mediaPanelRect.height.clamp(
+                                    220.0,
+                                    area.maxHeight,
+                                  ))
+                              .clamp(0.0, area.maxHeight),
                         ),
-                        width: _mediaPanelRect.width.clamp(280.0, area.maxWidth),
-                        height: _mediaPanelRect.height.clamp(220.0, area.maxHeight),
+                        width: _mediaPanelRect.width.clamp(
+                          280.0,
+                          area.maxWidth,
+                        ),
+                        height: _mediaPanelRect.height.clamp(
+                          220.0,
+                          area.maxHeight,
+                        ),
                         child: SyncedMediaPanel(
                           controller: _mediaController!,
                           onAddFiles: _pickAndAddMediaFiles,
@@ -2738,190 +2804,209 @@ class _FeatureHomeState extends State<FeatureHome>
       height: 50,
       color: const Color(0xFF060D1A),
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: _accentBlue.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: _accentBlue.withValues(alpha: 0.4)),
-            ),
-            child: const Text(
-              'CCS EEG',
-              style: TextStyle(
-                color: _accentBlue,
-                fontWeight: FontWeight.bold,
-                fontSize: 12,
-                letterSpacing: 1.2,
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          const Text(
-            'Studio',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          if (_appVersion.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: Text(
-                _appVersion,
-                style: const TextStyle(color: _textMuted, fontSize: 11),
-              ),
-            ),
-          const SizedBox(width: 8),
-          IconButton(
-            icon: Icon(
-              Icons.home_outlined,
-              size: 18,
-              color: _selectedModule == null ? _accentBlue : _textMuted,
-            ),
-            tooltip: 'Workflow overview',
-            onPressed: () => setState(() => _selectedModule = null),
-          ),
-          const SizedBox(width: 16),
-          // Sidebar toggle
-          IconButton(
-            icon: Icon(
-              _sidebarCollapsed ? Icons.menu : Icons.menu_open,
-              size: 18,
-              color: _textMuted,
-            ),
-            tooltip: _sidebarCollapsed ? 'Show pipeline' : 'Hide pipeline',
-            onPressed: () =>
-                setState(() => _sidebarCollapsed = !_sidebarCollapsed),
-          ),
-          const SizedBox(width: 8),
-          Tooltip(
-            message:
-                'Open an independent app window for another recording or analysis. '
-                'Use a separate output folder for simultaneous analyses.',
-            child: TextButton.icon(
-              icon: const Icon(Icons.open_in_new, size: 18),
-              label: const Text('New instance'),
-              onPressed: _openAppInstance,
-            ),
-          ),
-          // Pipeline preset dropdown
-          Container(
-            height: 34,
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            decoration: BoxDecoration(
-              color: _cardColor,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: _borderColor),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _presetKey,
-                dropdownColor: _cardColor,
-                style: const TextStyle(color: Colors.white, fontSize: 12.5),
-                icon: const Icon(
-                  Icons.expand_more,
-                  size: 16,
-                  color: _textMuted,
-                ),
-                items: _presets.entries
-                    .map(
-                      (e) => DropdownMenuItem(
-                        value: e.key,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(e.value.icon, size: 13, color: _accentBlue),
-                            const SizedBox(width: 6),
-                            Text(e.value.label),
-                          ],
-                        ),
+      child: LayoutBuilder(
+        builder: (context, constraints) => SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: IntrinsicWidth(
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: _accentBlue.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: _accentBlue.withValues(alpha: 0.4),
                       ),
-                    )
-                    .toList(),
-                onChanged: (v) {
-                  if (v == null) return;
-                  setState(() {
-                    _presetKey = v;
-                    _pipeline = List.of(_presets[v]!.modules);
-                    _selectedModule = _Module.loadRaw;
-                  });
-                },
+                    ),
+                    child: const Text(
+                      'CCS EEG',
+                      style: TextStyle(
+                        color: _accentBlue,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Studio',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  if (_appVersion.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text(
+                        _appVersion,
+                        style: const TextStyle(color: _textMuted, fontSize: 11),
+                      ),
+                    ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: Icon(
+                      Icons.home_outlined,
+                      size: 18,
+                      color: _selectedModule == null ? _accentBlue : _textMuted,
+                    ),
+                    tooltip: 'Workflow overview',
+                    onPressed: () => setState(() => _selectedModule = null),
+                  ),
+                  const SizedBox(width: 16),
+                  // Sidebar toggle
+                  IconButton(
+                    icon: Icon(
+                      _sidebarCollapsed ? Icons.menu : Icons.menu_open,
+                      size: 18,
+                      color: _textMuted,
+                    ),
+                    tooltip: _sidebarCollapsed
+                        ? 'Show pipeline'
+                        : 'Hide pipeline',
+                    onPressed: () =>
+                        setState(() => _sidebarCollapsed = !_sidebarCollapsed),
+                  ),
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message:
+                        'Open an independent app window for another recording or analysis. '
+                        'Use a separate output folder for simultaneous analyses.',
+                    child: TextButton.icon(
+                      icon: const Icon(Icons.open_in_new, size: 18),
+                      label: const Text('New instance'),
+                      onPressed: _openAppInstance,
+                    ),
+                  ),
+                  // Pipeline preset dropdown
+                  Container(
+                    height: 34,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    decoration: BoxDecoration(
+                      color: _cardColor,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: _borderColor),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: _presetKey,
+                        dropdownColor: _cardColor,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12.5,
+                        ),
+                        icon: const Icon(
+                          Icons.expand_more,
+                          size: 16,
+                          color: _textMuted,
+                        ),
+                        items: _presets.entries
+                            .map(
+                              (e) => DropdownMenuItem(
+                                value: e.key,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      e.value.icon,
+                                      size: 13,
+                                      color: _accentBlue,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(e.value.label),
+                                  ],
+                                ),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (v) {
+                          if (v == null) return;
+                          setState(() {
+                            _presetKey = v;
+                            _pipeline = List.of(_presets[v]!.modules);
+                            _selectedModule = _Module.loadRaw;
+                          });
+                        },
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  if (_activeRecording != null) ...[
+                    IconButton(
+                      tooltip: 'Processing history',
+                      icon: const Icon(Icons.history, size: 18),
+                      onPressed: () =>
+                          showRecordingDetails(context, _activeRecording!),
+                    ),
+                    _statusChip(
+                      '${_channels.eegCount} EEG'
+                      '${_channels.nonEegCount > 0 ? ' · ${_channels.nonEegCount} aux' : ''}',
+                      _accentGreen,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  TextButton.icon(
+                    onPressed: _running || _batchMaximized
+                        ? null
+                        : _clearPipeline,
+                    icon: const Icon(Icons.restart_alt, size: 17),
+                    label: const Text('Start fresh'),
+                  ),
+                  const SizedBox(width: 8),
+                  _topBarButton(
+                    icon: Icons.ondemand_video,
+                    label: 'Video / Audio',
+                    active: _showMediaPanel,
+                    onTap: _toggleMediaPanel,
+                  ),
+                  const SizedBox(width: 6),
+                  _topBarButton(
+                    icon: _checkingForUpdates
+                        ? Icons.hourglass_top
+                        : Icons.system_update_alt,
+                    label: _checkingForUpdates ? 'Checking…' : 'Updates',
+                    active: _checkingForUpdates,
+                    onTap: _checkForUpdates,
+                  ),
+                  const SizedBox(width: 6),
+                  // Batch is a separate workspace, not a drawer with multiple partly
+                  // open states. Pressing the same clearly-labelled control closes it.
+                  _topBarButton(
+                    icon: _batchMaximized ? Icons.close : Icons.queue_play_next,
+                    label: _batchMaximized ? 'Close Batch' : 'Batch Workspace',
+                    active: _batchMaximized,
+                    onTap: () => setState(() {
+                      if (!_batchMaximized)
+                        _batchProfile = _presetKey == 'erp'
+                            ? 'ERP'
+                            : _presetKey == 'microstates'
+                            ? 'Microstates'
+                            : 'EEG';
+                      _batchMaximized = !_batchMaximized;
+                      _workspaceMaximized = false;
+                      _waveformMaximized = false;
+                    }),
+                  ),
+                  const SizedBox(width: 6),
+                  _topBarButton(
+                    icon: Icons.terminal,
+                    label: 'Log',
+                    active: _logVisible,
+                    onTap: () => setState(() => _logVisible = !_logVisible),
+                  ),
+                ],
               ),
             ),
           ),
-          const Spacer(),
-          if (_activeRecording != null) ...[
-            IconButton(
-              tooltip: 'Processing history',
-              icon: const Icon(Icons.history, size: 18),
-              onPressed: () => showRecordingDetails(context, _activeRecording!),
-            ),
-            _statusChip(
-              '${_channels.eegCount} EEG'
-              '${_channels.nonEegCount > 0 ? ' · ${_channels.nonEegCount} aux' : ''}',
-              _accentGreen,
-            ),
-            const SizedBox(width: 6),
-            Tooltip(
-              message: 'Clear loaded recordings and reset pipeline',
-              child: TextButton.icon(
-                onPressed: _running ? null : _clearPipeline,
-                icon: const Icon(Icons.clear_all, size: 15),
-                label: const Text('Clear', style: TextStyle(fontSize: 12)),
-                style: TextButton.styleFrom(
-                  foregroundColor: _textMuted,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  minimumSize: const Size(0, 30),
-                ),
-              ),
-            ),
-          ],
-          const SizedBox(width: 8),
-          _topBarButton(
-            icon: Icons.ondemand_video,
-            label: 'Video / Audio',
-            active: _showMediaPanel,
-            onTap: _toggleMediaPanel,
-          ),
-          const SizedBox(width: 6),
-          _topBarButton(
-            icon: _checkingForUpdates
-                ? Icons.hourglass_top
-                : Icons.system_update_alt,
-            label: _checkingForUpdates ? 'Checking…' : 'Updates',
-            active: _checkingForUpdates,
-            onTap: _checkForUpdates,
-          ),
-          const SizedBox(width: 6),
-          // Batch is a separate workspace, not a drawer with multiple partly
-          // open states. Pressing the same clearly-labelled control closes it.
-          _topBarButton(
-            icon: _batchMaximized ? Icons.close : Icons.queue_play_next,
-            label: _batchMaximized ? 'Close Batch' : 'Batch Workspace',
-            active: _batchMaximized,
-            onTap: () => setState(() {
-              if (!_batchMaximized)
-                _batchProfile = _presetKey == 'erp'
-                    ? 'ERP'
-                    : _presetKey == 'microstates'
-                    ? 'Microstates'
-                    : 'EEG';
-              _batchMaximized = !_batchMaximized;
-              _workspaceMaximized = false;
-              _waveformMaximized = false;
-            }),
-          ),
-          const SizedBox(width: 6),
-          _topBarButton(
-            icon: Icons.terminal,
-            label: 'Log',
-            active: _logVisible,
-            onTap: () => setState(() => _logVisible = !_logVisible),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -3995,7 +4080,9 @@ class _FeatureHomeState extends State<FeatureHome>
                         selection: _selection,
                         onSelectionChanged: (v) =>
                             setState(() => _selection = v),
-                        filterEnabled: activeModule == _Module.preprocess
+                        filterEnabled:
+                            activeModule == _Module.preprocess ||
+                                activeModule == _Module.loadRaw
                             ? false
                             : _cfg.filter,
                         lowHz: _cfg.lowHz,
@@ -4098,7 +4185,11 @@ class _FeatureHomeState extends State<FeatureHome>
                   },
                   selection: _selection,
                   onSelectionChanged: (v) => setState(() => _selection = v),
-                  filterEnabled: _cfg.filter,
+                  filterEnabled:
+                      _selectedModule == _Module.preprocess ||
+                          _selectedModule == _Module.loadRaw
+                      ? false
+                      : _cfg.filter,
                   lowHz: _cfg.lowHz,
                   highHz: _cfg.highHz,
                   notchHz: _cfg.notchHz,
@@ -4428,30 +4519,33 @@ class _FeatureHomeState extends State<FeatureHome>
             color: _accentBlue,
             onPressed: _running ? null : _loadRaw,
           ),
-          _loadButton(
-            label: 'Open ERP Workbench & Saved Results…',
-            color: const Color(0xFF6C5CE7),
-            onPressed: _running
-                ? null
-                : () async {
-                    if (!await _ensureFinalizedInput() || !mounted) return;
-                    await Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => Scaffold(
-                          appBar: AppBar(
-                            title: const Text('ERP workbench & saved results'),
-                          ),
-                          body: ErpWorkbenchView(
-                            activeRecording:
-                                _directInput ?? _preprocessed ?? _raw,
-                            config: _cfg,
-                            batchMode: false,
+          if (_presetKey == 'erp')
+            _loadButton(
+              label: 'Open ERP Workbench & Saved Results…',
+              color: const Color(0xFF6C5CE7),
+              onPressed: _running
+                  ? null
+                  : () async {
+                      if (!await _ensureFinalizedInput() || !mounted) return;
+                      await Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => Scaffold(
+                            appBar: AppBar(
+                              title: const Text(
+                                'ERP workbench & saved results',
+                              ),
+                            ),
+                            body: ErpWorkbenchView(
+                              activeRecording:
+                                  _directInput ?? _preprocessed ?? _raw,
+                              config: _cfg,
+                              batchMode: false,
+                            ),
                           ),
                         ),
-                      ),
-                    );
-                  },
-          ),
+                      );
+                    },
+            ),
           if (_openedRecordings.isNotEmpty) ...[
             const SizedBox(height: 12),
             Row(
@@ -4592,12 +4686,13 @@ class _FeatureHomeState extends State<FeatureHome>
                     _cfg.stimEpochs &&
                     !(_activeRecording?.isEpoched ?? false)
                 ? 'Clean + epoch (additional cleaning)'
-                : _interactivePreview != null
-                ? 'Finalise preprocessing…'
-                : 'Compute & finalise preprocessing…',
+                : 'Apply selected & finalise…',
             icon: Icons.cleaning_services,
             color: _accentPurple,
-            enabled: !_running && _raw != null,
+            enabled:
+                !_running &&
+                _raw != null &&
+                (_stepSelection.isNotEmpty || _appliedPreviewSteps.isNotEmpty),
             onPressed: _runPreprocessing,
           ),
         ],
@@ -5317,6 +5412,9 @@ class _FeatureHomeState extends State<FeatureHome>
                         final session = _previewSession!;
                         setState(() {
                           _interactivePreview = session.baseline;
+                          _preprocessed = null;
+                          _finalizedPreview = null;
+                          _directInput = null;
                           _source = null;
                           _sourceInput = null;
                           _appliedPreviewSteps.clear();
@@ -5330,6 +5428,13 @@ class _FeatureHomeState extends State<FeatureHome>
                       },
                 icon: const Icon(Icons.restore),
                 label: const Text('Original input'),
+              ),
+              TextButton.icon(
+                onPressed: _running || _raw == null
+                    ? null
+                    : () => _restoreInteractivePreview(_raw!, resume: true),
+                icon: const Icon(Icons.history),
+                label: const Text('Resume cached preview'),
               ),
               FilledButton.icon(
                 onPressed: _running ||
@@ -5359,7 +5464,7 @@ class _FeatureHomeState extends State<FeatureHome>
                     ? null
                     : _saveInteractivePreview,
                 icon: const Icon(Icons.save_outlined),
-                label: const Text('Finalise & use this signal…'),
+                label: const Text('Save displayed signal…'),
               ),
             ],
           ),
@@ -5369,15 +5474,73 @@ class _FeatureHomeState extends State<FeatureHome>
             child: Tooltip(
               message: _previewSession!.cachePath!,
               child: TextButton.icon(
-                onPressed: () =>
-                    Process.run('open', [_previewSession!.cachePath!]),
+                onPressed: () => Process.run(
+                  Platform.isWindows
+                      ? 'explorer.exe'
+                      : Platform.isMacOS
+                      ? 'open'
+                      : 'xdg-open',
+                  [_previewSession!.cachePath!],
+                ),
                 icon: const Icon(Icons.folder_outlined, size: 16),
                 label: const Text(
-                  'Persistent file cache · Show folder',
+                  'Preprocessing cache · Show folder',
                   style: TextStyle(fontSize: 11),
                 ),
               ),
             ),
+          ),
+        if (!_batchMaximized)
+          CheckboxListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            value: _keepPreprocessingCache,
+            title: const Text(
+              'Keep cache after closing',
+              style: TextStyle(fontSize: 12),
+            ),
+            subtitle: const Text(
+              'Off: remove temporary previews on close. Save a finalised analysis file to keep the result.',
+              style: TextStyle(fontSize: 11),
+            ),
+            onChanged: _running
+                ? null
+                : (v) => setState(() => _keepPreprocessingCache = v ?? false),
+          ),
+        OutlinedButton.icon(
+          onPressed: _running
+              ? null
+              : () async {
+                  if (!await _confirmLeaveRecording() || !mounted) return;
+                  final path = await FilePicker.getDirectoryPath(
+                    dialogTitle:
+                        'Choose preprocessing working folder (drive with free space)',
+                  );
+                  if (path == null) return;
+                  await RecordingStorage.setWorkingDirectory(path);
+                  _resetInteractivePreview();
+                  if (_raw != null) await _restoreInteractivePreview(_raw!);
+                  if (mounted) setState(() {});
+                },
+          icon: const Icon(Icons.storage),
+          label: Text(
+            RecordingStorage.workingDirectory == null
+                ? 'Working folder: beside output (change…)'
+                : 'Working folder: ${RecordingStorage.workingDirectory}',
+          ),
+        ),
+        if (RecordingStorage.workingDirectory != null)
+          TextButton(
+            onPressed: _running
+                ? null
+                : () async {
+                    if (!await _confirmLeaveRecording() || !mounted) return;
+                    await RecordingStorage.setWorkingDirectory(null);
+                    _resetInteractivePreview();
+                    if (_raw != null) await _restoreInteractivePreview(_raw!);
+                    if (mounted) setState(() {});
+                  },
+            child: const Text('Use output drive for temporary files'),
           ),
         _previewStep(
           'resample',
@@ -6524,11 +6687,7 @@ class _FeatureHomeState extends State<FeatureHome>
         )
       else ...[
         _hint(
-          'Graphs are built from: ${[
-            if (_cfg.gcmi) 'GCMI (undirected)',
-            if (_cfg.transferEntropy) 'transfer entropy (directed)',
-            if (_cfg.spectralGraph && anySpectral) 'spectral matrices (undirected)',
-          ].join(', ')}.',
+          'Graphs are built from: ${[if (_cfg.gcmi) 'GCMI (undirected)', if (_cfg.transferEntropy) 'transfer entropy (directed)', if (_cfg.spectralGraph && anySpectral) 'spectral matrices (undirected)'].join(', ')}.',
         ),
         _check(
           'Graph measures + Louvain communities',

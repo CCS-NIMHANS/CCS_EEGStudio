@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.59</b> ·
+  <b>Current version: 1.2.60</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
   <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
@@ -69,6 +69,16 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 </p>
 
 ---
+
+## ✨ What's New in v1.2.60
+
+- Preserve all SET channel labels, including datasets with empty channel metadata.
+- Compiled microstate group tables include syntax; compare recordings or participant means in the results workbench.
+- Raw input opens as raw, interactive steps match finalisation, and global Start fresh clears each interactive analysis.
+- Unsaved-preview close prompts, temporary-cache cleanup, selectable preprocessing working drive and disk-space checks.
+
+- ERP factor aliases, corrected cell-specific contrast markers, fitted Python GLM/MixedLM and B-minus-A waveform models.
+- Grouped publication figures export PNG, SVG and PDF for ERP/topography, ERSP/ITC, and saved rERP/ML results. Earlier native group statistics should be rerun with the fitted model.
 
 ## ✨ What's New in v1.2.59
 

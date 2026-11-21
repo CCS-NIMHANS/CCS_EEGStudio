@@ -128,7 +128,9 @@ class ErpGroupStatsEngine {
     final parsed = await TabularSheetReader.read(csvPath);
     var headers = List<String>.from(parsed.headers);
     var rows = List<List<String>>.from(parsed.rows);
-    final columnSources = <String, String>{for (final h in headers) h: 'Measurement table · $h'};
+    final columnSources = <String, String>{
+      for (final h in headers) h: 'Measurement table · $h',
+    };
 
     if (metadataPath != null &&
         metadataPath.trim().isNotEmpty &&
@@ -145,33 +147,58 @@ class ErpGroupStatsEngine {
         headers = merged.headers;
         rows = merged.rows;
         for (final h in meta.headers) {
-          final actual = headers.where((c) => c.toLowerCase() == h.toLowerCase()).firstOrNull;
-          if (actual != null) columnSources[actual] = 'Participant file ${File(metadataPath.trim()).uri.pathSegments.last} · $h (fills missing labels)';
+          final actual = headers
+              .where((c) => c.toLowerCase() == h.toLowerCase())
+              .firstOrNull;
+          if (actual != null)
+            columnSources[actual] =
+                'Participant file ${File(metadataPath.trim()).uri.pathSegments.last} · $h (fills missing labels)';
         }
       }
     }
 
-    final subjectIndex = headers.indexWhere((h) => const {
-      'subjid', 'subject', 'subject_id', 'participant_id',
-    }.contains(h.toLowerCase()));
+    final subjectIndex = headers.indexWhere(
+      (h) => const {
+        'subjid',
+        'subject',
+        'subject_id',
+        'participant_id',
+      }.contains(h.toLowerCase()),
+    );
     if (subjectIndex >= 0 && !headers.contains('participant_id')) {
       final sessionPattern = RegExp(
         r'^(.+?)[_-]?(?:session|ses|visit)[_-]?(\d+)(?:[-_].*)?$',
         caseSensitive: false,
       );
-      final matches = rows.map((r) => subjectIndex < r.length
-          ? sessionPattern.firstMatch(r[subjectIndex]) : null).toList();
+      final matches = rows
+          .map(
+            (r) => subjectIndex < r.length
+                ? sessionPattern.firstMatch(r[subjectIndex])
+                : null,
+          )
+          .toList();
       if (matches.any((m) => m != null)) {
-        final addSession = !headers.any((h) => const {'session', 'sessn'}.contains(h.toLowerCase()));
+        final addSession = !headers.any(
+          (h) => const {'session', 'sessn'}.contains(h.toLowerCase()),
+        );
         headers.add('participant_id');
-        columnSources['participant_id'] = 'Separated from ${headers[subjectIndex]} in the measurement table';
-        if (addSession) columnSources['Session'] = 'Session suffix in ${headers[subjectIndex]} (for example SESSION03 → 03)';
+        columnSources['participant_id'] =
+            'Separated from ${headers[subjectIndex]} in the measurement table';
+        if (addSession)
+          columnSources['Session'] =
+              'Session suffix in ${headers[subjectIndex]} (for example SESSION03 → 03)';
         if (addSession) headers.add('Session');
-        rows = [for (var i = 0; i < rows.length; i++) [
-          ...List.generate(headers.length - (addSession ? 2 : 1), (c) => c < rows[i].length ? rows[i][c] : ''),
-          matches[i]?.group(1) ?? rows[i][subjectIndex],
-          if (addSession) matches[i]?.group(2) ?? 'Unknown',
-        ]];
+        rows = [
+          for (var i = 0; i < rows.length; i++)
+            [
+              ...List.generate(
+                headers.length - (addSession ? 2 : 1),
+                (c) => c < rows[i].length ? rows[i][c] : '',
+              ),
+              matches[i]?.group(1) ?? rows[i][subjectIndex],
+              if (addSession) matches[i]?.group(2) ?? 'Unknown',
+            ],
+        ];
       }
     }
 
@@ -179,7 +206,9 @@ class ErpGroupStatsEngine {
     final metricCols = <String>[];
     final factorLevels = <String, List<String>>{};
     final factorCounts = <String, Map<String, int>>{};
-    String? detectedSubjectCol = headers.contains('participant_id') ? 'participant_id' : null;
+    String? detectedSubjectCol = headers.contains('participant_id')
+        ? 'participant_id'
+        : null;
 
     for (var c = 0; c < headers.length; c++) {
       final h = headers[c];
@@ -226,7 +255,8 @@ class ErpGroupStatsEngine {
         'window_end_ms',
         'n_trials',
       };
-      final looksMetricCol = hl.endsWith('_erp') ||
+      final looksMetricCol =
+          hl.endsWith('_erp') ||
           hl.endsWith('_uv') ||
           hl.endsWith('_uv_s') ||
           hl.endsWith('_s') ||
@@ -275,8 +305,18 @@ class ErpGroupStatsEngine {
     if (explicitKey != null &&
         explicitKey.trim().isNotEmpty &&
         metaHeaders.contains(explicitKey.trim())) {
-      csvKey = headers.contains(explicitKey.trim()) ? explicitKey.trim()
-          : headers.where((h) => const {'subjid', 'subject', 'subject_id', 'participant_id'}.contains(h.toLowerCase())).firstOrNull;
+      csvKey = headers.contains(explicitKey.trim())
+          ? explicitKey.trim()
+          : headers
+                .where(
+                  (h) => const {
+                    'subjid',
+                    'subject',
+                    'subject_id',
+                    'participant_id',
+                  }.contains(h.toLowerCase()),
+                )
+                .firstOrNull;
       metaKey = explicitKey.trim();
     } else {
       const candidates = [
@@ -288,9 +328,7 @@ class ErpGroupStatsEngine {
         'filename',
       ];
       for (final cand in candidates) {
-        csvKey ??= headers
-            .where((h) => h.toLowerCase() == cand)
-            .firstOrNull;
+        csvKey ??= headers.where((h) => h.toLowerCase() == cand).firstOrNull;
         metaKey ??= metaHeaders
             .where((h) => h.toLowerCase() == cand)
             .firstOrNull;
@@ -304,7 +342,9 @@ class ErpGroupStatsEngine {
 
     final csvKeyIdx = headers.indexOf(csvKey);
     final metaKeyIdx = metaHeaders.indexOf(metaKey);
-    final lowerHeaders = {for (var i = 0; i < headers.length; i++) headers[i].toLowerCase(): i};
+    final lowerHeaders = {
+      for (var i = 0; i < headers.length; i++) headers[i].toLowerCase(): i,
+    };
     final replaceCols = <({int csvIdx, int metaIdx})>[];
     final newCols = <String>[];
     for (var mi = 0; mi < metaHeaders.length; mi++) {
@@ -321,14 +361,22 @@ class ErpGroupStatsEngine {
       return (headers: headers, rows: rows);
     }
 
-    final subjectJoin = const {'subjid', 'subject', 'subject_id', 'participant_id', 'id', 'participant'}.contains(csvKey.toLowerCase());
+    final subjectJoin = const {
+      'subjid',
+      'subject',
+      'subject_id',
+      'participant_id',
+      'id',
+      'participant',
+    }.contains(csvKey.toLowerCase());
     String normKey(String raw) {
       var s = raw.trim().toLowerCase();
       s = s.replaceFirst(RegExp(r'^sub-'), '');
-      if (subjectJoin) s = s.replaceFirst(
-        RegExp(r'(?:[-_]?|(?<=\d))(?:session|ses|visit)[-_]?\d+.*$'),
-        '',
-      );
+      if (subjectJoin)
+        s = s.replaceFirst(
+          RegExp(r'(?:[-_]?|(?<=\d))(?:session|ses|visit)[-_]?\d+.*$'),
+          '',
+        );
       return s;
     }
 
@@ -339,7 +387,9 @@ class ErpGroupStatsEngine {
       final k = normKey(mr[metaKeyIdx]);
       if (k.isEmpty) continue;
       if (lookup.containsKey(k)) {
-        throw FormatException('Metadata has more than one row for "$k". Choose a unique subject or recording column.');
+        throw FormatException(
+          'Metadata has more than one row for "$k". Choose a unique subject or recording column.',
+        );
       }
       lookup[k] = [
         for (final col in newCols)
@@ -482,18 +532,38 @@ class ErpGroupStatsEngine {
         final subj = (subjIdx != null && subjIdx < r.length)
             ? r[subjIdx].trim()
             : 'obs_${obs.length}';
-        final levels = {
-          for (final f in activeFactors) f: r[colIdx[f]!].trim(),
-        };
+        final levels = {for (final f in activeFactors) f: r[colIdx[f]!].trim()};
         obs.add(_Obs(subject: subj, y: y, levels: levels));
       }
       if (obs.length < 3) continue;
 
+      final byParticipantCell = <String, List<_Obs>>{};
+      for (final o in obs) {
+        final key = [
+          o.subject,
+          ...activeFactors.map((f) => o.levels[f]!),
+        ].join('\u0000');
+        byParticipantCell.putIfAbsent(key, () => []).add(o);
+      }
+      final collapsed = byParticipantCell.values
+          .map(
+            (v) => _Obs(
+              subject: v.first.subject,
+              levels: v.first.levels,
+              y: v.map((o) => o.y).reduce((a, b) => a + b) / v.length,
+            ),
+          )
+          .toList();
+      obs
+        ..clear()
+        ..addAll(collapsed);
       final subjects = obs.map((o) => o.subject).toSet();
-      final isRepeated = subjIdx != null &&
+      final isRepeated =
+          subjIdx != null &&
           subjects.length >= 2 &&
           obs.length > subjects.length;
-      final useLmm = (preferredModel == 'lmm' && isRepeated) ||
+      final useLmm =
+          (preferredModel == 'lmm' && isRepeated) ||
           (preferredModel == 'auto' && isRepeated);
 
       // Identify which factors are between-subject vs within-subject
@@ -510,6 +580,39 @@ class ErpGroupStatsEngine {
         }
       }
 
+      if (isRepeated && !useLmm)
+        return {
+          'error':
+              'Repeated participant observations require participant blocking. Choose Auto / LMM approximation, or use a fitted GLM with participant-cluster covariance.',
+        };
+      final cellCounts = <String, int>{};
+      for (final o in obs) {
+        final key = activeFactors.map((f) => o.levels[f]!).join('\u0000');
+        cellCounts[key] = (cellCounts[key] ?? 0) + 1;
+      }
+      final expectedCells = activeFactors.fold(
+        1,
+        (n, f) => n * factorLevels[f]!.length,
+      );
+      final within = activeFactors
+          .where((f) => isBetweenFactor[f] != true)
+          .toList();
+      final expectedWithin = within.fold(
+        1,
+        (n, f) => n * factorLevels[f]!.length,
+      );
+      final perPerson = <String, int>{};
+      for (final o in obs) {
+        perPerson[o.subject] = (perPerson[o.subject] ?? 0) + 1;
+      }
+      if (cellCounts.length != expectedCells ||
+          cellCounts.values.toSet().length > 1 ||
+          (isRepeated && perPerson.values.any((n) => n != expectedWithin))) {
+        return {
+          'error':
+              'The native factorial approximation requires complete balanced cells and visits. Use Fitted GLM / LMM (Python) for unequal cohort sizes or missing visits.',
+        };
+      }
       // Compute observed ANOVA/LMM effects (Type-I/II sequential cell-mean SS)
       final terms = _buildTerms(activeFactors, includeInteractions);
       final obsStats = _computeFactorialStats(
@@ -574,32 +677,64 @@ class ErpGroupStatsEngine {
         cellDescriptives[e.key] = _descriptiveStats(e.value);
       }
 
-      // Pairwise post-hocs per factor
+      // Collapse duplicate rows within participant/cell before any pairwise test.
       final posthocs = <Map<String, dynamic>>[];
       for (final f in activeFactors) {
-        final lvls = factorLevels[f] ?? const [];
-        for (var i = 0; i < lvls.length; i++) {
-          for (var j = i + 1; j < lvls.length; j++) {
-            final vA = obs
-                .where((o) => o.levels[f] == lvls[i])
-                .map((o) => o.y)
-                .toList();
-            final vB = obs
-                .where((o) => o.levels[f] == lvls[j])
-                .map((o) => o.y)
-                .toList();
-            if (vA.length < 2 || vB.length < 2) continue;
-            final tRes = _welchT(vA, vB);
-            posthocs.add({
-              'factor': f,
-              'group_a': lvls[i],
-              'group_b': lvls[j],
-              'mean_diff': tRes.meanDiff,
-              't_stat': tRes.t,
-              'df': tRes.df,
-              'p_raw': tRes.p,
-            });
+        final others = activeFactors.where((v) => v != f).toList();
+        final strata = <String, Map<String, String>>{'': {}};
+        if (others.isNotEmpty)
+          for (final o in obs) {
+            final values = {
+              for (final other in others) other: o.levels[other]!,
+            };
+            strata[others.map((x) => '${o.levels[x]}').join('\u0000')] = values;
           }
+        for (final stratum in strata.values) {
+          final selected = obs
+              .where(
+                (o) => stratum.entries.every((e) => o.levels[e.key] == e.value),
+              )
+              .toList();
+          final lvls = factorLevels[f] ?? [];
+          for (var i = 0; i < lvls.length; i++)
+            for (var j = i + 1; j < lvls.length; j++) {
+              Map<String, double> means(String level) {
+                final grouped = <String, List<double>>{};
+                for (final o in selected.where((o) => o.levels[f] == level)) {
+                  grouped.putIfAbsent(o.subject, () => []).add(o.y);
+                }
+                return grouped.map(
+                  (k, v) => MapEntry(k, v.reduce((a, b) => a + b) / v.length),
+                );
+              }
+
+              final a = means(lvls[i]), b = means(lvls[j]);
+              final paired = isRepeated && isBetweenFactor[f] != true;
+              final common = a.keys.where(b.containsKey).toList();
+              if (paired ? common.length < 2 : a.length < 2 || b.length < 2)
+                continue;
+              final tRes = paired
+                  ? _pairedT([for (final key in common) b[key]! - a[key]!])
+                  : _welchT(a.values.toList(), b.values.toList());
+              posthocs.add({
+                'factor': f,
+                'group_a': lvls[i],
+                'group_b': lvls[j],
+                'stratum': stratum,
+                'contrast_scope': stratum.isEmpty
+                    ? 'marginal'
+                    : 'simple effect',
+                'test': paired
+                    ? 'paired participant means'
+                    : 'Welch participant means',
+                'n_a': paired ? common.length : a.length,
+                'n_b': paired ? common.length : b.length,
+                'mean_diff': tRes.meanDiff,
+                't_stat': tRes.t,
+                'df': tRes.df,
+                'p_raw': tRes.p,
+              });
+            }
         }
       }
       final rawPs = posthocs.map((p) => p['p_raw'] as double).toList();
@@ -614,12 +749,15 @@ class ErpGroupStatsEngine {
       metricResults.add({
         'metric': metric,
         'model_type': useLmm
-            ? '${activeFactors.length}-Factor Mixed-Design ANOVA / LMM (Subject Random Intercept + Exchangeable Perm, $effectivePerms perms)'
+            ? '${activeFactors.length}-Factor split-plot ANOVA approximation (participant blocks, $effectivePerms permutations; not a fitted LMM)'
             : '${activeFactors.length}-Factor Permutation GLM / ANOVA ($effectivePerms perms)',
         'factors': activeFactors,
         'factor_levels': factorLevels,
         'model_effects': modelEffects,
         'posthoc': posthocs,
+        'posthoc_family':
+            'All marginal and simple-effect contrasts within this metric',
+        'mean_difference_direction': 'group_b minus group_a',
         'cell_descriptives': cellDescriptives,
         'n_obs': obs.length,
         'n_subjects': subjects.length,
@@ -685,14 +823,16 @@ class ErpGroupStatsEngine {
     var dfWithinErr = dfWithin;
     var ssWithinErr = ssWithin;
     if (useLmm) {
-      final betweenFactors =
-          factors.where((f) => isBetweenFactor[f] == true).toList();
+      final betweenFactors = factors
+          .where((f) => isBetweenFactor[f] == true)
+          .toList();
       final subjObs = <String, List<double>>{};
       final subjCellKey = <String, String>{};
       for (final o in obs) {
         subjObs.putIfAbsent(o.subject, () => []).add(o.y);
-        subjCellKey[o.subject] =
-            betweenFactors.map((f) => o.levels[f]!).join('\u0000');
+        subjCellKey[o.subject] = betweenFactors
+            .map((f) => o.levels[f]!)
+            .join('\u0000');
       }
       final cellSum = <String, double>{};
       final cellCnt = <String, int>{};
@@ -778,9 +918,7 @@ class ErpGroupStatsEngine {
           ? ssBetweenErr
           : (useLmm ? ssWithinErr : ssWithin);
       final msTerm = ssTerm / dfNum;
-      final fStat = msTerm > 1e-18
-          ? msTerm / math.max(msErr, 1e-12)
-          : 0.0;
+      final fStat = msTerm > 1e-18 ? msTerm / math.max(msErr, 1e-12) : 0.0;
       final pVal = StatMath.fDistributionPValue(fStat, dfNum, dfDen);
       final etaSq = (ssTerm + ssErr) > 0 ? ssTerm / (ssTerm + ssErr) : 0.0;
 
@@ -834,10 +972,13 @@ class ErpGroupStatsEngine {
     // Map between-subject factors from permuted subject
     final subjBetween = <String, Map<String, String>>{};
     for (final o in obs) {
-      subjBetween.putIfAbsent(o.subject, () => {
-        for (final f in factors)
-          if (isBetweenFactor[f] == true) f: o.levels[f]!,
-      });
+      subjBetween.putIfAbsent(
+        o.subject,
+        () => {
+          for (final f in factors)
+            if (isBetweenFactor[f] == true) f: o.levels[f]!,
+        },
+      );
     }
 
     return [
@@ -889,6 +1030,30 @@ class ErpGroupStatsEngine {
     return s[lo] + (s[hi] - s[lo]) * (idx - lo);
   }
 
+  static ({double meanDiff, double t, double df, double p}) _pairedT(
+    List<double> differences,
+  ) {
+    final n = differences.length;
+    final mean = differences.reduce((a, b) => a + b) / n;
+    final variance =
+        differences
+            .map((v) => (v - mean) * (v - mean))
+            .reduce((a, b) => a + b) /
+        (n - 1);
+    final se = math.sqrt(variance / n);
+    final t = se > 1e-12
+        ? mean / se
+        : mean.abs() > 1e-12
+        ? mean.sign * 1e12
+        : 0.0;
+    return (
+      meanDiff: mean,
+      t: t,
+      df: (n - 1).toDouble(),
+      p: StatMath.studentTPValue(t, (n - 1).toDouble()),
+    );
+  }
+
   static ({double meanDiff, double t, double df, double p}) _welchT(
     List<double> a,
     List<double> b,
@@ -911,13 +1076,10 @@ class ErpGroupStatsEngine {
     final den =
         math.pow(va / a.length, 2) / math.max(1, a.length - 1) +
         math.pow(vb / b.length, 2) / math.max(1, b.length - 1);
-    final df = den > 1e-12 ? (num / den).toDouble() : (a.length + b.length - 2).toDouble();
-    return (
-      meanDiff: mb - ma,
-      t: t,
-      df: df,
-      p: StatMath.studentTPValue(t, df),
-    );
+    final df = den > 1e-12
+        ? (num / den).toDouble()
+        : (a.length + b.length - 2).toDouble();
+    return (meanDiff: mb - ma, t: t, df: df, p: StatMath.studentTPValue(t, df));
   }
 }
 

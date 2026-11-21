@@ -15,6 +15,32 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets(
+    'Start fresh resets Microstates and ERP to an empty recording workspace',
+    (tester) async {
+      await pumpApp(tester);
+      for (final mode in ['EEG Microstates', 'ERP Analysis']) {
+        await tester.tap(find.text('Continuous EEG').first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(mode).last);
+        await tester.pumpAndSettle();
+        if (mode == 'EEG Microstates') {
+          await tester.tap(find.text('Microstates').first);
+          await tester.pumpAndSettle();
+        }
+        expect(find.text('Start fresh'), findsOneWidget);
+        await tester.tap(find.text('Start fresh'));
+        await tester.pumpAndSettle();
+        expect(find.text('Open Recording…'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await tester.tap(find.text(mode).first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Continuous EEG').last);
+        await tester.pumpAndSettle();
+      }
+    },
+  );
+
   testWidgets('starts in the recording workspace with workflow sidebar', (
     tester,
   ) async {
@@ -27,6 +53,7 @@ void main() {
     expect(find.text('Open Recording…'), findsOneWidget);
     expect(find.text('Continuous EEG'), findsWidgets);
     expect(find.text('Choose where to begin'), findsNothing);
+    expect(find.text('Open ERP Workbench & Saved Results…'), findsNothing);
     expect(find.text('Batch Workspace'), findsOneWidget);
     expect(find.text('Updates'), findsOneWidget);
   });
@@ -38,7 +65,7 @@ void main() {
 
     await tester.tap(find.text('Preprocess'));
     await tester.pumpAndSettle();
-    expect(find.text('Compute & finalise preprocessing…'), findsOneWidget);
+    expect(find.text('Apply selected & finalise…'), findsOneWidget);
 
     await tester.tap(find.text('Feature Extraction'));
     await tester.pumpAndSettle();
@@ -62,12 +89,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Open Recording…'), findsOneWidget);
     expect(find.text('Preprocessing Options'), findsNothing);
-    expect(find.text('Compute & finalise preprocessing…'), findsNothing);
+    expect(find.text('Apply selected & finalise…'), findsNothing);
 
     await tester.tap(find.text('Preprocess'));
     await tester.pumpAndSettle();
     expect(find.text('Preprocessing Options'), findsOneWidget);
-    expect(find.text('Compute & finalise preprocessing…'), findsOneWidget);
+    expect(find.text('Apply selected & finalise…'), findsOneWidget);
   });
 
   testWidgets(
@@ -346,7 +373,7 @@ void main() {
     await tester.tap(find.text('Preprocess'));
     await tester.pumpAndSettle();
     expect(
-      buttonWithLabel('Compute & finalise preprocessing…').onPressed,
+      buttonWithLabel('Apply selected & finalise…').onPressed,
       isNull,
       reason: 'no recording loaded yet',
     );

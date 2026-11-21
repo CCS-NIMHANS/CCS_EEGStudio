@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'processing_workspace.dart';
 import 'feature_events.dart';
 import 'topostats/topostats_engine.dart' show splitFeatureCsvLine;
 import 'recording_transform.dart';
@@ -394,12 +396,19 @@ class ExtractionService {
     } else if (stim != null) {
       emit(0, 'Input is already epoched; stimulus epoching skipped.');
     }
-    final temp = await Directory.systemTemp.createTemp('ccs_eeg_pre_');
+    final temp = await ProcessingWorkspace.create(
+      outputPath: outputPath,
+      channels: recording.labels.length,
+      samples: recording.sampleCount,
+      preferredDirectory: RecordingStorage.workingDirectory,
+      report: (message) => emit(0, message),
+    );
     final requestedOutputPath = outputPath;
     if (outputPath.toLowerCase().endsWith('.edf') ||
         outputPath.toLowerCase().endsWith('.fif'))
       outputPath = '${temp.path}/staged_clean.ccseeg';
     final engineOutputPath = '${temp.path}/clean.ccseeg.json';
+    Timer? heartbeat;
     try {
       String inputPath = recording.path;
       String inputFormat = recording.format;
@@ -454,6 +463,14 @@ class ExtractionService {
       final process = await Process.start(executable, [job.path]);
       if (_cancelled) process.kill();
       _activeProcess = process;
+      final elapsed = Stopwatch()..start();
+      var lastStage = 'Engine starting';
+      heartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
+        emit(
+          latestProgress,
+          '$lastStage · engine running ${elapsed.elapsed.inSeconds}s; Stop remains available.',
+        );
+      });
       final stderr = <String>[];
       process.stderr
           .transform(utf8.decoder)
@@ -461,6 +478,7 @@ class ExtractionService {
           .listen((line) {
             if (line.startsWith('PROGRESS ')) {
               final fields = line.split(' ');
+              lastStage = fields.skip(2).join(' ');
               emit(
                 .05 + .85 * (double.tryParse(fields[1]) ?? 0) / 100,
                 fields.skip(2).join(' '),
@@ -472,6 +490,7 @@ class ExtractionService {
           });
       final stdout = await process.stdout.transform(utf8.decoder).join();
       final code = await process.exitCode;
+      heartbeat.cancel();
       _activeProcess = null;
       _checkCancelled();
       if (code != 0) {
@@ -710,6 +729,7 @@ class ExtractionService {
       emit(1, 'Saved recording and processing history');
       return cleaned;
     } finally {
+      heartbeat?.cancel();
       await temp.delete(recursive: true);
     }
   }

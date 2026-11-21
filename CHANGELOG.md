@@ -4,6 +4,19 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.60]
+
+- EEGLAB SET loading preserves channel labels beyond empty MATLAB struct fields; regression checks cover empty channel-reference fields and the affected 63-channel dataset was compared with Python.
+- Microstate batches export joined group tables for state metrics, syntax entropy classes and transitions, with participant IDs, explicit units and a data dictionary. Shared-template group comparisons offer recording values and participant means for state metrics, LZ and syntax shares/ratios.
+- Reopening a recording starts from original input. Resuming cached preprocessing is explicit; configured interactive steps are checked visibly, and Apply selected & finalise uses those exact selections.
+- A global Start fresh action clears interactive EEG, ERP and Microstate views. Closing or replacing an input prompts to finalise unsaved preprocessing; temporary previews are deleted by default, with an explicit Keep cache option. Finalised exports are preserved.
+- Preprocessing stages temporary files beside the output instead of the system temp drive. A persistent working-folder setting supports another drive, free-space checks explain low-space failures before staging, and elapsed engine activity remains visible during quiet ICA periods. Windows-specific behaviour still requires validation on affected machines.
+
+- ERP group designs offer factor/level display aliases and series colours while preserving raw statistical identities. Corrected simple-effect brackets are restricted to their matching facet/cells, with expandable contrast details and result/contrast exports.
+- N-factor analysis defaults to fitted Python OLS or REML random-intercept MixedLM with fitted-design marginal and simple-effect contrasts. Duplicate participant/cell rows are averaged before inference; corrected contrasts share one family per metric. The legacy native method is labelled as a split-plot ANOVA approximation, requires complete balanced cells, and uses paired participant-level comparisons for repeated factors. Earlier native group results should be rerun.
+- The grouped publication studio exports PNG/SVG/PDF grand-average ERP, voltage maps, ERSP, ITC, saved rERP coefficients and saved ML AUC, with configurable grouping, facets, colours, ROI, limits, size, DPI and typography. TF groupings recompute from epochs and preserve distinct visits. Difference models read saved B-minus-A waveform measurements, including peaks/latencies.
+- ERP folder selection detects completed .ccserp results and offers Results & groups rather than an unsupported-recording error. ERP saved-result entry points are confined to the ERP workflow.
+
 ## [1.2.59]
 
 - XDF loading repairs bounded local timestamp reversals by interpolating between surrounding monotonic anchors, retaining sample order. Non-finite timestamps and large clock resets remain explicit errors. Repairs are recorded in provenance and the activity log.

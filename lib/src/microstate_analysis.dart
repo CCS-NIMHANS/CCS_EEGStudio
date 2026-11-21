@@ -2153,6 +2153,8 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           ],
         ),
         const SizedBox(height: 10),
+        MicrostateGroupPanel(result: result),
+        const SizedBox(height: 12),
         _howToRead(result, recording),
         const SizedBox(height: 12),
         SizedBox(
@@ -2247,7 +2249,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         _transitionSection(result, recording),
         const SizedBox(height: 12),
         Text(
-          'Exports: MicrostateDictionaryDiscovery.csv, MicrostateSyntax.csv, per-recording samples.csv (labels/GFP/fit), microstates.json, MicrostateAnalysisResults.csv, MicrostateSequenceMetrics.csv, MicrostateTransitions.csv, template topographies SVG, and per-recording sequence SVG in ${result.outputDirectory}',
+          'Exports: MicrostateGroupStates.csv, MicrostateGroupSyntax.csv, MicrostateGroupTransitions.csv, GroupTables_README.txt, MicrostateDictionaryDiscovery.csv, MicrostateSyntax.csv, per-recording samples.csv (labels/GFP/fit), microstates.json, MicrostateAnalysisResults.csv, MicrostateSequenceMetrics.csv, MicrostateTransitions.csv, template topographies SVG, and per-recording sequence SVG in ${result.outputDirectory}',
           style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
         ),
       ],
@@ -2296,7 +2298,11 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
       (
         'Time spent',
         'Most of the recording is in $top. Each state lasts ${meanDur.isNaN ? "—" : meanDur.toStringAsFixed(0)} ms on average '
-            '${meanDur.isNaN ? "" : (meanDur < 40 ? "(very short: the labels flip quickly, which can mean noisy fitting or too many states)" : meanDur <= 140 ? "(in the range usually reported for resting EEG, roughly 60–120 ms)" : "(longer than usually reported; check smoothing)")}.',
+            '${meanDur.isNaN ? "" : (meanDur < 40
+                      ? "(very short: the labels flip quickly, which can mean noisy fitting or too many states)"
+                      : meanDur <= 140
+                      ? "(in the range usually reported for resting EEG, roughly 60–120 ms)"
+                      : "(longer than usually reported; check smoothing)")}.',
       ),
       (
         'Sequence regularity',
@@ -2327,9 +2333,21 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                   children: [
                     SizedBox(
                       width: 118,
-                      child: Text(title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF38BDF8))),
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF38BDF8),
+                        ),
+                      ),
                     ),
-                    Expanded(child: Text(text, style: const TextStyle(fontSize: 12, height: 1.4))),
+                    Expanded(
+                      child: Text(
+                        text,
+                        style: const TextStyle(fontSize: 12, height: 1.4),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -2425,13 +2443,34 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
               columns: const [
                 DataColumn(
                   label: Text('Example sequence · entropy'),
-                  tooltip: 'How varied the states within a word are. Low = bouncing between few states; highest = all different.',
+                  tooltip:
+                      'How varied the states within a word are. Low = bouncing between few states; highest = all different.',
                 ),
-                DataColumn(label: Text('Chance'), tooltip: 'TER: share of words in this class if states followed each other at random (no repeats).'),
-                DataColumn(label: Text('Observed'), tooltip: 'EER: share of the words actually seen in the recording.'),
-                DataColumn(label: Text('Markov'), tooltip: 'MER: share expected if the next state depended only on the current state, using your observed transition probabilities.'),
-                DataColumn(label: Text('Observed ÷ chance'), tooltip: 'EER/TER. Above 1 = more words of this class than random.'),
-                DataColumn(label: Text('Observed ÷ Markov'), tooltip: 'EER/MER. Above 1 = more than a one-step-memory process would give, i.e. longer-range structure.'),
+                DataColumn(
+                  label: Text('Chance'),
+                  tooltip:
+                      'TER: share of words in this class if states followed each other at random (no repeats).',
+                ),
+                DataColumn(
+                  label: Text('Observed'),
+                  tooltip:
+                      'EER: share of the words actually seen in the recording.',
+                ),
+                DataColumn(
+                  label: Text('Markov'),
+                  tooltip:
+                      'MER: share expected if the next state depended only on the current state, using your observed transition probabilities.',
+                ),
+                DataColumn(
+                  label: Text('Observed ÷ chance'),
+                  tooltip:
+                      'EER/TER. Above 1 = more words of this class than random.',
+                ),
+                DataColumn(
+                  label: Text('Observed ÷ Markov'),
+                  tooltip:
+                      'EER/MER. Above 1 = more than a one-step-memory process would give, i.e. longer-range structure.',
+                ),
               ],
               rows: [
                 for (final c in classes)
@@ -3516,5 +3555,206 @@ class _TransitionPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _TransitionPainter old) => old.matrix != matrix || old.mode != mode || old.labels != labels;
+  bool shouldRepaint(covariant _TransitionPainter old) =>
+      old.matrix != matrix || old.mode != mode || old.labels != labels;
+}
+
+/// Descriptive comparisons use the shared batch template, preserving state identity.
+class MicrostateGroupPanel extends StatefulWidget {
+  const MicrostateGroupPanel({super.key, required this.result});
+  final MicrostateResult result;
+  @override
+  State<MicrostateGroupPanel> createState() => _MicrostateGroupPanelState();
+}
+
+class _MicrostateGroupPanelState extends State<MicrostateGroupPanel> {
+  String metric = 'coverage';
+  String grouping = 'Recording';
+  int state = 0;
+  double? entropy;
+  static const metrics = {
+    'coverage': 'Coverage (%)',
+    'mean_duration_ms': 'Mean duration (ms)',
+    'occurrence_hz': 'Occurrence (/s)',
+    'gev': 'State GEV (%)',
+    'normalized_lz': 'Normalized LZ',
+    'syntax': 'Syntax observed share (%)',
+    'syntax_ratio': 'Syntax observed / chance',
+  };
+  String subject(String name) =>
+      RegExp(
+        r'(?:^|_)(sub-[a-z0-9]+|sub[0-9]+(?:_TKG[0-9]+)?|P[0-9]+|S[0-9]+)(?:_|$)',
+        caseSensitive: false,
+      ).firstMatch(name)?.group(1) ??
+      name;
+
+  @override
+  Widget build(BuildContext context) {
+    final r = widget.result;
+    final isSyntax = metric.startsWith('syntax');
+    final entropies = <double>{
+      for (final recording in r.recordings)
+        for (final c in recording.syntax['classes'] as List? ?? [])
+          (c['entropy_bits'] as num).toDouble(),
+    }.toList()..sort();
+    final selectedEntropy = entropies.contains(entropy)
+        ? entropy
+        : entropies.firstOrNull;
+    final selectedState = state < r.stateLabels.length ? state : 0;
+    final groups = <String, List<double>>{};
+    for (final recording in r.recordings) {
+      double? value;
+      if (isSyntax) {
+        if ((recording.syntax['windows'] as num? ?? 0) > 0) {
+          for (final c in recording.syntax['classes'] as List? ?? []) {
+            if ((c['entropy_bits'] as num).toDouble() == selectedEntropy) {
+              value =
+                  (c[metric == 'syntax' ? 'empirical' : 'ratio_theoretical']
+                          as num?)
+                      ?.toDouble();
+              if (metric == 'syntax' && value != null) value *= 100;
+            }
+          }
+        }
+      } else if (metric == 'normalized_lz') {
+        value = recording.sequenceMetrics[metric]?.toDouble();
+      } else if (selectedState < recording.states.length) {
+        value = (recording.states[selectedState][metric] as num?)?.toDouble();
+        if ((metric == 'coverage' || metric == 'gev') && value != null)
+          value *= 100;
+      }
+      if (value == null || !value.isFinite) continue;
+      final key = grouping == 'Subject mean'
+          ? subject(recording.filename)
+          : recording.filename;
+      groups.putIfAbsent(key, () => []).add(value);
+    }
+    final means = groups.map(
+      (key, values) =>
+          MapEntry(key, values.reduce((a, b) => a + b) / values.length),
+    );
+    final maximum = math.max(1e-12, means.values.fold(0.0, math.max));
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Group comparisons · shared template',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            Wrap(
+              spacing: 18,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                DropdownButton<String>(
+                  value: metric,
+                  items: [
+                    for (final e in metrics.entries)
+                      DropdownMenuItem(value: e.key, child: Text(e.value)),
+                  ],
+                  onChanged: (v) => setState(() => metric = v!),
+                ),
+                DropdownButton<String>(
+                  value: grouping,
+                  items: [
+                    for (final v in ['Recording', 'Subject mean'])
+                      DropdownMenuItem(value: v, child: Text(v)),
+                  ],
+                  onChanged: (v) => setState(() => grouping = v!),
+                ),
+                if (!isSyntax && metric != 'normalized_lz')
+                  DropdownButton<int>(
+                    value: selectedState,
+                    items: [
+                      for (final (i, label) in r.stateLabels.indexed)
+                        DropdownMenuItem(value: i, child: Text('State $label')),
+                    ],
+                    onChanged: (v) => setState(() => state = v!),
+                  ),
+                if (isSyntax && selectedEntropy != null)
+                  DropdownButton<double>(
+                    value: selectedEntropy,
+                    items: [
+                      for (final h in entropies)
+                        DropdownMenuItem(
+                          value: h,
+                          child: Text('${h.toStringAsFixed(3)} bits'),
+                        ),
+                    ],
+                    onChanged: (v) => setState(() => entropy = v),
+                  ),
+              ],
+            ),
+            const Text(
+              'Descriptive values. Subject means weight each recording equally; repeated sessions are not independent participants. Participant IDs are inferred from filenames; verify them in the CSV tables.',
+            ),
+            const SizedBox(height: 10),
+            if (means.isEmpty)
+              const Text('No valid observations for this selection.'),
+            for (final entry in means.entries)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 200,
+                      child: Tooltip(
+                        message: entry.key,
+                        child: Text(
+                          entry.key,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: LinearProgressIndicator(
+                        value: (entry.value / maximum).clamp(0.0, 1.0),
+                        minHeight: 12,
+                      ),
+                    ),
+                    SizedBox(
+                      width: 100,
+                      child: Text(
+                        '  ${entry.value.toStringAsFixed(3)} (n=${groups[entry.key]!.length})',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 10),
+            const SelectableText(
+              'Compiled exports: MicrostateGroupStates.csv · MicrostateGroupSyntax.csv · MicrostateGroupTransitions.csv · GroupTables_README.txt',
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.folder_open),
+              label: const Text('Open compiled tables folder'),
+              onPressed: () async {
+                try {
+                  await Process.run(
+                    Platform.isWindows
+                        ? 'explorer.exe'
+                        : Platform.isMacOS
+                        ? 'open'
+                        : 'xdg-open',
+                    [r.outputDirectory],
+                  );
+                } catch (e) {
+                  if (context.mounted)
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Could not open folder: $e')),
+                    );
+                }
+              },
+            ),
+            SelectableText('Output: ${r.outputDirectory}'),
+          ],
+        ),
+      ),
+    );
+  }
 }
