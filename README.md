@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.58</b> ·
+  <b>Current version: 1.2.59</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
   <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
@@ -69,6 +69,11 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 </p>
 
 ---
+
+## ✨ What's New in v1.2.59
+
+- Load XDF recordings with small isolated timestamp reversals; timing repairs remain visible.
+- Manage sessions across all subject groups, or directly from each stacked plot.
 
 ## ✨ What's New in v1.2.58
 

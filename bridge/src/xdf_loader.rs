@@ -51,11 +51,32 @@ impl StreamData {
     }
 }
 
+/// Interpolate only bounded local timestamp reversals, retaining sample order
+/// and the surrounding clock anchors. Large resets are not silently repaired.
+fn repair_local_timestamp_jitter(times: &mut [f64], rate: f64) -> Result<usize,String> {
+    if times.iter().any(|t| !t.is_finite()) { return Err("XDF contains non-finite timestamps".into()); }
+    let limit=(rate*0.1).ceil().max(2.0) as usize;
+    let mut repaired=0; let mut i=1;
+    while i<times.len() {
+        if times[i]>times[i-1] {i+=1;continue;}
+        let anchor=times[i-1]; let mut end=i+1;
+        while end<times.len() && times[end]<=anchor {end+=1;}
+        if end==times.len() || end-i>limit || anchor-times[i]>0.1 {
+            return Err(format!("XDF timestamp clock reset near sample {i}; cannot safely repair this discontinuity"));
+        }
+        let step=(times[end]-anchor)/(end-i+1) as f64;
+        for j in i..end {times[j]=anchor+step*(j-i+1) as f64;}
+        repaired+=end-i; i=end+1;
+    }
+    Ok(repaired)
+}
+
 pub struct XdfRecording {
     pub recording: Recording,
     pub events: Vec<Event>,
     pub stream_name: String,
     pub stream_id: u32,
+    pub timestamp_repairs: usize,
 }
 
 /// Standard 32-channel BrainProducts LiveAmp electrode layout.
@@ -400,12 +421,14 @@ pub fn load_xdf_stream(path: &Path, target_stream_id: Option<u32>) -> Result<Xdf
     }
 
     // Correct timestamps with clock sync
-    let corrected_times: Vec<f64> = eeg_stream
+    let mut corrected_times: Vec<f64> = eeg_stream
         .times
         .iter()
         .map(|&t| eeg_stream.corrected_time(t))
         .collect();
 
+    let timestamp_repairs = repair_local_timestamp_jitter(&mut corrected_times, info.nominal_rate)?;
+    if timestamp_repairs>0 {eprintln!("WARNING XDF: repaired {timestamp_repairs} local non-monotonic timestamps by interpolation; sample order and surrounding clock anchors retained");}
     let t_start = corrected_times[0];
     let t_end = *corrected_times.last().unwrap();
     let duration = t_end - t_start;
@@ -513,6 +536,7 @@ pub fn load_xdf_stream(path: &Path, target_stream_id: Option<u32>) -> Result<Xdf
         events: all_events,
         stream_name: info.name.clone(),
         stream_id: eeg_id,
+        timestamp_repairs,
     })
 }
 
@@ -574,5 +598,19 @@ mod tests {
         assert_eq!(res.recording.labels[1], "Fz");
         assert_eq!(res.recording.labels[23], "Cz");
         assert_eq!(res.events.len(), 610);
+    }
+}
+
+#[cfg(test)]
+mod timestamp_repair_tests {
+    use super::*;
+    #[test] fn isolated_jitter_preserves_anchors_and_sample_count() {
+        let mut t=vec![0.,0.004,0.008,0.002,0.006,0.010,0.014];
+        assert_eq!(repair_local_timestamp_jitter(&mut t,250.).unwrap(),2);
+        assert_eq!(t.len(),7);assert_eq!(t[2],0.008);assert_eq!(t[5],0.010);
+        assert!(t.windows(2).all(|w|w[1]>w[0]));
+    }
+    #[test] fn large_clock_reset_stays_explicit() {
+        assert!(repair_local_timestamp_jitter(&mut [2.,2.004,1.,1.004],250.).is_err());
     }
 }

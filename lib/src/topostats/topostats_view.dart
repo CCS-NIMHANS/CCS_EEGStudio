@@ -508,6 +508,34 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     _redisplay();
   }
 
+  Future<void> _manageSessions([TopoPlotGroup? onlyGroup]) async {
+    final groups=onlyGroup == null ? _groups : [onlyGroup];
+    final choices={for(final g in groups) g: Set<String>.from(g.disabled)};
+    final apply=await showDialog<bool>(context: context, builder:(ctx)=>StatefulBuilder(builder:(ctx,update)=>AlertDialog(
+      title: const Text('Sessions by subject group'),
+      content: SizedBox(width: 700, height: 500, child: ListView(children: [
+        for(final g in groups) ExpansionTile(
+          initiallyExpanded: true,
+          title: Text('${g.recId} · ${g.files.length-choices[g]!.length}/${g.files.length} selected'),
+          children: [
+            Wrap(children: [
+              TextButton(onPressed:()=>update(()=>choices[g]!.clear()),child:const Text('Select all sessions')),
+              TextButton(onPressed:()=>update(()=>choices[g]!.addAll(g.files)),child:const Text('Disable all sessions')),
+            ]),
+            for(final file in g.files) CheckboxListTile(
+              dense:true, title:Text(_base(file)), value:!choices[g]!.contains(file),
+              onChanged:(v)=>update(() {if(v==true) {choices[g]!.remove(file);} else {choices[g]!.add(file);}}),
+            ),
+          ],
+        ),
+      ])),
+      actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Apply selection'))],
+    )));
+    if(apply!=true || !mounted)return;
+    setState(() {for(final g in groups) {g.disabled..clear()..addAll(choices[g]!);g.figure=null;g.result=null;} });
+    if(_groups.any((g)=>g.activeFiles.isNotEmpty)) await _run();
+  }
+
   void _toggleSession(String file, bool selected) {
     final g = _currentGroup;
     if (g == null) return;
@@ -1425,6 +1453,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               ),
             ),
           ],
+          TextButton.icon(onPressed: _running || _groups.isEmpty ? null : () => _manageSessions(), icon: const Icon(Icons.checklist), label: const Text('Manage sessions in all groups')),
           const SizedBox(height: 8),
           Text(
             '${_activeFiles.length} selected / ${_files.length} available'
@@ -2313,6 +2342,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     style: const TextStyle(color: _muted, fontSize: 11),
                   ),
                   const Spacer(),
+                  TextButton.icon(onPressed: _running ? null : () => _manageSessions(g), icon: const Icon(Icons.checklist, size:16), label: const Text('Sessions')),
                   if (_groups.length > 1)
                     IconButton(
                       icon: const Icon(Icons.close, size: 14),

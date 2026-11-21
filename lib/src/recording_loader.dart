@@ -251,6 +251,7 @@ class RecordingLoader {
           'xdf_stream_id': data['stream_id'],
           'xdf_stream_name': data['stream_name'],
           'xdf_loader': 'rust',
+          'xdf_timestamp_repairs': data['timestamp_repairs'] ?? 0,
         },
       );
     } finally {

@@ -146,6 +146,7 @@ fn main() -> Result<(), String> {
             "labels": xdf.recording.labels,
             "sample_count": n_samples,
             "stream_id": xdf.stream_id,
+            "timestamp_repairs": xdf.timestamp_repairs,
             "stream_name": xdf.stream_name,
             "markers": markers,
             "binary_path": output,

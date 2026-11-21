@@ -1569,6 +1569,8 @@ class _FeatureHomeState extends State<FeatureHome>
       });
       _logChannelDetection();
       _log('✓ Loaded ${_shortName(path)}');
+      final repairs = rec.provenance['xdf_timestamp_repairs'];
+      if (repairs is num && repairs > 0) _log('⚠ XDF: repaired $repairs timestamps around local reversals; timing repair is recorded in provenance.');
       final vhdrIssues = _extractVhdrIssues(rec);
       if (vhdrIssues.isNotEmpty) {
         for (final issue in vhdrIssues) {

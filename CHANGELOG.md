@@ -4,6 +4,11 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.59]
+
+- XDF loading repairs bounded local timestamp reversals by interpolating between surrounding monotonic anchors, retaining sample order. Non-finite timestamps and large clock resets remain explicit errors. Repairs are recorded in provenance and the activity log.
+- Feature plotting offers a session manager covering every subject group, plus a Sessions button on each stacked plot. Per-group exclusions can be reviewed together and applied without removing source files or changing another subject's selection.
+
 ## [1.2.58]
 
 - Batch selection exposes automatic, parent-folder and editable per-file subject IDs. Subject sidecars follow cleaned recordings and feature CSVs, preserving overrides across flat output directories; subject-first Sub/TKG filenames group existing exports correctly.
