@@ -689,7 +689,7 @@ class _ScalpPainter extends CustomPainter {
   bool shouldRepaint(_ScalpPainter old) => true;
 }
 
-class _GlassBrain extends StatelessWidget {
+class _GlassBrain extends StatefulWidget {
   const _GlassBrain({
     required this.atlas,
     required this.labels,
@@ -710,55 +710,100 @@ class _GlassBrain extends StatelessWidget {
   final double limit;
   final bool compact;
   final bool rms;
+
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, box) {
-      final width = box.maxWidth / 3,
-          height = box.maxHeight;
-      return Row(
-        children: [
-          for (var view = 0; view < 3; view++)
+  State<_GlassBrain> createState() => _GlassBrainState();
+}
+
+class _GlassBrainState extends State<_GlassBrain> {
+  double _thresholdFrac = 0.25;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      SizedBox(
+        height: 22,
+        child: Row(
+          children: [
+            Text(
+              'Threshold: ${(_thresholdFrac * 100).round()}%',
+              style: const TextStyle(fontSize: 10, color: Colors.white70),
+            ),
             Expanded(
-              child: SizedBox(
-                height: height,
-                child: GestureDetector(
-                  onTapDown: (d) {
-                    String? nearest;
-                    double distance = double.infinity;
-                    for (final region in (atlas['regions'] as List).cast<Map>()) {
-                      final name = region['name'] as String;
-                      if (!labels.contains(name)) continue;
-                      final point = _project(
-                        (region['centers'] as List)[view] as List,
-                        Size(width, height),
-                      );
-                      final delta = (point - d.localPosition).distance;
-                      if (delta < distance) {
-                        distance = delta;
-                        nearest = name;
-                      }
-                    }
-                    if (nearest != null && distance < 25) onSelect(nearest);
-                  },
-                  child: CustomPaint(
-                    painter: _BrainPainter(
-                      atlas,
-                      view,
-                      labels,
-                      values,
-                      colors,
-                      chosen,
-                      limit,
-                      rms,
-                    ),
-                    child: const SizedBox.expand(),
-                  ),
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 2,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
+                ),
+                child: Slider(
+                  value: _thresholdFrac,
+                  min: 0.0,
+                  max: 0.80,
+                  divisions: 16,
+                  onChanged: (v) => setState(() => _thresholdFrac = v),
                 ),
               ),
             ),
-        ],
-      );
-    },
+          ],
+        ),
+      ),
+      Expanded(
+        child: LayoutBuilder(
+          builder: (context, box) {
+            final width = box.maxWidth / 3,
+                height = box.maxHeight;
+            return Row(
+              children: [
+                for (var view = 0; view < 3; view++)
+                  Expanded(
+                    child: SizedBox(
+                      height: height,
+                      child: GestureDetector(
+                        onTapDown: (d) {
+                          String? nearest;
+                          double distance = double.infinity;
+                          for (final region
+                              in (widget.atlas['regions'] as List).cast<Map>()) {
+                            final name = region['name'] as String;
+                            if (!widget.labels.contains(name)) continue;
+                            final point = _project(
+                              (region['centers'] as List)[view] as List,
+                              Size(width, height),
+                            );
+                            final delta = (point - d.localPosition).distance;
+                            if (delta < distance) {
+                              distance = delta;
+                              nearest = name;
+                            }
+                          }
+                          if (nearest != null && distance < 25) {
+                            widget.onSelect(nearest);
+                          }
+                        },
+                        child: CustomPaint(
+                          painter: _BrainPainter(
+                            widget.atlas,
+                            view,
+                            widget.labels,
+                            widget.values,
+                            widget.colors,
+                            widget.chosen,
+                            widget.limit,
+                            widget.rms,
+                            _thresholdFrac,
+                          ),
+                          child: const SizedBox.expand(),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      ),
+    ],
   );
 }
 
@@ -780,6 +825,7 @@ class _BrainPainter extends CustomPainter {
     this.chosen,
     this.limit,
     this.rms,
+    this.thresholdFrac,
   );
   final Map<String, dynamic> atlas;
   final int view;
@@ -789,6 +835,7 @@ class _BrainPainter extends CustomPainter {
   final Set<String> chosen;
   final double limit;
   final bool rms;
+  final double thresholdFrac;
   @override
   void paint(Canvas canvas, Size size) {
     void line(List points, Paint paint) {
@@ -835,8 +882,8 @@ class _BrainPainter extends CustomPainter {
       }
       if (selected) {
         final amount = (values[idx] / limit).clamp(-1.0, 1.0);
-        // Hide near-zero nodes (<25% of scale limit) so only prominent activations stand out.
-        if (!isExplicit && amount.abs() < 0.25) continue;
+        // Hide near-zero nodes below the interactive threshold so only prominent activations stand out.
+        if (!isExplicit && amount.abs() < thresholdFrac) continue;
         final activity = _amplitudeColor(values[idx], limit, rms);
         canvas.drawCircle(
           _project((r['centers'] as List)[view] as List, size),

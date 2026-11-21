@@ -3121,13 +3121,13 @@ class _FeatureHomeState extends State<FeatureHome>
       _batchChannels == null
       ? r
       : _batchChannels!.apply(await RecordingLoader().loadFull(r));
-  /// Standard EGI HydroCel GSN 128/64 -> 10-20 equivalent mapping for common fiducial sites.
+  /// Standard EGI HydroCel GSN 128 -> 10-20 equivalent mapping for common fiducial sites.
   static const Map<String, String> _kEgiTo1020 = {
     'E22': 'Fp1', 'E9': 'Fp2', 'E11': 'Fz', 'E24': 'F3', 'E124': 'F4',
     'E33': 'F7', 'E122': 'F8', 'E36': 'C3', 'E104': 'C4', 'E45': 'T7',
     'E108': 'T8', 'E52': 'P3', 'E92': 'P4', 'E58': 'P7', 'E96': 'P8',
     'E62': 'Pz', 'E70': 'O1', 'E83': 'O2', 'E129': 'Cz', 'VREF': 'Cz',
-    'E57': 'LM', 'E100': 'RM',
+    'E57': 'M1', 'E100': 'M2',
   };
 
   Widget _channelHeadmapPreview(List<String> labels, {double height = 170}) {
@@ -3413,7 +3413,7 @@ class _FeatureHomeState extends State<FeatureHome>
                           color: Colors.cyanAccent,
                         ),
                         label: const Text(
-                          'EGI GSN -> 10-20',
+                          'EGI HydroCel 128 -> 10-20',
                           style: TextStyle(fontSize: 11),
                         ),
                         tooltip:
@@ -5050,8 +5050,7 @@ class _FeatureHomeState extends State<FeatureHome>
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  '${_cfg.sourceMethod == 'xpikan' ? 'XPIKAN 3-shell PINN' : _cfg.sourceModelPath.trim().isEmpty ? 'MNE fsaverage 3-shell BEM' : 'Custom forward JSON'} · '
-                  'σ = 0.33 / 0.0042 / 0.33 S/m (r = 0.87 / 0.92 / 1.00) · '
+                  '${_cfg.sourceMethod == 'xpikan' ? 'XPIKAN 3-shell PINN (σ = 0.33 / 0.0042 / 0.33 S/m, r = 0.87 / 0.92 / 1.00)' : _cfg.sourceModelPath.trim().isEmpty ? 'MNE fsaverage 3-shell BEM (σ = 0.30 / 0.006 / 0.30 S/m)' : 'Custom forward JSON'} · '
                   '${_cfg.sourceModelPath.trim().isEmpty ? 'DK68 (68 ROIs)' : 'Custom atlas'} · '
                   'fixed normals · λ² = ${(1.0 / (_cfg.sourceSnr * _cfg.sourceSnr)).toStringAsFixed(4)} · '
                   '${_cfg.sourceMethod == 'lcmv' ? '5% reg. data cov' : 'identity noise cov'}',
@@ -6016,26 +6015,26 @@ class _FeatureHomeState extends State<FeatureHome>
                 'auto-',
                 'auto',
                 'auto+',
-                '0.5',
                 '1.0',
                 '2.0',
                 '3.0',
-                '5.0',
-                '8.0',
+                '6.0',
+                '9.0',
+                '12.0',
               ].contains(_cfg.gedaiThreshold)
                   ? _cfg.gedaiThreshold
                   : 'custom',
               decoration: const InputDecoration(labelText: 'GEDAI strength'),
               items: const [
-                DropdownMenuItem(value: 'auto-', child: Text('Gentle (auto- · ~99th pct)')),
-                DropdownMenuItem(value: 'auto', child: Text('Standard (auto · ~95th pct)')),
-                DropdownMenuItem(value: 'auto+', child: Text('Strong (auto+ · ~90th pct)')),
-                DropdownMenuItem(value: '0.5', child: Text('Numeric: 0.5 SD')),
-                DropdownMenuItem(value: '1.0', child: Text('Numeric: 1.0 SD')),
-                DropdownMenuItem(value: '2.0', child: Text('Numeric: 2.0 SD')),
-                DropdownMenuItem(value: '3.0', child: Text('Numeric: 3.0 SD')),
-                DropdownMenuItem(value: '5.0', child: Text('Numeric: 5.0 SD')),
-                DropdownMenuItem(value: '8.0', child: Text('Numeric: 8.0 SD')),
+                DropdownMenuItem(value: 'auto-', child: Text('Gentle (auto- · opt noise=6, fallback 9)')),
+                DropdownMenuItem(value: 'auto', child: Text('Standard (auto · opt noise=3, fallback 6)')),
+                DropdownMenuItem(value: 'auto+', child: Text('Strong (auto+ · opt noise=1, fallback 3)')),
+                DropdownMenuItem(value: '1.0', child: Text('GEVD threshold: 1.0 (very strong)')),
+                DropdownMenuItem(value: '2.0', child: Text('GEVD threshold: 2.0 (strong)')),
+                DropdownMenuItem(value: '3.0', child: Text('GEVD threshold: 3.0 (auto+ fallback)')),
+                DropdownMenuItem(value: '6.0', child: Text('GEVD threshold: 6.0 (auto fallback)')),
+                DropdownMenuItem(value: '9.0', child: Text('GEVD threshold: 9.0 (auto- fallback)')),
+                DropdownMenuItem(value: '12.0', child: Text('GEVD threshold: 12.0 (very gentle)')),
                 DropdownMenuItem(
                   value: 'custom',
                   child: Text('Custom numeric (0–12)…'),
@@ -6043,10 +6042,10 @@ class _FeatureHomeState extends State<FeatureHome>
               ],
               onChanged: _running
                   ? null
-                  : (v) => _gedaiThreshold.text = v == 'custom' ? '1.5' : v!,
+                  : (v) => _gedaiThreshold.text = v == 'custom' ? '4.5' : v!,
             ),
             if (!['auto-', 'auto', 'auto+'].contains(_cfg.gedaiThreshold))
-              _field(_gedaiThreshold, 'Threshold (0–12 SD; lower = stronger)'),
+              _field(_gedaiThreshold, 'GEVD threshold (0–12; lower = stronger)'),
             const Text(
               'Gentle broadband pass; input reference restored before the requested re-reference step.',
               style: TextStyle(fontSize: 11),

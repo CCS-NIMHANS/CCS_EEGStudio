@@ -324,7 +324,7 @@ pub fn convert_with_model(
                     .map(|row_idx| flips[row_idx] * s_roi[row_idx][s])
                     .sum();
                 roi_tc[s] = (sum / (k as f64))
-                    * if method == "mne" || method == "lcmv" {
+                    * if method == "mne" || method == "lcmv" || method == "eloreta" {
                         10000.0
                     } else {
                         1.0
@@ -486,5 +486,17 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(peak_dip, target_dip);
+
+        let eeg: Vec<Vec<f64>> = (0..m).map(|r| data.row(r).iter().copied().collect()).collect();
+        let labels: Vec<String> = vec![
+            "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8", "C3", "Cz", "C4", "P3", "Pz", "P4", "T7", "O1", "O2",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let (rois, roi_labels) = convert_with_model(&eeg, &labels, 3.0, "eloreta", "").unwrap();
+        assert_eq!(rois.len(), 68);
+        assert_eq!(roi_labels.len(), 68);
+        assert!(rois.iter().flat_map(|c| c.iter()).all(|v| v.is_finite()));
     }
 }

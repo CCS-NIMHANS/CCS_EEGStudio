@@ -100,6 +100,10 @@ class _IcaReviewState extends State<_IcaReview> {
     }
 
     double? stageVarianceLostPct() {
+      final exact = (s['signals_lost'] as num?)?.toDouble();
+      if (exact != null && exact.isFinite && exact >= 0) {
+        return (exact <= 1.0 ? exact * 100.0 : exact).clamp(0.0, 100.0);
+      }
       if (count == 0 || mixing.isEmpty) return null;
       var totalVar = 0.0;
       var removedVar = 0.0;

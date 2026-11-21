@@ -292,12 +292,12 @@ Future<bool> showProcessingSettings(
                           'auto-',
                           'auto',
                           'auto+',
-                          '0.5',
                           '1.0',
                           '2.0',
                           '3.0',
-                          '5.0',
-                          '8.0',
+                          '6.0',
+                          '9.0',
+                          '12.0',
                         ].contains(gedaiThreshold.text.trim())
                             ? gedaiThreshold.text.trim()
                             : 'custom',
@@ -307,37 +307,37 @@ Future<bool> showProcessingSettings(
                         items: const [
                           DropdownMenuItem(
                             value: 'auto-',
-                            child: Text('Gentle (auto- · ~99th pct, conservative)'),
+                            child: Text('Gentle (auto- · opt noise=6, fallback 9)'),
                           ),
                           DropdownMenuItem(
                             value: 'auto',
-                            child: Text('Standard (auto · ~95th pct, balanced)'),
+                            child: Text('Standard (auto · opt noise=3, fallback 6)'),
                           ),
                           DropdownMenuItem(
                             value: 'auto+',
-                            child: Text('Strong (auto+ · ~90th pct, aggressive)'),
+                            child: Text('Strong (auto+ · opt noise=1, fallback 3)'),
                           ),
-                          DropdownMenuItem(value: '0.5', child: Text('Numeric: 0.5 SD')),
-                          DropdownMenuItem(value: '1.0', child: Text('Numeric: 1.0 SD')),
-                          DropdownMenuItem(value: '2.0', child: Text('Numeric: 2.0 SD')),
-                          DropdownMenuItem(value: '3.0', child: Text('Numeric: 3.0 SD')),
-                          DropdownMenuItem(value: '5.0', child: Text('Numeric: 5.0 SD')),
-                          DropdownMenuItem(value: '8.0', child: Text('Numeric: 8.0 SD')),
+                          DropdownMenuItem(value: '1.0', child: Text('GEVD threshold: 1.0 (very strong)')),
+                          DropdownMenuItem(value: '2.0', child: Text('GEVD threshold: 2.0 (strong)')),
+                          DropdownMenuItem(value: '3.0', child: Text('GEVD threshold: 3.0 (auto+ fallback)')),
+                          DropdownMenuItem(value: '6.0', child: Text('GEVD threshold: 6.0 (auto fallback)')),
+                          DropdownMenuItem(value: '9.0', child: Text('GEVD threshold: 9.0 (auto- fallback)')),
+                          DropdownMenuItem(value: '12.0', child: Text('GEVD threshold: 12.0 (very gentle)')),
                           DropdownMenuItem(value: 'custom', child: Text('Custom numeric (0–12)…')),
                         ],
                         onChanged: (v) {
                           if (v == null) return;
                           setState(() {
-                            gedaiThreshold.text = v == 'custom' ? '1.5' : v;
+                            gedaiThreshold.text = v == 'custom' ? '4.5' : v;
                           });
                         },
                       ),
                       const SizedBox(height: 8),
                       field(
                         gedaiThreshold,
-                        'GEDAI threshold value (0–12 or auto-/auto/auto+)',
+                        'GEDAI threshold value (0–12 GEVD ratio or auto-/auto/auto+)',
                         help:
-                            'Choose a preset above or enter a numeric threshold (0–12 SD; lower = stronger cleaning).',
+                            'Choose a preset above or enter a GEVD threshold (0–12; lower = stronger cleaning).',
                       ),
                       const Text(
                         'Disabled in new configurations. Existing saved choices are retained. Compare with GEDAI off before accepting strong power reductions: the alpha-power warning measures signal change, not artifact-removal accuracy. Saved event trials retain their own boundaries.',
@@ -627,8 +627,13 @@ Future<bool> showProcessingSettings(
                       final fwdLabel = sourceMethod == 'xpikan'
                           ? 'XPIKAN 3-shell PINN (concentric spherical)'
                           : customModel.isEmpty
-                              ? 'MNE fsaverage 3-shell BEM'
+                              ? 'MNE fsaverage 3-shell BEM (FreeSurfer cortical surface)'
                               : 'Custom JSON (${customModel.split(RegExp(r"[\\/]")).last})';
+                      final condLabel = sourceMethod == 'xpikan'
+                          ? 'Brain 0.33 S/m · Skull 0.0042 S/m · Scalp 0.33 S/m (radii 0.87 / 0.92 / 1.00)'
+                          : customModel.isEmpty
+                              ? 'MNE fsaverage BEM: Brain 0.30 S/m · Skull 0.006 S/m · Scalp 0.30 S/m'
+                              : 'Defined by custom leadfield JSON';
                       final atlasLabel = customModel.isEmpty
                           ? 'Desikan-Killiany 68 cortical ROIs (DK68)'
                           : 'Custom atlas from JSON';
@@ -658,7 +663,7 @@ Future<bool> showProcessingSettings(
                             const SizedBox(height: 4),
                             Text(
                               'Forward model: $fwdLabel\n'
-                              'Conductivities: Brain 0.33 S/m · Skull 0.0042 S/m · Scalp 0.33 S/m (radii 0.87 / 0.92 / 1.00)\n'
+                              'Conductivities: $condLabel\n'
                               'Atlas map: $atlasLabel\n'
                               'Inverse: ${sourceMethod.toUpperCase()} · fixed surface-normal orientations · SNR $snrVal (λ² = ${lambda2.toStringAsFixed(4)}) · $covLabel',
                               style: const TextStyle(fontSize: 10.5, color: Colors.white70, height: 1.35),
