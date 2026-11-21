@@ -4,6 +4,12 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.58]
+
+- Batch selection exposes automatic, parent-folder and editable per-file subject IDs. Subject sidecars follow cleaned recordings and feature CSVs, preserving overrides across flat output directories; subject-first Sub/TKG filenames group existing exports correctly.
+- Compatibility video refreshes decoded frames independently of native textures during audio playback (up to 4 frames/s), with a visible renderer switch. Native playback remains available.
+- GEDAI is disabled for new configurations, preserving explicit saved settings. Settings explain cumulative cleaning after ICA/ASR and that alpha-power reduction alone does not establish artifact removal. The GEDAI algorithm is unchanged.
+
 ## [1.2.57]
 
 - ERPimage and its live condition averages share one plot column with matching time-axis boundaries. Butterfly defaults to accepted-trial condition averages, offers condition selection, and retains an explicit single-trial option.

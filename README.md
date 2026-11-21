@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.57</b> ·
+  <b>Current version: 1.2.58</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
   <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
@@ -69,6 +69,12 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 </p>
 
 ---
+
+## ✨ What's New in v1.2.58
+
+- Editable batch subject IDs persist into flat output folders; existing Sub/TKG exports group by subject.
+- Compatibility video renderer refreshes frames during audio playback.
+- GEDAI is opt-in for new configurations; existing settings are preserved.
 
 ## ✨ What's New in v1.2.57
 

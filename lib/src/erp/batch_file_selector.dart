@@ -63,8 +63,10 @@ class BatchFileSelectionResult {
   const BatchFileSelectionResult({
     required this.selectedFiles,
     required this.replaceExisting,
+    this.subjects = const {},
   });
 
+  final Map<String, String> subjects;
   final List<String> selectedFiles;
   final bool replaceExisting;
 }
@@ -74,6 +76,17 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
   late final Set<String> _selected;
   late final TextEditingController _searchCtrl;
   late final TextEditingController _firstNCtrl;
+  final Map<String, String> _subjects = {};
+  String _subject(String path) => _subjects[path] ?? extractRecordingSubject(path);
+  Future<void> _editSubject(String path) async {
+    var draft = _subject(path);
+    final value = await showDialog<String>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Subject ID for this recording'),
+      content: TextFormField(initialValue: draft, onChanged: (v) => draft = v, autofocus: true, decoration: const InputDecoration(labelText: 'Subject ID', helperText: 'Sessions with the same ID are plotted together.')),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')), FilledButton(onPressed: () { if (draft.trim().isNotEmpty) Navigator.pop(ctx, draft.trim()); }, child: const Text('Apply'))],
+    ));
+    if (value != null && mounted) setState(() => _subjects[path] = value);
+  }
   bool _replaceExisting = true;
 
   @override
@@ -157,7 +170,7 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
       final subjects = <String>{};
       _selected.clear();
       for (final p in _filteredFiles) {
-        final subj = extractRecordingSubject(p);
+        final subj = _subject(p);
         if (subjects.contains(subj)) {
           _selected.add(p);
         } else if (subjects.length < n) {
@@ -206,8 +219,8 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
   @override
   Widget build(BuildContext context) {
     final filtered = _filteredFiles;
-    final selectedSubjects = _selected.map(extractRecordingSubject).toSet();
-    final totalSubjects = _allFiles.map(extractRecordingSubject).toSet();
+    final selectedSubjects = _selected.map(_subject).toSet();
+    final totalSubjects = _allFiles.map(_subject).toSet();
 
     return AlertDialog(
       title: Row(
@@ -238,9 +251,13 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-            Row(
-              children: [
-                Expanded(
+            Wrap(spacing: 8, children: [
+                const Text('Subject tags: click a tag to edit; or assign all by'),
+                TextButton(onPressed: () => setState(() { for (final p in _allFiles) _subjects[p] = extractRecordingSubject(p); }), child: const Text('Filename / automatic')),
+                TextButton(onPressed: () => setState(() { for (final p in _allFiles) _subjects[p] = File(p).parent.uri.pathSegments.where((v) => v.isNotEmpty).last; }), child: const Text('Parent folder')),
+              ]),
+            Row(children: [
+              Expanded(
                   child: TextField(
                     controller: _searchCtrl,
                     decoration: InputDecoration(
@@ -347,7 +364,7 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
                           final path = filtered[index];
                           final name = path.split(RegExp(r'[/\\]')).last;
                           final rel = _relativePath(path);
-                          final subj = extractRecordingSubject(path);
+                          final subj = _subject(path);
                           final checked = _selected.contains(path);
                           return CheckboxListTile(
                             dense: true,
@@ -384,7 +401,7 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
                                     ),
                                   ),
                                 const SizedBox(width: 8),
-                                Container(
+                                InkWell(onTap: () => _editSubject(path), child: Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 6,
                                     vertical: 2,
@@ -396,10 +413,10 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
                                     borderRadius: BorderRadius.circular(4),
                                   ),
                                   child: Text(
-                                    subj,
+                                    '$subj ✎',
                                     style: const TextStyle(fontSize: 10.5),
                                   ),
-                                ),
+                                )),
                               ],
                             ),
                           );
@@ -453,6 +470,7 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
                     context,
                     BatchFileSelectionResult(
                       selectedFiles: ordered,
+                      subjects: {for (final p in ordered) p: _subject(p)},
                       replaceExisting: _replaceExisting,
                     ),
                   );

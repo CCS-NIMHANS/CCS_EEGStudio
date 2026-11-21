@@ -1,3 +1,5 @@
+import 'erp/workbench_service.dart' show extractRecordingSubject;
+import 'recording_subject.dart';
 import 'erp/interactive_erp_workspace.dart';
 import 'erp/batch_file_selector.dart';
 import 'source_review_workspace.dart';
@@ -6633,6 +6635,10 @@ class _FeatureHomeState extends State<FeatureHome>
     });
   }
 
+  final Map<String, String> _batchSubjects = {};
+
+  String _batchSubject(String path) => _batchSubjects[path] ?? extractRecordingSubject(path);
+
   Future<void> _addBatchFolder(
     List<String> destination,
     List<String> extensions,
@@ -6667,6 +6673,7 @@ class _FeatureHomeState extends State<FeatureHome>
       title: title,
     );
     if (selection == null || !mounted) return;
+    _batchSubjects.addAll(selection.subjects);
     setState(() {
       if (selection.replaceExisting) {
         destination
@@ -8554,6 +8561,7 @@ class _FeatureHomeState extends State<FeatureHome>
             _log(
               '  ↳ Skipping (already preprocessed): ${_shortName(existing)}',
             );
+            saveRecordingSubject(existing, _batchSubject(path), path);
             written.add(existing);
             _updateBatchFile(
               path,
@@ -8626,6 +8634,8 @@ class _FeatureHomeState extends State<FeatureHome>
           _log('  ✓ Source: ${_shortName(srcPath)}');
         }
 
+        saveRecordingSubject(finalPath, _batchSubject(path), path);
+        _batchSubjects[finalPath] = _batchSubject(path);
         written.add(finalPath);
         _updateBatchFile(path, 'Done', progress: 1, completed: true);
         _log('✓ Saved: $finalPath');
@@ -8770,7 +8780,7 @@ class _FeatureHomeState extends State<FeatureHome>
               combinedSink.writeln(line);
             }
           }
-          if (_cfg.perFileCsv) written.add(perFilePath);
+          if (_cfg.perFileCsv) { saveRecordingSubject(perFilePath, _batchSubject(path), path); written.add(perFilePath); }
           succeeded++;
           _updateBatchFile(
             path,
@@ -8844,7 +8854,7 @@ class _FeatureHomeState extends State<FeatureHome>
             }
           }
 
-          if (_cfg.perFileCsv) written.add(perFilePath);
+          if (_cfg.perFileCsv) { saveRecordingSubject(perFilePath, _batchSubject(path), path); written.add(perFilePath); }
           if (_cfg.generatePdfReport) {
             _updateBatchFile(path, 'PDF Report', progress: 0.90);
             await _writeReport(

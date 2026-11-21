@@ -1,3 +1,4 @@
+import '../recording_subject.dart';
 import 'dart:convert';
 import 'dart:io';
 import '../extraction_service.dart';
@@ -115,6 +116,8 @@ class ErpWorkbenchService {
 /// Extract participant / subject identifier generically from path, directory hierarchy,
 /// or BIDS entities, avoiding across-file collisions when filenames share default names.
 String extractRecordingSubject(String path) {
+  final explicit = recordingSubject(path);
+  if (explicit != null) return explicit;
   final file = File(path);
   final stem = file.uri.pathSegments.isNotEmpty
       ? file.uri.pathSegments.last.replaceFirst(RegExp(r'\.[^.]+$'), '')

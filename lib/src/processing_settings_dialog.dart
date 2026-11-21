@@ -283,17 +283,17 @@ Future<bool> showProcessingSettings(
                     ],
                   ),
                   ExpansionTile(
-                    title: const Text('GEDAI'),
+                    title: const Text('GEDAI · optional additional cleaning'),
                     initiallyExpanded: section == 'GEDAI',
                     children: [
                       field(
                         gedaiThreshold,
                         'GEDAI threshold',
                         help:
-                            'auto = balanced; auto- = conservative; numeric values are passed to GEDAI.',
+                            'auto- is the less aggressive automatic mode. GEDAI is an additional cleaner after ICA/ASR; no mode guarantees preservation of neural activity.',
                       ),
                       const Text(
-                        'Saved event trials retain their own boundaries. Continuous data use the processing window set in the main panel.',
+                        'Disabled in new configurations. Existing saved choices are retained. Compare with GEDAI off before accepting strong power reductions: the alpha-power warning measures signal change, not artifact-removal accuracy. Saved event trials retain their own boundaries.',
                       ),
                     ],
                   ),

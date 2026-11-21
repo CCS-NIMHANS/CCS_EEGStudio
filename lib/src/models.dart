@@ -219,7 +219,7 @@ class PreprocessingOptions {
     highHz: (json['high_hz'] as num?)?.toDouble() ?? 40,
     notchHz: (json['notch_hz'] as num?)?.toDouble() ?? 50,
     badchannel: json['badchannel'] as bool? ?? true,
-    gedai: json['gedai'] as bool? ?? true,
+    gedai: json['gedai'] as bool? ?? false,
     interpolate: json['interpolate'] as bool? ?? true,
     gedaiEpochSeconds: (json['gedai_epoch_seconds'] as num?)?.toDouble() ?? 1,
     gedaiThreshold: json['gedai_threshold'] as String? ?? 'auto',
@@ -551,7 +551,7 @@ class AnalysisConfig {
   double highHz = 40;
   double notchHz = 50;
   bool badChannels = true;
-  bool gedai = true;
+  bool gedai = false;
   bool interpolate = true;
   bool epochBeforeGedai = false;
   double preprocessingEpochSeconds = 5;

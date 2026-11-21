@@ -1,3 +1,4 @@
+import '../recording_subject.dart';
 import '../feature_events.dart' show readFeatureEvents;
 // lib/src/topostats/topostats_engine.dart
 //
@@ -471,6 +472,8 @@ String _baseName(String p) => p.split(RegExp(r'[\\/]')).last;
 /// Guesses rec_ID from a set of `<idx>_<recId>_<segment>.features.csv`
 /// names: the longest common `_`-delimited prefix after the index.
 String inferRecId(List<String> paths) {
+  final subjects = paths.map(recordingSubject).toSet();
+  if (subjects.length == 1 && subjects.first != null) return subjects.first!;
   final stems = [
     for (final p in paths)
       _baseName(p)
@@ -522,7 +525,8 @@ List<String> discoverSessionFiles(String dir, String recId) {
           .listSync()
           .whereType<File>()
           .map((f) => f.path)
-          .where((p) => re.hasMatch(_baseName(p)) && _baseName(p).contains('_'))
+          .where((p) => _baseName(p).endsWith('.features.csv'))
+          .where((p) => recordingSubject(p) != null ? recordingSubject(p) == recId : (re.hasMatch(_baseName(p)) && _baseName(p).contains('_')))
           .toList()
         ..sort();
   return out;

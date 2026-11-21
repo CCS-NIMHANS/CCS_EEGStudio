@@ -361,6 +361,25 @@ class MediaSyncController extends ChangeNotifier {
   Future<void> seekToEegTime(double sec, {bool notifyExternal = false}) =>
       seekToEpoch(primaryStartEpoch + sec, notifyExternal: notifyExternal);
 
+  bool compatibilityVideo = true;
+  bool _frameBusy = false;
+  DateTime _lastFrameRequest = DateTime.fromMillisecondsSinceEpoch(0);
+  Future<void> _refreshPlaybackFrame(SyncedMediaSegment segment, double local) async {
+    if (_frameBusy || !compatibilityVideo || !segment.isVideo || _seeking || _disposed) return;
+    if (DateTime.now().difference(_lastFrameRequest).inMilliseconds < 250) return;
+    _frameBusy = true;
+    _lastFrameRequest = DateTime.now();
+    try {
+      final frame = await MediaSyncService.videoFrame(segment.path, local);
+      if (!_disposed && _playing && identical(segment, activeSegment) && !_seeking) {
+        previewFrame = frame;
+        notifyListeners();
+      }
+    } catch (e) {
+      _status = 'Playback error: compatibility frame unavailable: $e';
+      notifyListeners();
+    } finally { _frameBusy = false; }
+  }
   Uint8List? previewFrame;
   bool previewLoading = false;
   bool _seeking = false;
@@ -446,6 +465,7 @@ class MediaSyncController extends ChangeNotifier {
     if (seg == null || !_playing || _outOfRange) return;
     // Ignore stale position events that arrive right after a seek.
     if (DateTime.now().difference(_lastSeek).inMilliseconds < 350) return;
+    unawaited(_refreshPlaybackFrame(seg, pos.inMicroseconds / 1e6));
     final t = segmentStartEpoch(seg) + pos.inMicroseconds / 1e6;
     if ((t - _cursorEpoch).abs() > 0.04) {
       _cursorEpoch = t;
@@ -721,6 +741,10 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   ),
                 ),
               ),
+              Row(children: [
+                Checkbox(value: ctrl.compatibilityVideo, onChanged: (v) { ctrl.compatibilityVideo = v ?? true; ctrl.notifyListeners(); }),
+                const Expanded(child: Text('Compatibility video · up to 4 frames/s · audio stays continuous', style: TextStyle(fontSize: 10))),
+              ]),
               if (ctrl.busy || ctrl.trackingBusy) const LinearProgressIndicator(minHeight: 2),
               if (ctrl.status?.startsWith('Playback error:') == true)
                 Padding(padding: const EdgeInsets.all(6), child: Text(ctrl.status!, style: const TextStyle(color: Colors.orange, fontSize: 11))),
@@ -734,7 +758,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                         color: Colors.black,
                         child: Video(controller: ctrl.videoController),
                       ),
-                      if (!ctrl.playing && ctrl.previewFrame != null)
+                      if ((!ctrl.playing || ctrl.compatibilityVideo) && ctrl.previewFrame != null)
                         Container(color: Colors.black, child: Image.memory(ctrl.previewFrame!, fit: BoxFit.contain, gaplessPlayback: false)),
                       if (!ctrl.playing && ctrl.previewLoading)
                         const ColoredBox(color: Colors.black, child: Center(child: Text('Loading video frame…'))),
