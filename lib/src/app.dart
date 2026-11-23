@@ -2747,6 +2747,15 @@ class _FeatureHomeState extends State<FeatureHome>
                         child: SyncedMediaPanel(
                           controller: _mediaController!,
                           onAddFiles: _pickAndAddMediaFiles,
+                          onPickAlignVideo: () async {
+                            final res = await FilePicker.pickFiles(
+                              allowMultiple: false,
+                              type: FileType.custom,
+                              allowedExtensions: MediaSyncService.videoExtensions.toList(),
+                            );
+                            if (res == null || res.files.isEmpty) return null;
+                            return res.files.first.path;
+                          },
                           onClose: () => setState(() => _showMediaPanel = false),
                           onMove: (d) => setState(
                             () => _mediaPanelRect = _mediaPanelRect.shift(d),

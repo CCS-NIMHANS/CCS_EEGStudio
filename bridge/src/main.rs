@@ -162,6 +162,15 @@ fn main() -> Result<(), String> {
         println!("{}", serde_json::to_string(&res).map_err(err)?);
         return Ok(());
     }
+    if erp_value["job_type"].as_str() == Some("factorial_lmm") {
+        let lmm_job: ccs_eeg_engine::factorial_lmm::FactorialLmmJob =
+            serde_json::from_value(erp_value.clone()).map_err(err)?;
+        let res = ccs_eeg_engine::factorial_lmm::run_factorial_lmm(&lmm_job)?;
+        if lmm_job.output_path.is_none() {
+            println!("{}", serde_json::to_string(&res).map_err(err)?);
+        }
+        return Ok(());
+    }
     if erp_value["job_type"].as_str() == Some("align_audio") {
         let align_job: speech_tracking::AlignAudioJob =
             serde_json::from_value(erp_value.clone()).map_err(err)?;

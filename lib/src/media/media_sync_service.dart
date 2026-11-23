@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../extraction_service.dart';
@@ -24,7 +25,7 @@ class SyncedMediaSegment {
   final String label;
   final bool isVideo;
   double offsetSeconds;
-  final double durationSeconds;
+  double durationSeconds;
   String? extractedWavPath;
   final String timestampSource;
 
@@ -166,13 +167,184 @@ class MediaSyncService {
     return videoExtensions.contains(ext);
   }
 
+  static final Map<String, String> _cachedCustomTools = {};
+
+  static String _toolsConfigPath() {
+    if (Platform.isWindows) {
+      final base = Platform.environment['APPDATA'] ??
+          Platform.environment['LOCALAPPDATA'] ??
+          Directory.systemTemp.path;
+      return '$base\\CCS_EEGStudio\\media_tools.json';
+    }
+    final home = Platform.environment['HOME'] ?? Directory.systemTemp.path;
+    return '$home/.config/ccs_eeg_studio/media_tools.json';
+  }
+
+  static void setCustomToolPath(String name, String path) {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty) return;
+    _cachedCustomTools[name] = trimmed;
+    final cfg = File(_toolsConfigPath());
+    try {
+      Map<String, dynamic> map = {};
+      if (cfg.existsSync()) {
+        final decoded = jsonDecode(cfg.readAsStringSync());
+        if (decoded is Map) map = Map<String, dynamic>.from(decoded);
+      }
+      map[name] = trimmed;
+      if (name == 'ffmpeg') {
+        final parent = File(trimmed).parent.path;
+        final sep = Platform.pathSeparator;
+        final probeName = Platform.isWindows ? 'ffprobe.exe' : 'ffprobe';
+        final siblingProbe = '$parent$sep$probeName';
+        if (File(siblingProbe).existsSync()) {
+          _cachedCustomTools['ffprobe'] = siblingProbe;
+          map['ffprobe'] = siblingProbe;
+        }
+      }
+      cfg.parent.createSync(recursive: true);
+      cfg.writeAsStringSync(jsonEncode(map));
+    } catch (_) {}
+  }
+
+  static String? getCustomToolPath(String name) {
+    final cached = _cachedCustomTools[name];
+    if (cached != null && cached.isNotEmpty) return cached;
+    try {
+      final cfg = File(_toolsConfigPath());
+      if (!cfg.existsSync()) return null;
+      final decoded = jsonDecode(cfg.readAsStringSync());
+      if (decoded is Map && decoded[name] is String) {
+        final p = (decoded[name] as String).trim();
+        if (p.isNotEmpty) {
+          _cachedCustomTools[name] = p;
+          return p;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   static String? findTool(String name) {
-    final candidates = Platform.isWindows
-        ? ['$name.exe', 'C:\\ffmpeg\\bin\\$name.exe']
-        : ['/opt/homebrew/bin/$name', '/usr/local/bin/$name', '/usr/bin/$name', name];
-    for (final c in candidates) {
-      if (c == name || c == '$name.exe') return c;
-      if (File(c).existsSync()) return c;
+    final custom = getCustomToolPath(name);
+    if (custom != null && File(custom).existsSync()) return custom;
+    final searchDirs = <String>[
+      File(Platform.resolvedExecutable).parent.path,
+      if (Platform.isWindows) ...[
+        r'C:\ffmpeg\bin',
+        r'C:\Program Files\ffmpeg\bin',
+        r'C:\ProgramData\chocolatey\bin',
+        if (Platform.environment['LOCALAPPDATA'] case final appData?) ...[
+          '$appData\\Microsoft\\WinGet\\Links',
+          ..._windowsWingetFfmpegBins(appData),
+        ],
+      ] else ...[
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        '/usr/bin',
+      ],
+      ..._pathEnvDirs(Platform.environment['PATH'], isWindows: Platform.isWindows),
+    ];
+    return findToolInPaths(name, searchDirs: searchDirs, isWindows: Platform.isWindows);
+  }
+
+  static List<String> _windowsWingetFfmpegBins(String localAppData) {
+    final out = <String>[];
+    final pkgRoot = Directory('$localAppData\\Microsoft\\WinGet\\Packages');
+    if (!pkgRoot.existsSync()) return out;
+    try {
+      for (final pkg in pkgRoot.listSync(followLinks: false)) {
+        if (pkg is! Directory) continue;
+        final pkgName = pkg.path.split(RegExp(r'[\\/]')).last.toLowerCase();
+        if (!pkgName.contains('ffmpeg')) continue;
+        out.add(pkg.path);
+        out.add('${pkg.path}\\bin');
+        try {
+          for (final sub in pkg.listSync(followLinks: false)) {
+            if (sub is Directory) {
+              out.add(sub.path);
+              out.add('${sub.path}\\bin');
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  static Future<({bool ok, String message})> installFfmpegViaWinget() async {
+    if (!Platform.isWindows) {
+      return (
+        ok: false,
+        message: 'WinGet automatic install is only available on Windows.',
+      );
+    }
+    try {
+      final res = await Process.run('winget', [
+        'install',
+        '--id',
+        'Gyan.FFmpeg',
+        '--exact',
+        '--accept-package-agreements',
+        '--accept-source-agreements',
+      ]);
+      final found = findTool('ffmpeg');
+      if (found != null) {
+        return (ok: true, message: 'FFmpeg installed and detected at $found');
+      }
+      if (res.exitCode == 0) {
+        return (
+          ok: false,
+          message:
+              'WinGet finished installing FFmpeg, but ffmpeg.exe was not detected yet. '
+              'Click "Locate ffmpeg.exe…" if installed to a custom folder.',
+        );
+      }
+      final detail = ('${res.stderr}\n${res.stdout}').trim();
+      return (
+        ok: false,
+        message: detail.isEmpty
+            ? 'WinGet install exited with code ${res.exitCode}.'
+            : detail.split('\n').take(4).join(' '),
+      );
+    } catch (e) {
+      return (ok: false, message: 'Could not run winget: $e');
+    }
+  }
+
+  static List<String> _pathEnvDirs(String? pathEnv, {required bool isWindows}) {
+    if (pathEnv == null || pathEnv.trim().isEmpty) return const [];
+    final sep = isWindows ? ';' : ':';
+    return [
+      for (final raw in pathEnv.split(sep))
+        if (raw.trim().replaceAll('"', '').isNotEmpty)
+          raw.trim().replaceAll('"', ''),
+    ];
+  }
+
+  static String? findToolInPaths(
+    String name, {
+    required List<String> searchDirs,
+    required bool isWindows,
+  }) {
+    final exeName =
+        isWindows && !name.toLowerCase().endsWith('.exe') ? '$name.exe' : name;
+    final seen = <String>{};
+    for (final rawDir in searchDirs) {
+      var dir = rawDir.trim();
+      if (dir.isEmpty) continue;
+      while (dir.length > 1 && (dir.endsWith('/') || dir.endsWith(r'\'))) {
+        if (isWindows && dir.length == 3 && dir[1] == ':') break;
+        dir = dir.substring(0, dir.length - 1);
+      }
+      final slash = dir.contains(r'\')
+          ? r'\'
+          : (dir.contains('/') ? '/' : (isWindows ? r'\' : '/'));
+      final candidate = dir.endsWith('/') || dir.endsWith(r'\')
+          ? '$dir$exeName'
+          : '$dir$slash$exeName';
+      if (!seen.add(isWindows ? candidate.toLowerCase() : candidate)) continue;
+      if (File(candidate).existsSync()) return candidate;
     }
     return null;
   }
@@ -429,7 +601,253 @@ class MediaSyncService {
     final fromName = parseTimestampFromFilename(path);
     if (fromName != null) return (fromName, duration, 'file name (recording-site local clock)');
     if (metaStart != null) return (metaStart, duration, metaSource);
+    if (path.toLowerCase().endsWith('.wav')) {
+      final wavTs = await parseWavEmbeddedTimestamp(path);
+      if (wavTs != null) return (wavTs.startTime, duration, wavTs.source);
+    }
     return (null, duration, 'no timestamp');
+  }
+
+  /// Pure-Dart RIFF/WAVE header scanner for Broadcast Wave (`bext`) and
+  /// `LIST/INFO` (`ICRD`) timestamps embedded by handheld recorders/phones.
+  /// Jumps past large `data` chunks via `setPosition` so multi-GB WAVs finish
+  /// in < 1 ms without needing `ffprobe`.
+  static Future<({DateTime startTime, String source})?>
+      parseWavEmbeddedTimestamp(String path) async {
+    RandomAccessFile? raf;
+    try {
+      final file = File(path);
+      if (!await file.exists()) return null;
+      final fileLen = await file.length();
+      if (fileLen < 12) return null;
+      raf = await file.open(mode: FileMode.read);
+      final riff = await raf.read(12);
+      if (riff.length < 12 ||
+          String.fromCharCodes(riff.sublist(0, 4)) != 'RIFF' ||
+          String.fromCharCodes(riff.sublist(8, 12)) != 'WAVE') {
+        return null;
+      }
+
+      for (var nChunks = 0; nChunks < 64; nChunks++) {
+        final pos = await raf.position();
+        if (pos + 8 > fileLen) break;
+        final hdr = await raf.read(8);
+        if (hdr.length < 8) break;
+        final id = String.fromCharCodes(hdr.sublist(0, 4));
+        final size = ByteData.sublistView(Uint8List.fromList(hdr), 4, 8)
+            .getUint32(0, Endian.little);
+        final payloadStart = pos + 8;
+        final paddedNext = payloadStart + size + (size % 2);
+        if (payloadStart + size > fileLen) break;
+
+        if (id == 'bext' && size >= 338) {
+          final bytes = await raf.read(338);
+          if (bytes.length >= 338) {
+            final dateStr = ascii
+                .decode(bytes.sublist(320, 330), allowInvalid: true)
+                .replaceAll('\x00', '')
+                .trim();
+            final timeStr = ascii
+                .decode(bytes.sublist(330, 338), allowInvalid: true)
+                .replaceAll('\x00', '')
+                .trim();
+            final dt = _parseDateAndTimeParts(dateStr, timeStr);
+            if (dt != null) {
+              return (startTime: dt, source: 'WAV Broadcast (bext) header');
+            }
+          }
+        } else if (id == 'LIST' && size >= 12 && size <= 262144) {
+          final bytes = await raf.read(size);
+          if (bytes.length >= 12 &&
+              String.fromCharCodes(bytes.sublist(0, 4)) == 'INFO') {
+            var subPos = 4;
+            while (subPos + 8 <= bytes.length) {
+              final subId = String.fromCharCodes(bytes.sublist(subPos, subPos + 4));
+              final subSize = ByteData.sublistView(
+                      Uint8List.fromList(bytes), subPos + 4, subPos + 8)
+                  .getUint32(0, Endian.little);
+              final dataStart = subPos + 8;
+              final dataEnd = dataStart + subSize;
+              if (dataEnd > bytes.length) break;
+              if (subId == 'ICRD') {
+                final text = ascii
+                    .decode(bytes.sublist(dataStart, dataEnd), allowInvalid: true)
+                    .replaceAll('\x00', '')
+                    .trim();
+                final dt = _parseDateTimeString(text);
+                if (dt != null) {
+                  return (startTime: dt, source: 'WAV LIST/INFO (ICRD) header');
+                }
+              }
+              subPos = dataEnd + (subSize % 2);
+            }
+          }
+        }
+        if (paddedNext <= pos || paddedNext > fileLen) break;
+        await raf.setPosition(paddedNext);
+      }
+    } catch (_) {
+    } finally {
+      try {
+        await raf?.close();
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  static DateTime? _parseDateAndTimeParts(String dateStr, String timeStr) {
+    final dm = RegExp(r'^(\d{4})[-:/](\d{2})[-:/](\d{2})$').firstMatch(dateStr);
+    final tm = RegExp(r'^(\d{2}):(\d{2}):(\d{2})$').firstMatch(timeStr);
+    if (dm == null || tm == null) return null;
+    final y = int.parse(dm.group(1)!);
+    final mo = int.parse(dm.group(2)!);
+    final d = int.parse(dm.group(3)!);
+    final hh = int.parse(tm.group(1)!);
+    final mm = int.parse(tm.group(2)!);
+    final ss = int.parse(tm.group(3)!);
+    if (y < 1990 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) {
+      return null;
+    }
+    if (hh > 23 || mm > 59 || ss > 59) return null;
+    return DateTime(y, mo, d, hh, mm, ss);
+  }
+
+  static DateTime? _parseDateTimeString(String text) {
+    final m = RegExp(
+      r'^(\d{4})[-:/](\d{2})[-:/](\d{2})[T ](\d{2}):(\d{2}):(\d{2})',
+    ).firstMatch(text.trim());
+    if (m == null) return null;
+    return _parseDateAndTimeParts(
+      '${m.group(1)}-${m.group(2)}-${m.group(3)}',
+      '${m.group(4)}:${m.group(5)}:${m.group(6)}',
+    );
+  }
+
+  static String syncSidecarPath(String mediaPath) => '$mediaPath.ccssync.json';
+
+  static Future<void> saveSyncOffset({
+    required String mediaPath,
+    required String eegKey,
+    required double offsetSeconds,
+    required String alignmentSource,
+    required String syncNote,
+  }) async {
+    try {
+      final f = File(syncSidecarPath(mediaPath));
+      Map<String, dynamic> root = {};
+      if (await f.exists()) {
+        try {
+          final decoded = jsonDecode(await f.readAsString());
+          if (decoded is Map) root = Map<String, dynamic>.from(decoded);
+        } catch (_) {}
+      }
+      final entriesRaw = root['entries'];
+      final entries = entriesRaw is Map
+          ? Map<String, dynamic>.from(entriesRaw)
+          : <String, dynamic>{};
+      entries[eegKey] = {
+        'offset_seconds': offsetSeconds,
+        'alignment_source': alignmentSource,
+        'sync_note': syncNote,
+        'updated_at': DateTime.now().toIso8601String(),
+      };
+      root['entries'] = entries;
+      await f.writeAsString(const JsonEncoder.withIndent('  ').convert(root));
+    } catch (_) {}
+  }
+
+  static Future<({double offsetSeconds, String alignmentSource, String syncNote})?>
+      loadSyncOffset({
+    required String mediaPath,
+    required String eegKey,
+  }) async {
+    try {
+      final f = File(syncSidecarPath(mediaPath));
+      if (!await f.exists()) return null;
+      final decoded = jsonDecode(await f.readAsString());
+      if (decoded is! Map) return null;
+      final entries = decoded['entries'];
+      if (entries is! Map) return null;
+      final rec = entries[eegKey];
+      if (rec is! Map) return null;
+      final off = (rec['offset_seconds'] as num?)?.toDouble();
+      if (off == null || !off.isFinite) return null;
+      final src = (rec['alignment_source'] as String?) ?? 'saved sync';
+      final note = (rec['sync_note'] as String?) ?? '';
+      return (offsetSeconds: off, alignmentSource: src, syncNote: note);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Finds timestamped video files in the same or sibling directories (up to 3
+  /// parent levels / depth 3, skipping dot-directories) that belong to the same
+  /// session as [eegStartTime], sorted smallest-first so brief overlapping
+  /// reference clips are tried before multi-hour recordings.
+  static Future<List<({String path, DateTime startTime, int bytes})>>
+      findSiblingTimestampedVideos(
+    String audioPath, {
+    DateTime? eegStartTime,
+    double eegDurationSec = 0.0,
+  }) async {
+    final roots = _ancestors(audioPath, 3);
+    final seenDirs = <String>{};
+    final seenFiles = <String>{};
+    final found = <({String path, DateTime startTime, int bytes})>[];
+    var budget = 2000;
+
+    final DateTime? winStart = eegStartTime?.subtract(const Duration(minutes: 20));
+    final DateTime? winEnd = eegStartTime?.add(
+      Duration(
+        milliseconds: ((math.max(eegDurationSec, 3600.0) + 1200.0) * 1000).round(),
+      ),
+    );
+
+    for (final root in roots) {
+      final queue = <(Directory, int)>[(Directory(root), 0)];
+      while (queue.isNotEmpty && budget > 0) {
+        final (dir, depth) = queue.removeAt(0);
+        final normDir = Platform.isWindows ? dir.path.toLowerCase() : dir.path;
+        if (!seenDirs.add(normDir)) continue;
+        final videoSubdirs = <(Directory, int)>[];
+        final otherSubdirs = <(Directory, int)>[];
+        try {
+          await for (final entry in dir.list(followLinks: false)) {
+            if (--budget <= 0) break;
+            final name = entry.path.split(RegExp(r'[\\/]')).last;
+            if (name.startsWith('.')) continue;
+            if (entry is File && isVideoPath(entry.path)) {
+              final dt = parseTimestampFromFilename(entry.path);
+              if (dt == null) continue;
+              if (winStart != null &&
+                  winEnd != null &&
+                  (dt.isBefore(winStart) || dt.isAfter(winEnd))) {
+                continue;
+              }
+              final normFile =
+                  Platform.isWindows ? entry.path.toLowerCase() : entry.path;
+              if (!seenFiles.add(normFile)) continue;
+              int bytes = 0;
+              try {
+                bytes = entry.lengthSync();
+              } catch (_) {}
+              found.add((path: entry.path, startTime: dt, bytes: bytes));
+            } else if (entry is Directory && depth < 3) {
+              if (name.toLowerCase().contains('video')) {
+                videoSubdirs.add((entry, depth + 1));
+              } else {
+                otherSubdirs.add((entry, depth + 1));
+              }
+            }
+          }
+        } catch (_) {}
+        if (otherSubdirs.isNotEmpty) queue.insertAll(0, otherSubdirs);
+        if (videoSubdirs.isNotEmpty) queue.insertAll(0, videoSubdirs);
+      }
+    }
+
+    found.sort((a, b) => a.bytes.compareTo(b.bytes));
+    return found.length > 6 ? found.sublist(0, 6) : found;
   }
 
   /// Aligns [targetWav] to [referenceWav] by speech-envelope cross-correlation.

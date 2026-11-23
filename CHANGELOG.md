@@ -4,6 +4,29 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.62]
+
+### Native Python-Free GLM / LMM Engine, Clearer Group Stats & Generic Media Sync
+
+- **Native Python-Free GLM / LMM Engine (`ccs-eeg-engine`)**
+  - Added a standalone Rust `factorial_lmm` backend inside `ccs-eeg-engine` so multi-factor Group Statistics run with zero external Python (`numpy`, `pandas`, `scipy`, `statsmodels`) dependencies on Windows, macOS, and Linux.
+  - Fits REML Random-Intercept Linear Mixed-Effects Models (`MixedLM`) for within-subject/repeated-measures factors and cluster-robust or plain OLS GLMs for between-subject designs, reporting exact Wald χ²/F main effects, interactions, marginal means, and Holm/BH-FDR/Bonferroni contrasts (validated within `< 5.5e-6` against `statsmodels`).
+
+- **Clearer Group Statistics Workflows & Inline ERP Difference (`B − A`)**
+  - Replaced confusing comparison mode names with explicit labels: `Multi-Factor GLM / LMM (Native)` for 1+ factors (with permutation option) alongside `Legacy Python Report (1–2 factors)`.
+  - Added an inline **ERP Condition Mode** selector (`All conditions` vs `ERP Difference (B − A)`) directly inside Group Statistics so paired condition differences can be modelled in GLM / LMM and compared across cohorts without hunting for separate wizards.
+  - Renamed the grouped waveform/topomap launcher to **Group Grand Averages & Topomaps…** and surfaced native GLM/LMM fitting status clearly.
+
+- **Windows Media Playback Fixes & Guided FFmpeg Setup**
+  - Fixed Windows `findTool` executable resolution across `PATH`, application directory, WinGet `Packages` installs, and persistent user preferences (`media_tools.json`).
+  - Enabled native video and `.wav` audio playback on Windows via `libmpv` even when `ffmpeg.exe` is absent, with safe `compatibilityVideo` defaults so video playback no longer stalls waiting for FFmpeg transcoding.
+  - Surfaced clear `Media load warning:` feedback and a guided **Setup FFmpeg…** dialog featuring 1-click **Install via WinGet** and **Locate ffmpeg.exe…** pickers that immediately re-extract waveform strips and unlock Neural Speech Tracking for compressed `.mp4`/`.m4a`/`.mp3` files.
+
+- **Generic Audio/Video Sync for Independent Recorders**
+  - Added pure-Dart Broadcast Wave (`bext`) and `LIST/INFO ICRD` WAV header timestamp parsing so standalone audio recorders, laptops, and mobile phones auto-align accurately to EEG clocks when metadata is present.
+  - Added direct timeline manipulation (`Slide to sync` strip drag in Plots & Report, `±10s` nudges, and a clickable `Off:` sync dialog supporting **Landmark (`Audio ↔ EEG`)**, **Direct Offset**, and **Device Wall-Clock (`HH:MM:SS`)** alignment).
+  - Persisted per-file offsets in `.ccssync.json` sidecars next to media files and added `Align to video…` plus sibling timestamped video cross-correlation.
+
 ## [1.2.61]
 
 ### Source Localization (eLORETA & Glass Brain), Channel Setup Headmap & ICA/GEDAI Clarity

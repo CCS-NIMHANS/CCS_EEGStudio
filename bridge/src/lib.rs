@@ -14,6 +14,7 @@ pub mod xdf_loader;
 pub mod erp_math;
 pub mod erp_workbench;
 pub mod ersp_itc;
+pub mod factorial_lmm;
 pub mod speech_tracking;
 
 pub mod recording_metadata;

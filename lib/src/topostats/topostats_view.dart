@@ -164,6 +164,11 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     });
   }
 
+  // Media strip slide-to-sync state
+  bool _slideAudioToSync = false;
+  SyncedMediaSegment? _slideSeg;
+  double _slidePxPerSec = 1.0;
+
   // text fields
   final _recId = TextEditingController();
   final _sessionSearch = TextEditingController();
@@ -2941,6 +2946,36 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    if (lanes.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: Tooltip(
+                          message: 'Toggle drag mode: drag the audio envelope strip left/right '
+                              'to align it visually with the EEG plot',
+                          child: FilterChip(
+                            avatar: Icon(
+                              Icons.swap_horiz,
+                              size: 14,
+                              color: _slideAudioToSync ? Colors.amberAccent : _muted,
+                            ),
+                            label: Text(
+                              _slideAudioToSync ? 'Slide to sync (ON)' : 'Slide to sync',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: _slideAudioToSync ? Colors.amberAccent : _text,
+                              ),
+                            ),
+                            selected: _slideAudioToSync,
+                            selectedColor: _amber.withValues(alpha: 0.2),
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            onSelected: (v) => setState(() {
+                              _slideAudioToSync = v;
+                              if (!v) _slideSeg = null;
+                            }),
+                          ),
+                        ),
+                      ),
                     IconButton(
                       icon: Icon(
                         ctrl.playing ? Icons.pause : Icons.play_arrow,
@@ -2993,37 +3028,93 @@ class _TopoStatsViewState extends State<TopoStatsView> {
               if (_showWaveform || _showEnvelope) for (final lane in lanes)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4),
-                  child: GestureDetector(
-                    onTapDown: (d) => seekAt(d.localPosition.dx),
-                    onHorizontalDragUpdate: (d) => seekAt(d.localPosition.dx),
-                    child: SizedBox(
-                      width: figW,
-                      height: 60,
-                      child: Stack(
-                        children: [
-                          for (var i = 0; i < sessions.length; i++)
-                            if (lane[i] != null)
-                              Positioned.fill(
-                                child: CustomPaint(
-                                  painter: SessionAlignedAudioPainter(
-                                    showWaveform: _showWaveform,
-                                    showEnvelope: _showEnvelope,
-                                    minBins: lane[i]!.seg.waveformMin,
-                                    maxBins: lane[i]!.seg.waveformMax,
-                                    envelope: lane[i]!.seg.envelopePreview,
-                                    segStartSec: lane[i]!.startSec,
-                                    segDurationSec: lane[i]!.seg.durationSeconds,
-                                    axisEndSec: sessions[i].durationMin * 60.0,
-                                    left: fig.lineAxes[i].left * ppi,
-                                    right: fig.lineAxes[i].right * ppi,
-                                    cursorSec: ctrl.sessionLocalSec(sessions[i].path),
-                                    label:
-                                        '${lane[i]!.seg.isVideo ? '🎬' : '🎧'} '
-                                        '${lane[i]!.seg.label}',
+                  child: MouseRegion(
+                    cursor: _slideAudioToSync
+                        ? SystemMouseCursors.grab
+                        : SystemMouseCursors.click,
+                    child: GestureDetector(
+                      onTapDown: _slideAudioToSync
+                          ? null
+                          : (d) => seekAt(d.localPosition.dx),
+                      onHorizontalDragStart: !_slideAudioToSync
+                          ? null
+                          : (d) {
+                              int? picked;
+                              for (var i = 0; i < sessions.length; i++) {
+                                if (lane[i] == null) continue;
+                                final l = fig.lineAxes[i].left * ppi;
+                                final r = fig.lineAxes[i].right * ppi;
+                                if (d.localPosition.dx >= l && d.localPosition.dx <= r) {
+                                  picked = i;
+                                  break;
+                                }
+                                picked ??= i;
+                              }
+                              if (picked != null && lane[picked] != null) {
+                                final l = fig.lineAxes[picked].left * ppi;
+                                final r = fig.lineAxes[picked].right * ppi;
+                                final durSec = sessions[picked].durationMin * 60.0;
+                                _slideSeg = lane[picked]!.seg;
+                                _slidePxPerSec =
+                                    (r > l && durSec > 0) ? (r - l) / durSec : 1.0;
+                              } else {
+                                _slideSeg = null;
+                              }
+                            },
+                      onHorizontalDragUpdate: (d) {
+                        if (_slideAudioToSync) {
+                          if (_slideSeg != null && _slidePxPerSec > 0) {
+                            ctrl.shiftSegmentOffset(_slideSeg!, d.delta.dx / _slidePxPerSec);
+                          }
+                        } else {
+                          seekAt(d.localPosition.dx);
+                        }
+                      },
+                      onHorizontalDragEnd: !_slideAudioToSync
+                          ? null
+                          : (_) {
+                              if (_slideSeg != null) {
+                                ctrl.commitSegmentOffset(_slideSeg!);
+                                _slideSeg = null;
+                              }
+                            },
+                      onHorizontalDragCancel: !_slideAudioToSync
+                          ? null
+                          : () {
+                              if (_slideSeg != null) {
+                                ctrl.commitSegmentOffset(_slideSeg!);
+                                _slideSeg = null;
+                              }
+                            },
+                      child: SizedBox(
+                        width: figW,
+                        height: 60,
+                        child: Stack(
+                          children: [
+                            for (var i = 0; i < sessions.length; i++)
+                              if (lane[i] != null)
+                                Positioned.fill(
+                                  child: CustomPaint(
+                                    painter: SessionAlignedAudioPainter(
+                                      showWaveform: _showWaveform,
+                                      showEnvelope: _showEnvelope,
+                                      minBins: lane[i]!.seg.waveformMin,
+                                      maxBins: lane[i]!.seg.waveformMax,
+                                      envelope: lane[i]!.seg.envelopePreview,
+                                      segStartSec: lane[i]!.startSec,
+                                      segDurationSec: lane[i]!.seg.durationSeconds,
+                                      axisEndSec: sessions[i].durationMin * 60.0,
+                                      left: fig.lineAxes[i].left * ppi,
+                                      right: fig.lineAxes[i].right * ppi,
+                                      cursorSec: ctrl.sessionLocalSec(sessions[i].path),
+                                      label:
+                                          '${lane[i]!.seg.isVideo ? '🎬' : '🎧'} '
+                                          '${lane[i]!.seg.label}',
+                                    ),
                                   ),
                                 ),
-                              ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),

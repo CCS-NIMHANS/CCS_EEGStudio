@@ -610,7 +610,7 @@ class ErpGroupStatsEngine {
           (isRepeated && perPerson.values.any((n) => n != expectedWithin))) {
         return {
           'error':
-              'The native factorial approximation requires complete balanced cells and visits. Use Fitted GLM / LMM (Python) for unequal cohort sizes or missing visits.',
+              'The native factorial approximation requires complete balanced cells and visits. Use Fitted GLM / LMM (Native) for unequal cohort sizes or missing visits.',
         };
       }
       // Compute observed ANOVA/LMM effects (Type-I/II sequential cell-mean SS)

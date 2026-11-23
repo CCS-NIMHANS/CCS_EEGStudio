@@ -1,8 +1,10 @@
 import 'dart:async';
-import 'dart:typed_data';
+import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -248,9 +250,39 @@ class MediaSyncController extends ChangeNotifier {
     final label = path.split(RegExp(r'[\\/]')).last;
     final isVid = MediaSyncService.isVideoPath(path);
     final (startDt, probedDur, tsSource) = await MediaSyncService.probeMediaMetadata(path);
-    final wavPath = await MediaSyncService.ensureWavAudio(path);
-    final env = await MediaSyncService.extractEnvelope(wavPath);
-    final dur = probedDur > 0 ? probedDur : env.durationSeconds;
+    String? wavPath;
+    var envMin = const <double>[];
+    var envMax = const <double>[];
+    var envPreview = const <double>[];
+    var envDur = 0.0;
+    var extraNote = '';
+    try {
+      wavPath = await MediaSyncService.ensureWavAudio(path);
+    } catch (e) {
+      if (MediaSyncService.findTool('ffmpeg') == null &&
+          !path.toLowerCase().endsWith('.wav')) {
+        extraNote =
+            'Playback ready (install ffmpeg or place ffmpeg.exe next to the app '
+            'to enable waveform/envelope & Speech Tracking for compressed media; '
+            '.wav works without ffmpeg).';
+      } else {
+        rethrow;
+      }
+    }
+    if (wavPath != null) {
+      try {
+        final env = await MediaSyncService.extractEnvelope(wavPath);
+        envMin = env.displayMin;
+        envMax = env.displayMax;
+        envPreview = env.envelopePreview;
+        envDur = env.durationSeconds;
+      } catch (e) {
+        if (extraNote.isEmpty) {
+          extraNote = 'Playback ready (waveform/envelope unavailable: $e).';
+        }
+      }
+    }
+    final dur = probedDur > 0 ? probedDur : envDur;
 
     double? offset;
     var source = tsSource;
@@ -268,6 +300,9 @@ class MediaSyncController extends ChangeNotifier {
     } else if (startDt != null) {
       note = 'EEG start time unknown, so the media clock could not be applied';
     }
+    if (extraNote.isNotEmpty) {
+      note = note.isEmpty ? extraNote : '$note. $extraNote';
+    }
 
     final seg = SyncedMediaSegment(
       path: path,
@@ -278,26 +313,53 @@ class MediaSyncController extends ChangeNotifier {
       extractedWavPath: isVid ? wavPath : null,
       timestampSource: source,
       syncNote: note,
-      waveformMin: env.displayMin,
-      waveformMax: env.displayMax,
-      envelopePreview: env.envelopePreview,
+      waveformMin: envMin,
+      waveformMax: envMax,
+      envelopePreview: envPreview,
     );
 
-    if (offset == null) {
-      // No usable clock: align by speech envelope to a loaded video, else assume.
-      final ok = !isVid && await _autoAlign(seg, wavPath);
-      if (!ok) {
+    final saved = await MediaSyncService.loadSyncOffset(
+      mediaPath: path,
+      eegKey: _primaryKey,
+    );
+    if (saved != null) {
+      seg.offsetSeconds = saved.offsetSeconds;
+      seg.alignmentSource = 'saved sync';
+      final savedNote =
+          'Restored saved sync (${saved.alignmentSource}): media starts '
+          '${saved.offsetSeconds >= 0 ? '+' : '−'}${saved.offsetSeconds.abs().toStringAsFixed(2)} s relative to EEG';
+      seg.syncNote = extraNote.isEmpty ? savedNote : '$savedNote. $extraNote';
+    } else if (offset == null) {
+      // No usable clock: align by speech envelope to a loaded or sibling video, else assume.
+      var aligned = false;
+      if (!isVid && wavPath != null) {
+        aligned = await _autoAlign(seg, wavPath) ||
+            await _autoAlignToSiblingVideo(seg, wavPath);
+      }
+      if (!aligned) {
         final last = segments.isEmpty
             ? null
             : segments.reduce((a, b) => a.offsetSeconds > b.offsetSeconds ? a : b);
         seg.offsetSeconds = last == null ? 0.0 : last.offsetSeconds + last.durationSeconds;
         seg.syncNote = '${seg.syncNote.isEmpty ? '' : '${seg.syncNote}. '}'
             'No clock: placed ${last == null ? 'at the EEG start' : 'after the previous file'}. '
-            'Add the matching video to auto-align, or use −/+ to nudge.';
+            'Click Off:${seg.offsetSeconds.toStringAsFixed(1)}s for Landmark Sync, '
+            'use "Slide to sync" on the plot, or nudge with −/+.';
         seg.alignmentSource = 'assumed (no timestamp)';
       }
     }
     segments.add(seg);
+
+    // If a timestamped video just arrived after an unclocked audio file, align it now.
+    if (isVid && offset != null && wavPath != null) {
+      for (final existing in segments) {
+        if (!existing.isVideo &&
+            existing.alignmentSource == 'assumed (no timestamp)' &&
+            existing.audioPath != null) {
+          await _autoAlign(existing, existing.audioPath!);
+        }
+      }
+    }
   }
 
   /// Aligns audio-only [seg] to a loaded video's audio track by cross-correlation.
@@ -319,12 +381,71 @@ class MediaSyncController extends ChangeNotifier {
     if (best == null || bestRef == null || best.confidence < 6.0 || best.peakR < 0.05) {
       return false;
     }
-    seg.offsetSeconds = bestRef.offsetSeconds + best.lagSeconds;
+    final totalOff = bestRef.offsetSeconds + best.lagSeconds;
+    seg.offsetSeconds = totalOff;
     seg.alignmentSource = 'auto-aligned to video audio';
-    seg.syncNote = 'Auto-aligned to the audio of ${bestRef.label}: starts '
-        '${best.lagSeconds >= 0 ? '+' : '−'}${best.lagSeconds.abs().toStringAsFixed(2)} s '
+    seg.syncNote = 'Auto-aligned to the audio of ${bestRef.label}: media starts '
+        '${totalOff >= 0 ? '+' : '−'}${totalOff.abs().toStringAsFixed(2)} s relative to EEG '
         '(speech-envelope r=${best.peakR.toStringAsFixed(2)}, z=${best.confidence.toStringAsFixed(1)})';
+    unawaited(MediaSyncService.saveSyncOffset(
+      mediaPath: seg.path,
+      eegKey: _primaryKey,
+      offsetSeconds: totalOff,
+      alignmentSource: seg.alignmentSource,
+      syncNote: seg.syncNote,
+    ));
     return true;
+  }
+
+  /// Searches sibling folders for a timestamped video from the same session
+  /// and aligns clockless audio-only [seg] via speech-envelope cross-correlation.
+  Future<bool> _autoAlignToSiblingVideo(SyncedMediaSegment seg, String wavPath) async {
+    if (eegStartTime == null || MediaSyncService.findTool('ffmpeg') == null) {
+      return false;
+    }
+    _status = 'Searching for matching video to auto-align ${seg.label}…';
+    notifyListeners();
+    final candidates = await MediaSyncService.findSiblingTimestampedVideos(
+      seg.path,
+      eegStartTime: eegStartTime,
+      eegDurationSec: eegDurationSec,
+    );
+    for (final cand in candidates.take(3)) {
+      String? refWav;
+      try {
+        refWav = await MediaSyncService.ensureWavAudio(cand.path);
+        final a = await MediaSyncService.alignAudio(
+          referenceWav: refWav,
+          targetWav: wavPath,
+        );
+        if (a.confidence >= 6.0 && a.peakR >= 0.05) {
+          final vidOffset = cand.startTime.difference(eegStartTime!).inMicroseconds / 1e6;
+          final candLabel = cand.path.split(RegExp(r'[\\/]')).last;
+          final totalOff = vidOffset + a.lagSeconds;
+          seg.offsetSeconds = totalOff;
+          seg.alignmentSource = 'auto-aligned to sibling video';
+          seg.syncNote = 'Auto-aligned via sibling video $candLabel: media starts '
+              '${totalOff >= 0 ? '+' : '−'}${totalOff.abs().toStringAsFixed(2)} s relative to EEG '
+              '(speech-envelope r=${a.peakR.toStringAsFixed(2)}, z=${a.confidence.toStringAsFixed(1)})';
+          unawaited(MediaSyncService.saveSyncOffset(
+            mediaPath: seg.path,
+            eegKey: _primaryKey,
+            offsetSeconds: totalOff,
+            alignmentSource: seg.alignmentSource,
+            syncNote: seg.syncNote,
+          ));
+          return true;
+        }
+      } catch (_) {
+      } finally {
+        if (refWav != null && refWav != cand.path) {
+          try {
+            await File(refWav).parent.delete(recursive: true);
+          } catch (_) {}
+        }
+      }
+    }
+    return false;
   }
 
   /// Re-runs envelope alignment of the active audio-only file against loaded videos.
@@ -337,8 +458,121 @@ class MediaSyncController extends ChangeNotifier {
     notifyListeners();
     try {
       final ok = await _autoAlign(seg, wav);
-      _status = ok ? seg.syncNote : 'Could not find a confident match in the loaded video audio.';
-      await seekToEpoch(_cursorEpoch);
+      if (ok) {
+        segments.sort((a, b) => a.offsetSeconds.compareTo(b.offsetSeconds));
+        _activeIndex = segments.indexOf(seg);
+        _status = seg.syncNote;
+      } else {
+        _status = 'Could not find a confident match in the loaded video audio.';
+      }
+      await seekToEpoch(_cursorEpoch, notifyExternal: true);
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Aligns the active audio-only segment to a user-chosen timestamped video file.
+  Future<void> alignActiveToVideoFile(String videoPath) async {
+    final seg = activeSegment;
+    final wav = seg?.audioPath;
+    if (seg == null || wav == null || seg.isVideo) return;
+    _busy = true;
+    final vidLabel = videoPath.split(RegExp(r'[\\/]')).last;
+    _status = 'Aligning ${seg.label} to $vidLabel…';
+    notifyListeners();
+    String? refWav;
+    try {
+      final (vidDt, _, tsSource) = await MediaSyncService.probeMediaMetadata(videoPath);
+      if (vidDt == null || eegStartTime == null) {
+        _status = 'Media load warning: '
+            '${eegStartTime == null ? 'EEG start time is unknown' : '$vidLabel has no usable timestamp'}.';
+        return;
+      }
+      final vidOffset = vidDt.difference(eegStartTime!).inMicroseconds / 1e6;
+      if (vidOffset.abs() >= 24 * 3600) {
+        _status = 'Media load warning: $vidLabel timestamp is more than 24 h from this EEG.';
+        return;
+      }
+      refWav = await MediaSyncService.ensureWavAudio(videoPath);
+      final a = await MediaSyncService.alignAudio(referenceWav: refWav, targetWav: wav);
+      if (a.confidence < 6.0 || a.peakR < 0.05) {
+        _status = 'Media load warning: could not find a confident match in $vidLabel '
+            '(r=${a.peakR.toStringAsFixed(2)}, z=${a.confidence.toStringAsFixed(1)}).';
+        return;
+      }
+      final totalOff = vidOffset + a.lagSeconds;
+      seg.offsetSeconds = totalOff;
+      seg.alignmentSource = 'aligned to video';
+      seg.syncNote = 'Aligned to $vidLabel ($tsSource): media starts '
+          '${totalOff >= 0 ? '+' : '−'}${totalOff.abs().toStringAsFixed(2)} s relative to EEG '
+          '(speech-envelope r=${a.peakR.toStringAsFixed(2)}, z=${a.confidence.toStringAsFixed(1)})';
+      segments.sort((a, b) => a.offsetSeconds.compareTo(b.offsetSeconds));
+      _activeIndex = segments.indexOf(seg);
+      _status = seg.syncNote;
+      unawaited(MediaSyncService.saveSyncOffset(
+        mediaPath: seg.path,
+        eegKey: _primaryKey,
+        offsetSeconds: totalOff,
+        alignmentSource: seg.alignmentSource,
+        syncNote: seg.syncNote,
+      ));
+      await seekToEpoch(_cursorEpoch, notifyExternal: true);
+    } catch (e) {
+      _status = 'Media load warning: alignment with $vidLabel failed: $e';
+    } finally {
+      if (refWav != null && refWav != videoPath) {
+        try {
+          await File(refWav).parent.delete(recursive: true);
+        } catch (_) {}
+      }
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Re-runs audio/waveform/envelope extraction for loaded segments whose
+  /// waveform is empty (for instance, right after installing or locating FFmpeg).
+  Future<void> refreshMissingAudioExtractions() async {
+    compatibilityVideo =
+        Platform.isMacOS && MediaSyncService.findTool('ffmpeg') != null;
+    final missing = segments.where((s) => s.waveformMax.isEmpty).toList();
+    if (missing.isEmpty) {
+      notifyListeners();
+      return;
+    }
+    _busy = true;
+    _status = 'Extracting waveform & speech envelope…';
+    notifyListeners();
+    try {
+      for (final seg in missing) {
+        try {
+          final wavPath = await MediaSyncService.ensureWavAudio(seg.path);
+          final env = await MediaSyncService.extractEnvelope(wavPath);
+          if (seg.isVideo) seg.extractedWavPath = wavPath;
+          if (seg.durationSeconds <= 0 && env.durationSeconds > 0) {
+            seg.durationSeconds = env.durationSeconds;
+          }
+          seg.waveformMin = env.displayMin;
+          seg.waveformMax = env.displayMax;
+          seg.envelopePreview = env.envelopePreview;
+          seg.syncNote = seg.syncNote
+              .replaceAll(
+                RegExp(r'\.?\s*Playback ready \(install ffmpeg[^)]*\)\.?$'),
+                '',
+              )
+              .trim();
+          if (seg.syncNote.isEmpty) {
+            seg.syncNote =
+                'Media starts ${seg.offsetSeconds >= 0 ? '+' : '−'}${seg.offsetSeconds.abs().toStringAsFixed(1)} s relative to this EEG';
+          }
+        } catch (e) {
+          _status = 'Media load warning: ${seg.label}: $e';
+        }
+      }
+      if (!(_status?.startsWith('Media load warning:') ?? false)) {
+        _status = '${segments.length} synced media file(s) ready';
+      }
     } finally {
       _busy = false;
       notifyListeners();
@@ -350,7 +584,8 @@ class MediaSyncController extends ChangeNotifier {
   int _indexCovering(double epoch) {
     if (segments.isEmpty) return -1;
     bool covers(SyncedMediaSegment s) =>
-        epoch >= segmentStartEpoch(s) && epoch <= segmentEndEpoch(s);
+        epoch >= segmentStartEpoch(s) &&
+        (s.durationSeconds <= 0 || epoch <= segmentEndEpoch(s));
     final cur = activeSegment;
     if (cur != null && covers(cur)) return _activeIndex;
     var idx = segments.indexWhere((s) => s.isVideo && covers(s));
@@ -361,11 +596,19 @@ class MediaSyncController extends ChangeNotifier {
   Future<void> seekToEegTime(double sec, {bool notifyExternal = false}) =>
       seekToEpoch(primaryStartEpoch + sec, notifyExternal: notifyExternal);
 
-  bool compatibilityVideo = true;
+  bool compatibilityVideo =
+      Platform.isMacOS && MediaSyncService.findTool('ffmpeg') != null;
   bool _frameBusy = false;
   DateTime _lastFrameRequest = DateTime.fromMillisecondsSinceEpoch(0);
   Future<void> _refreshPlaybackFrame(SyncedMediaSegment segment, double local) async {
-    if (_frameBusy || !compatibilityVideo || !segment.isVideo || _seeking || _disposed) return;
+    if (_frameBusy ||
+        !compatibilityVideo ||
+        !segment.isVideo ||
+        _seeking ||
+        _disposed ||
+        MediaSyncService.findTool('ffmpeg') == null) {
+      return;
+    }
     if (DateTime.now().difference(_lastFrameRequest).inMilliseconds < 250) return;
     _frameBusy = true;
     _lastFrameRequest = DateTime.now();
@@ -413,16 +656,30 @@ class MediaSyncController extends ChangeNotifier {
         if (idx != _activeIndex) await _openSegment(idx);
         final seg = activeSegment;
         if (seg != null) {
-          final local = (target - segmentStartEpoch(seg)).clamp(0.0, math.max(0.0, seg.durationSeconds - 0.05)).toDouble();
-          if (seg.isVideo && !_playing && _pendingSeekEpoch == null) {
+          final local = seg.durationSeconds > 0
+              ? (target - segmentStartEpoch(seg))
+                  .clamp(0.0, math.max(0.0, seg.durationSeconds - 0.05))
+                  .toDouble()
+              : math.max(0.0, target - segmentStartEpoch(seg)).toDouble();
+          if (seg.isVideo &&
+              compatibilityVideo &&
+              !_playing &&
+              _pendingSeekEpoch == null &&
+              MediaSyncService.findTool('ffmpeg') != null) {
             // Render first: a blocked native seek must not leave an old frame
             // under the newly updated EEG cursor.
-            final frame = await MediaSyncService.videoFrame(seg.path, local);
-            if (_pendingSeekEpoch == null && !_disposed && !_playing) {
-              previewFrame = frame;
+            try {
+              final frame = await MediaSyncService.videoFrame(seg.path, local);
+              if (_pendingSeekEpoch == null && !_disposed && !_playing) {
+                previewFrame = frame;
+                previewLoading = false;
+                notifyListeners();
+              }
+            } catch (_) {
               previewLoading = false;
-              notifyListeners();
             }
+          } else {
+            previewLoading = false;
           }
           await _player.seek(Duration(microseconds: (local * 1e6).round()))
               .timeout(const Duration(seconds: 5));
@@ -454,6 +711,10 @@ class MediaSyncController extends ChangeNotifier {
     await Future<void>.delayed(const Duration(milliseconds: 120));
     for (var i = 0; i < 100 && _player.state.duration == Duration.zero; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    if (segments[idx].durationSeconds <= 0 && _player.state.duration > Duration.zero) {
+      segments[idx].durationSeconds = _player.state.duration.inMicroseconds / 1e6;
+      notifyListeners();
     }
     await _player.setRate(_rate);
     await _player.setVolume(_muted ? 0 : 100);
@@ -519,14 +780,120 @@ class MediaSyncController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Parses signed `seconds`, `mm:ss`, or `hh:mm:ss` into seconds; returns `null` if invalid.
+  static double? parseFlexibleTimeSec(String raw) {
+    var s = raw.trim().replaceAll('−', '-');
+    if (s.isEmpty) return null;
+    var sign = 1.0;
+    if (s.startsWith('-')) {
+      sign = -1.0;
+      s = s.substring(1).trim();
+    } else if (s.startsWith('+')) {
+      s = s.substring(1).trim();
+    }
+    if (s.isEmpty) return null;
+    final parts = s.split(':');
+    if (parts.length == 1) {
+      final v = double.tryParse(parts[0].trim());
+      if (v == null || !v.isFinite || v < 0) return null;
+      return sign * v;
+    }
+    if (parts.length == 2) {
+      final m = int.tryParse(parts[0].trim());
+      final sec = double.tryParse(parts[1].trim());
+      if (m == null || sec == null || m < 0 || !sec.isFinite || sec < 0 || sec >= 60) {
+        return null;
+      }
+      return sign * (m * 60.0 + sec);
+    }
+    if (parts.length == 3) {
+      final h = int.tryParse(parts[0].trim());
+      final m = int.tryParse(parts[1].trim());
+      final sec = double.tryParse(parts[2].trim());
+      if (h == null ||
+          m == null ||
+          sec == null ||
+          h < 0 ||
+          m < 0 ||
+          m >= 60 ||
+          !sec.isFinite ||
+          sec < 0 ||
+          sec >= 60) {
+        return null;
+      }
+      return sign * (h * 3600.0 + m * 60.0 + sec);
+    }
+    return null;
+  }
+
+  /// Sets [seg]'s EEG-relative offset, persists `.ccssync.json`, and seeks.
+  void setSegmentOffset(
+    SyncedMediaSegment seg,
+    double newOffset, {
+    required String source,
+    String? note,
+    bool persist = true,
+    bool seek = true,
+  }) {
+    final cur = activeSegment;
+    seg.offsetSeconds = newOffset;
+    seg.alignmentSource = source;
+    seg.syncNote = note ??
+        'Synced ($source): media starts '
+        '${newOffset >= 0 ? '+' : '−'}${newOffset.abs().toStringAsFixed(2)} s relative to EEG';
+    segments.sort((a, b) => a.offsetSeconds.compareTo(b.offsetSeconds));
+    if (cur != null) {
+      _activeIndex = segments.indexOf(cur);
+    }
+    notifyListeners();
+    if (persist) {
+      unawaited(MediaSyncService.saveSyncOffset(
+        mediaPath: seg.path,
+        eegKey: _primaryKey,
+        offsetSeconds: newOffset,
+        alignmentSource: source,
+        syncNote: seg.syncNote,
+      ));
+    }
+    if (seek) {
+      unawaited(seekToEpoch(_cursorEpoch, notifyExternal: true));
+    }
+  }
+
+  void shiftSegmentOffset(
+    SyncedMediaSegment seg,
+    double deltaSec, {
+    bool persist = false,
+    bool seek = false,
+  }) {
+    setSegmentOffset(
+      seg,
+      seg.offsetSeconds + deltaSec,
+      source: 'manual slide',
+      persist: persist,
+      seek: seek,
+    );
+  }
+
+  void commitSegmentOffset(SyncedMediaSegment seg) {
+    setSegmentOffset(
+      seg,
+      seg.offsetSeconds,
+      source: seg.alignmentSource,
+      persist: true,
+      seek: true,
+    );
+  }
+
   /// Shifts the active media later (+) or earlier (−) on the EEG timeline.
   void nudgeActiveOffset(double deltaSec) {
     final seg = activeSegment;
     if (seg == null) return;
-    seg.offsetSeconds += deltaSec;
-    seg.alignmentSource = 'manual nudge';
-    notifyListeners();
-    unawaited(seekToEpoch(_cursorEpoch));
+    setSegmentOffset(
+      seg,
+      seg.offsetSeconds + deltaSec,
+      source: 'manual nudge',
+    );
   }
 
   // ── Neural Speech Tracking ─────────────────────────────────────────────
@@ -571,13 +938,27 @@ class MediaSyncController extends ChangeNotifier {
       }
     }
     if (seg == null || overlapOf(seg) < 4.0) {
+      final noAudioSeg = segments
+          .where((s) => s.audioPath == null && overlapOf(s) >= 4.0)
+          .firstOrNull;
+      if (noAudioSeg != null) {
+        throw StateError(
+          'Audio track could not be extracted from ${noAudioSeg.label} because FFmpeg is not installed. '
+          'Click "Setup FFmpeg…" in the media panel (or use a .wav file).',
+        );
+      }
       throw StateError(
         'No loaded video/audio overlaps this EEG session. Load the media that was '
         'recorded during it (the media and EEG clocks must overlap).',
       );
     }
     final wav = seg.audioPath;
-    if (wav == null) throw StateError('No audio is available for ${seg.label}.');
+    if (wav == null) {
+      throw StateError(
+        'Audio track could not be extracted from ${seg.label} because FFmpeg is not installed. '
+        'Click "Setup FFmpeg…" in the media panel (or use a .wav file).',
+      );
+    }
     final recPath = MediaSyncService.trackingRecordingPath(key == _primaryKey ? eegPath : sessionPath);
     _trackingBusy = true;
     _status = 'Neural Speech Tracking (${seg.label})…';
@@ -627,6 +1008,7 @@ class SyncedMediaPanel extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onAddFiles,
+    this.onPickAlignVideo,
     required this.onClose,
     required this.onMove,
     required this.onResize,
@@ -634,6 +1016,7 @@ class SyncedMediaPanel extends StatefulWidget {
 
   final MediaSyncController controller;
   final VoidCallback onAddFiles;
+  final Future<String?> Function()? onPickAlignVideo;
   final VoidCallback onClose;
   final ValueChanged<Offset> onMove;
   final ValueChanged<Offset> onResize;
@@ -660,6 +1043,226 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
       if (mounted) setState(() => _trackingError = '$e');
     }
   }
+
+  Future<void> _showFfmpegSetupDialog(BuildContext context, MediaSyncController ctrl) async {
+    var installing = false;
+    String? feedback;
+    var ok = MediaSyncService.findTool('ffmpeg') != null;
+    if (ok) {
+      feedback = 'Detected FFmpeg at: ${MediaSyncService.findTool('ffmpeg')}';
+    }
+    final cmdText = Platform.isWindows
+        ? 'winget install Gyan.FFmpeg'
+        : Platform.isMacOS
+            ? 'brew install ffmpeg'
+            : 'sudo apt install ffmpeg';
+
+    await showDialog<void>(
+      context: context,
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (dlgCtx, setDlgState) => AlertDialog(
+          title: const Text('Setup FFmpeg for Waveform & Speech Tracking', style: TextStyle(fontSize: 15)),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Native video/audio playback and .wav files work without FFmpeg. '
+                    'FFmpeg is only needed to extract waveform/speech-envelope strips, '
+                    'scrub frame previews, and Neural Speech Tracking from compressed '
+                    'formats (.mp4, .mov, .m4a, .mp3, etc.).',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
+                  if (Platform.isWindows) ...[
+                    const Text(
+                      'Option 1 — One-click install via Windows Package Manager (WinGet):',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        FilledButton.tonalIcon(
+                          onPressed: installing
+                              ? null
+                              : () async {
+                                  setDlgState(() {
+                                    installing = true;
+                                    feedback = 'Running winget install Gyan.FFmpeg…';
+                                  });
+                                  final res = await MediaSyncService.installFfmpegViaWinget();
+                                  ok = res.ok;
+                                  if (res.ok) {
+                                    await ctrl.refreshMissingAudioExtractions();
+                                  }
+                                  if (dlgCtx.mounted) {
+                                    setDlgState(() {
+                                      installing = false;
+                                      feedback = res.message;
+                                    });
+                                  }
+                                },
+                          icon: installing
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.download, size: 16),
+                          label: Text(installing ? 'Installing…' : 'Install via WinGet (1-click)'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Text(
+                    Platform.isWindows
+                        ? 'Option 2 — Already downloaded ffmpeg.exe? Point the app directly to it:'
+                        : 'Locate FFmpeg binary directly or install via package manager:',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: installing
+                            ? null
+                            : () async {
+                                final res = await FilePicker.pickFiles(
+                                  allowMultiple: false,
+                                  type: Platform.isWindows ? FileType.custom : FileType.any,
+                                  allowedExtensions: Platform.isWindows ? const ['exe'] : null,
+                                );
+                                final path = res == null || res.files.isEmpty
+                                    ? null
+                                    : res.files.first.path;
+                                if (path == null || path.isEmpty) return;
+                                MediaSyncService.setCustomToolPath('ffmpeg', path);
+                                ok = MediaSyncService.findTool('ffmpeg') != null;
+                                if (ok) {
+                                  await ctrl.refreshMissingAudioExtractions();
+                                }
+                                if (dlgCtx.mounted) {
+                                  setDlgState(() {
+                                    feedback = ok
+                                        ? 'FFmpeg configured: $path'
+                                        : 'Selected file could not be used: $path';
+                                  });
+                                }
+                              },
+                        icon: const Icon(Icons.folder_open, size: 16),
+                        label: Text(Platform.isWindows ? 'Locate ffmpeg.exe…' : 'Locate ffmpeg…'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: installing
+                            ? null
+                            : () async {
+                                final found = MediaSyncService.findTool('ffmpeg');
+                                ok = found != null;
+                                if (ok) {
+                                  await ctrl.refreshMissingAudioExtractions();
+                                }
+                                if (dlgCtx.mounted) {
+                                  setDlgState(() {
+                                    feedback = ok
+                                        ? 'Detected FFmpeg at: $found'
+                                        : 'FFmpeg still not found on PATH or standard folders.';
+                                  });
+                                }
+                              },
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('Check again'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    Platform.isWindows
+                        ? 'Option 3 — Manual install (Terminal command or ZIP download):'
+                        : 'Terminal install command:',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF020617),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: SelectableText(
+                            cmdText,
+                            style: const TextStyle(fontFamily: 'monospace', fontSize: 11.5),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Copy command',
+                          icon: const Icon(Icons.copy, size: 15),
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: cmdText));
+                            if (dlgCtx.mounted) {
+                              setDlgState(() => feedback = 'Copied "$cmdText" to clipboard.');
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (Platform.isWindows) ...[
+                    const SizedBox(height: 6),
+                    const SelectableText(
+                      'Or download from https://www.gyan.dev/ffmpeg/builds/ (release-essentials ZIP) '
+                      'and copy bin\\ffmpeg.exe + bin\\ffprobe.exe either onto PATH or into the '
+                      'CCS EEG Studio folder next to ccs_eeg_app.exe.',
+                      style: TextStyle(fontSize: 11, color: Colors.white70),
+                    ),
+                  ],
+                  if (feedback != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      feedback!,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: ok ? Colors.greenAccent : Colors.amberAccent,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dlgCtx),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _showSyncDialog(
+    BuildContext context,
+    MediaSyncController ctrl,
+    SyncedMediaSegment seg,
+  ) =>
+      showDialog<void>(
+        context: context,
+        builder: (_) => _SyncMediaDialog(ctrl: ctrl, seg: seg),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -742,12 +1345,72 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                 ),
               ),
               Row(children: [
-                Checkbox(value: ctrl.compatibilityVideo, onChanged: (v) { ctrl.compatibilityVideo = v ?? true; ctrl.notifyListeners(); }),
-                const Expanded(child: Text('Compatibility video · up to 4 frames/s · audio stays continuous', style: TextStyle(fontSize: 10))),
+                Checkbox(
+                  value: MediaSyncService.findTool('ffmpeg') != null &&
+                      ctrl.compatibilityVideo,
+                  onChanged: MediaSyncService.findTool('ffmpeg') == null
+                      ? null
+                      : (v) {
+                          ctrl.compatibilityVideo = v ?? true;
+                          ctrl.notifyListeners();
+                        },
+                ),
+                Expanded(
+                  child: Text(
+                    MediaSyncService.findTool('ffmpeg') == null
+                        ? 'Compatibility video requires ffmpeg (native hardware playback active)'
+                        : 'Compatibility video · up to 4 frames/s · audio stays continuous',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: MediaSyncService.findTool('ffmpeg') == null
+                          ? Colors.white54
+                          : null,
+                    ),
+                  ),
+                ),
               ]),
+              if (MediaSyncService.findTool('ffmpeg') == null)
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.35)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline, size: 13, color: Colors.amberAccent),
+                      const SizedBox(width: 6),
+                      const Expanded(
+                        child: Text(
+                          'FFmpeg not found: playback & .wav work, but waveform/envelope & Speech Tracking for .mp4/.m4a/.mp3 need FFmpeg.',
+                          style: TextStyle(fontSize: 9.5, color: Colors.amberAccent),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => _showFfmpegSetupDialog(context, ctrl),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        ),
+                        child: const Text('Setup FFmpeg…', style: TextStyle(fontSize: 10)),
+                      ),
+                    ],
+                  ),
+                ),
               if (ctrl.busy || ctrl.trackingBusy) const LinearProgressIndicator(minHeight: 2),
-              if (ctrl.status?.startsWith('Playback error:') == true)
-                Padding(padding: const EdgeInsets.all(6), child: Text(ctrl.status!, style: const TextStyle(color: Colors.orange, fontSize: 11))),
+              if (ctrl.status != null &&
+                  (ctrl.status!.startsWith('Playback error:') ||
+                      ctrl.status!.startsWith('Media load warning:')))
+                Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Text(
+                    ctrl.status!,
+                    style: const TextStyle(color: Colors.orange, fontSize: 11),
+                  ),
+                ),
               if (seg != null && seg.isVideo)
                 Expanded(
                   flex: 3,
@@ -949,37 +1612,107 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                     ),
                     if (seg != null) ...[
                       TextButton(
+                        onPressed: () => ctrl.nudgeActiveOffset(-10.0),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('−10s', style: TextStyle(fontSize: 10)),
+                      ),
+                      TextButton(
                         onPressed: () => ctrl.nudgeActiveOffset(-1.0),
-                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
                         child: const Text('−1s', style: TextStyle(fontSize: 10)),
                       ),
                       TextButton(
                         onPressed: () => ctrl.nudgeActiveOffset(-0.1),
-                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
                         child: const Text('−0.1', style: TextStyle(fontSize: 10)),
                       ),
                       Tooltip(
-                        message: 'Media start relative to this EEG recording\n${seg.syncNote}',
-                        child: Text(
-                          'Off:${seg.offsetSeconds.toStringAsFixed(1)}s',
-                          style: const TextStyle(fontSize: 10, color: Colors.white70),
+                        message:
+                            'Click to adjust sync offset, match an audio/EEG landmark, or set recording start clock\n${seg.syncNote}',
+                        child: OutlinedButton.icon(
+                          onPressed: () => _showSyncDialog(context, ctrl, seg),
+                          icon: const Icon(Icons.tune, size: 11),
+                          label: Text(
+                            'Off:${seg.offsetSeconds.toStringAsFixed(1)}s',
+                            style: const TextStyle(fontSize: 10),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            side: const BorderSide(color: Colors.white24),
+                          ),
                         ),
                       ),
                       TextButton(
                         onPressed: () => ctrl.nudgeActiveOffset(0.1),
-                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
                         child: const Text('+0.1', style: TextStyle(fontSize: 10)),
                       ),
                       TextButton(
                         onPressed: () => ctrl.nudgeActiveOffset(1.0),
-                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
                         child: const Text('+1s', style: TextStyle(fontSize: 10)),
                       ),
-                      if (!seg.isVideo && ctrl.segments.any((s) => s.isVideo))
+                      TextButton(
+                        onPressed: () => ctrl.nudgeActiveOffset(10.0),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('+10s', style: TextStyle(fontSize: 10)),
+                      ),
+                      if (!seg.isVideo &&
+                          (ctrl.segments.any((s) => s.isVideo) ||
+                              widget.onPickAlignVideo != null))
                         TextButton.icon(
-                          onPressed: ctrl.busy ? null : ctrl.autoAlignActiveToVideo,
+                          onPressed: ctrl.busy
+                              ? null
+                              : () async {
+                                  if (ctrl.segments.any((s) => s.isVideo)) {
+                                    await ctrl.autoAlignActiveToVideo();
+                                  } else if (widget.onPickAlignVideo != null) {
+                                    final picked = await widget.onPickAlignVideo!();
+                                    if (picked != null && picked.isNotEmpty) {
+                                      await ctrl.alignActiveToVideoFile(picked);
+                                    }
+                                  }
+                                },
                           icon: const Icon(Icons.sync, size: 12),
-                          label: const Text('Align to video', style: TextStyle(fontSize: 10)),
+                          label: Text(
+                            ctrl.segments.any((s) => s.isVideo)
+                                ? 'Align to video'
+                                : 'Align to video…',
+                            style: const TextStyle(fontSize: 10),
+                          ),
                           style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
                         ),
                       FilledButton.tonalIcon(
@@ -1050,6 +1783,295 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
           ),
         );
       },
+    );
+  }
+}
+
+String _formatMmSs(double sec) {
+  final neg = sec < 0;
+  final abs = sec.abs();
+  final mins = abs ~/ 60;
+  final rem = abs - mins * 60;
+  final remStr = rem.toStringAsFixed(1).padLeft(4, '0');
+  return '${neg ? '-' : ''}$mins:$remStr';
+}
+
+String _formatClockTime(DateTime dt) =>
+    '${dt.hour.toString().padLeft(2, '0')}:'
+    '${dt.minute.toString().padLeft(2, '0')}:'
+    '${dt.second.toString().padLeft(2, '0')}';
+
+DateTime? _parseWallClockNearestTime(String raw, DateTime reference) {
+  final m = RegExp(r'^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$')
+      .firstMatch(raw.trim());
+  if (m == null) return null;
+  final hh = int.parse(m.group(1)!);
+  final mm = int.parse(m.group(2)!);
+  final ss = int.tryParse(m.group(3) ?? '0') ?? 0;
+  if (hh > 23 || mm > 59 || ss > 59) return null;
+  final baseDay = DateTime(reference.year, reference.month, reference.day, hh, mm, ss);
+  DateTime best = baseDay;
+  var bestDiff = baseDay.difference(reference).abs();
+  for (final deltaDay in const [-1, 1]) {
+    final cand = baseDay.add(Duration(days: deltaDay));
+    final diff = cand.difference(reference).abs();
+    if (diff < bestDiff) {
+      best = cand;
+      bestDiff = diff;
+    }
+  }
+  return best;
+}
+
+class _SyncMediaDialog extends StatefulWidget {
+  const _SyncMediaDialog({required this.ctrl, required this.seg});
+  final MediaSyncController ctrl;
+  final SyncedMediaSegment seg;
+
+  @override
+  State<_SyncMediaDialog> createState() => _SyncMediaDialogState();
+}
+
+class _SyncMediaDialogState extends State<_SyncMediaDialog> {
+  late final TextEditingController _audioCtrl;
+  late final TextEditingController _eegCtrl;
+  late final TextEditingController _offsetCtrl;
+  late final TextEditingController _clockCtrl;
+  String? _errorMsg;
+
+  @override
+  void initState() {
+    super.initState();
+    final ctrl = widget.ctrl;
+    final seg = widget.seg;
+    final initAudio = (ctrl.cursorEpoch - ctrl.segmentStartEpoch(seg))
+        .clamp(0.0, seg.durationSeconds > 0 ? seg.durationSeconds : double.infinity)
+        .toDouble();
+    _audioCtrl = TextEditingController(text: _formatMmSs(initAudio));
+    _eegCtrl = TextEditingController(text: _formatMmSs(ctrl.eegSec));
+    _offsetCtrl = TextEditingController(text: seg.offsetSeconds.toStringAsFixed(2));
+    final initClock = ctrl.eegStartTime == null
+        ? ''
+        : _formatClockTime(
+            ctrl.eegStartTime!.add(Duration(microseconds: (seg.offsetSeconds * 1e6).round())),
+          );
+    _clockCtrl = TextEditingController(text: initClock);
+  }
+
+  @override
+  void dispose() {
+    _audioCtrl.dispose();
+    _eegCtrl.dispose();
+    _offsetCtrl.dispose();
+    _clockCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ctrl = widget.ctrl;
+    final seg = widget.seg;
+    return AlertDialog(
+      title: Text('Sync "${seg.label}" with EEG', style: const TextStyle(fontSize: 15)),
+      content: SizedBox(
+        width: 480,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Works for independent phone, recorder, or laptop files (no video required):',
+                style: TextStyle(fontSize: 11.5, color: Colors.white70),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '1. Match Landmark (Audio time ↔ EEG time)',
+                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Pick a shared moment you can hear/see in the media and locate on the EEG plot '
+                '(e.g. a clap, bell, verbal cue, or bell silence). Accepts seconds or mm:ss.',
+                style: TextStyle(fontSize: 11, color: Colors.white70),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _audioCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Audio time (mm:ss or s)',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      final cur = (ctrl.cursorEpoch - ctrl.segmentStartEpoch(seg))
+                          .clamp(
+                            0.0,
+                            seg.durationSeconds > 0 ? seg.durationSeconds : double.infinity,
+                          )
+                          .toDouble();
+                      _audioCtrl.text = _formatMmSs(cur);
+                    },
+                    child: const Text('Now', style: TextStyle(fontSize: 11)),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _eegCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Matching EEG time (mm:ss or s)',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => _eegCtrl.text = _formatMmSs(ctrl.eegSec),
+                    child: const Text('Now', style: TextStyle(fontSize: 11)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.tonal(
+                  onPressed: () {
+                    final aSec = MediaSyncController.parseFlexibleTimeSec(_audioCtrl.text);
+                    final eSec = MediaSyncController.parseFlexibleTimeSec(_eegCtrl.text);
+                    if (aSec == null || eSec == null) {
+                      setState(() => _errorMsg = 'Enter valid times (seconds, mm:ss, or hh:mm:ss).');
+                      return;
+                    }
+                    final newOff = eSec - aSec;
+                    ctrl.setSegmentOffset(
+                      seg,
+                      newOff,
+                      source: 'landmark sync',
+                      note: 'Landmark sync: audio ${_audioCtrl.text.trim()} → EEG ${_eegCtrl.text.trim()} '
+                          '(offset ${newOff >= 0 ? '+' : '−'}${newOff.abs().toStringAsFixed(2)} s)',
+                    );
+                    Navigator.pop(context);
+                  },
+                  child: const Text('Apply landmark'),
+                ),
+              ),
+              const Divider(height: 20),
+              const Text(
+                '2. Direct Offset (seconds relative to EEG start)',
+                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                children: [
+                  for (final step in const [-60.0, -10.0, -1.0, 1.0, 10.0, 60.0])
+                    ActionChip(
+                      label: Text(
+                        '${step > 0 ? '+' : '−'}${step.abs().toStringAsFixed(0)}s',
+                        style: const TextStyle(fontSize: 10.5),
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () {
+                        final cur = MediaSyncController.parseFlexibleTimeSec(_offsetCtrl.text) ??
+                            seg.offsetSeconds;
+                        _offsetCtrl.text = (cur + step).toStringAsFixed(2);
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _offsetCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Offset (s or mm:ss; negative = started before EEG)',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(
+                    onPressed: () {
+                      final v = MediaSyncController.parseFlexibleTimeSec(_offsetCtrl.text);
+                      if (v == null) {
+                        setState(() => _errorMsg = 'Invalid offset value.');
+                        return;
+                      }
+                      ctrl.setSegmentOffset(seg, v, source: 'manual offset');
+                      Navigator.pop(context);
+                    },
+                    child: const Text('Apply offset'),
+                  ),
+                ],
+              ),
+              if (ctrl.eegStartTime != null) ...[
+                const Divider(height: 20),
+                const Text(
+                  '3. Device Start Wall-Clock (HH:MM:SS)',
+                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'EEG started at ${_formatClockTime(ctrl.eegStartTime!)}. Enter the true local '
+                  'start time when the phone/recorder started:',
+                  style: const TextStyle(fontSize: 11, color: Colors.white70),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _clockCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Media start clock (HH:MM:SS)',
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonal(
+                      onPressed: () {
+                        final dt = _parseWallClockNearestTime(_clockCtrl.text, ctrl.eegStartTime!);
+                        if (dt == null) {
+                          setState(() => _errorMsg = 'Enter start clock as HH:MM:SS (24-hour).');
+                          return;
+                        }
+                        final off = dt.difference(ctrl.eegStartTime!).inMicroseconds / 1e6;
+                        ctrl.setSegmentOffset(
+                          seg,
+                          off,
+                          source: 'manual wall-clock',
+                          note: 'Manual wall-clock (${_clockCtrl.text.trim()}): media starts '
+                              '${off >= 0 ? '+' : '−'}${off.abs().toStringAsFixed(2)} s relative to EEG',
+                        );
+                        Navigator.pop(context);
+                      },
+                      child: const Text('Apply clock'),
+                    ),
+                  ],
+                ),
+              ],
+              if (_errorMsg != null) ...[
+                const SizedBox(height: 10),
+                Text(_errorMsg!, style: const TextStyle(color: Colors.redAccent, fontSize: 11)),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+      ],
     );
   }
 }

@@ -241,6 +241,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   );
   bool _includeInteractions = true;
   bool _fittedFactorial = true;
+  bool _erpDiffMode = false;
+  String? _erpDiffCondB;
+  String? _erpDiffCondA;
   StatsPlotLayoutConfig _plotConfig = const StatsPlotLayoutConfig();
   Map<String, dynamic>? _dartAnalysisResults;
   String? _selectedDartMetric;
@@ -652,6 +655,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         _usePermutation = true;
       _dartExcludedLevels.clear();
       _dartLevelOrder.clear();
+      _erpDiffMode = false;
+      _erpDiffCondB = null;
+      _erpDiffCondA = null;
       _selectedSubjectIdCol = subjCol;
       _selectedSubgroupCol =
           nonSubjFactors
@@ -799,26 +805,27 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Future<Map<String, dynamic>> _fitFactorialModel(
     Map<String, dynamic> payload,
   ) async {
-    final python = await _findPythonExecutable();
-    if (python == null)
-      throw StateError(
-        'Fitted GLM/LMM needs Python with numpy, pandas, scipy, statsmodels and matplotlib. Configure CCS_EEG_PYTHON or choose the native factorial permutation approximation.',
-      );
+    final engine = ExtractionService.findEngine();
     final runtime = await _runtimeDirectory;
     final sep = Platform.pathSeparator;
-    final script = File('${runtime.path}${sep}erp_factorial_models.py');
-    await script.writeAsString(
-      await rootBundle.loadString('assets/erp_factorial_models.py'),
-    );
     final input = File('${runtime.path}${sep}factorial_input.json');
     final output = File('${runtime.path}${sep}factorial_output.json');
-    await input.writeAsString(jsonEncode(payload));
-    final process = await Process.run(python, [
-      script.path,
-      input.path,
-      output.path,
-    ]);
-    if (process.exitCode != 0) throw StateError('${process.stderr}');
+    if (await output.exists()) {
+      await output.delete();
+    }
+    final enginePayload = <String, dynamic>{
+      ...payload,
+      'job_type': 'factorial_lmm',
+      'output_path': output.path,
+    };
+    await input.writeAsString(jsonEncode(enginePayload));
+    final process = await Process.run(engine, [input.path]);
+    if (process.exitCode != 0) {
+      final errText = '${process.stderr}'.trim().isNotEmpty
+          ? '${process.stderr}'.trim()
+          : '${process.stdout}'.trim();
+      throw StateError(errText.isEmpty ? 'Native GLM/LMM engine failed.' : errText);
+    }
     return Map<String, dynamic>.from(
       jsonDecode(await output.readAsString()) as Map,
     );
@@ -920,6 +927,32 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       );
   }
 
+  String? _detectConditionFactorCol(Map<String, dynamic>? insp) {
+    if (insp == null) return null;
+    final rawLevels = insp['factor_levels'] as Map? ?? const {};
+    final candidates = [
+      for (final c in const ['Condition', 'condition', 'epoch_label'])
+        if (rawLevels.containsKey(c)) c,
+    ];
+    if (candidates.isEmpty) return null;
+    for (final c in candidates) {
+      if (_dartFactors.contains(c)) return c;
+    }
+    return candidates.first;
+  }
+
+  List<String> _conditionLevelsForCol(
+    Map<String, dynamic>? insp,
+    String condCol,
+  ) {
+    final rawLevels = insp?['factor_levels'] as Map? ?? const {};
+    final excl = _dartExcludedLevels[condCol] ?? const <String>{};
+    return [
+      for (final v in (rawLevels[condCol] as List? ?? const []))
+        if ('$v'.isNotEmpty && !excl.contains('$v')) '$v',
+    ];
+  }
+
   Future<void> _runDartPermutationAnalysis() async {
     final insp = _dartInspection;
     if (!_groupsReady) {
@@ -944,16 +977,16 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           ? 'Fitting GLM / LMM…'
           : 'Running factorial permutations…';
       _statusMessage = _fittedFactorial
-          ? 'Fitting models and corrected contrasts in Python…'
+          ? 'Fitting models and corrected contrasts natively…'
           : 'Running N-way factorial permutations in isolate…';
     });
     try {
-      final headers = (insp['headers'] as List).cast<String>();
-      final rows = (insp['rows'] as List)
+      var headers = List<String>.from((insp['headers'] as List).cast<String>());
+      var rows = (insp['rows'] as List)
           .map((r) => (r as List).map((e) => '$e').toList())
           .toList();
-      final factors = List<String>.from(_dartFactors);
-      final metrics = _selectedMetrics.toList();
+      var factors = List<String>.from(_dartFactors);
+      var metrics = _selectedMetrics.toList();
       final subjCol = _selectedSubjectIdCol;
       final modelPref = _preferredModel;
       final posthoc = _posthocMethod;
@@ -967,6 +1000,137 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         for (final e in _dartLevelOrder.entries)
           e.key: List<String>.from(e.value),
       };
+
+      final condCol = _detectConditionFactorCol(insp);
+      if (_erpDiffMode && condCol != null) {
+        final condLevels = _conditionLevelsForCol(insp, condCol);
+        final cB = (_erpDiffCondB != null && condLevels.contains(_erpDiffCondB))
+            ? _erpDiffCondB!
+            : (condLevels.contains('Rare')
+                ? 'Rare'
+                : (condLevels.length > 1 ? condLevels[1] : null));
+        final cA = (_erpDiffCondA != null && condLevels.contains(_erpDiffCondA))
+            ? _erpDiffCondA!
+            : (condLevels.contains('Freq') ? 'Freq' : condLevels.firstOrNull);
+        if (cB == null || cA == null || cB == cA) {
+          _showSnack('Choose two distinct conditions (B and A) for ERP Difference.');
+          return;
+        }
+        final diffFactors = factors
+            .where((f) => f != condCol && f.toLowerCase() != 'epoch_label')
+            .toList();
+        if (diffFactors.isEmpty) {
+          _showSnack(
+            'Keep at least one non-condition factor (e.g. group or session) selected to model $cB − $cA.',
+          );
+          return;
+        }
+
+        final headerIdx = <String, int>{
+          for (var i = 0; i < headers.length; i++) headers[i]: i,
+        };
+        final condIdx = headerIdx[condCol]!;
+        final fileIdx = [
+          for (final k in const ['filename', 'file', 'source_file', 'path'])
+            headerIdx[k],
+        ].whereType<int>().firstOrNull;
+        final subjIdx = subjCol != null ? headerIdx[subjCol] : null;
+        final diffFactorCols = [for (final f in diffFactors) headerIdx[f]!];
+
+        final paired = <String, ({List<List<String>> b, List<List<String>> a})>{};
+        for (final row in rows) {
+          if (row.length < headers.length) continue;
+          final cVal = row[condIdx];
+          if (cVal != cB && cVal != cA) continue;
+          var skip = false;
+          for (var i = 0; i < diffFactors.length; i++) {
+            final fName = diffFactors[i];
+            final fVal = row[diffFactorCols[i]];
+            if (fVal.isEmpty || (excluded[fName]?.contains(fVal) ?? false)) {
+              skip = true;
+              break;
+            }
+          }
+          if (skip) continue;
+          final recKey = fileIdx != null && row[fileIdx].isNotEmpty
+              ? row[fileIdx]
+              : '${subjIdx != null ? row[subjIdx] : ''}|${[for (final ci in diffFactorCols) row[ci]].join('|')}';
+          final slot = paired.putIfAbsent(recKey, () => (b: [], a: []));
+          if (cVal == cB) {
+            slot.b.add(row);
+          } else {
+            slot.a.add(row);
+          }
+        }
+
+        final diffLabel = '$cB − $cA';
+        final newHeaders = List<String>.from(headers);
+        final metricPairs = <(int idx, String diffMetric)>[];
+        for (final m in metrics) {
+          final mIdx = headerIdx[m];
+          if (mIdx == null) continue;
+          final newName = '$m ($diffLabel)';
+          newHeaders[mIdx] = newName;
+          metricPairs.add((mIdx, newName));
+        }
+        final diffRows = <List<String>>[];
+        for (final entry in paired.values) {
+          if (entry.b.isEmpty || entry.a.isEmpty) continue;
+          final outRow = List<String>.from(entry.b.first);
+          outRow[condIdx] = diffLabel;
+          for (final (mIdx, _) in metricPairs) {
+            double sumB = 0, sumA = 0;
+            var nB = 0, nA = 0;
+            for (final r in entry.b) {
+              final v = double.tryParse(r[mIdx].trim());
+              if (v != null && v.isFinite) {
+                sumB += v;
+                nB++;
+              }
+            }
+            for (final r in entry.a) {
+              final v = double.tryParse(r[mIdx].trim());
+              if (v != null && v.isFinite) {
+                sumA += v;
+                nA++;
+              }
+            }
+            outRow[mIdx] = (nB > 0 && nA > 0)
+                ? '${(sumB / nB) - (sumA / nA)}'
+                : 'NaN';
+          }
+          diffRows.add(outRow);
+        }
+        if (diffRows.length < 3) {
+          _showSnack('Not enough paired $diffLabel recordings found (need >= 3).');
+          return;
+        }
+        headers = newHeaders;
+        rows = diffRows;
+        factors = diffFactors;
+        metrics = [for (final (_, n) in metricPairs) n];
+        excluded.remove(condCol);
+      }
+
+      var cfg = _plotConfig;
+      if (cfg.xFactor != null && !factors.contains(cfg.xFactor)) {
+        final nextX =
+            factors.where((f) => f != cfg.seriesFactor).firstOrNull ??
+            factors.firstOrNull;
+        cfg = cfg.copyWith(xFactor: nextX, clearX: nextX == null);
+      }
+      if (cfg.seriesFactor != null && !factors.contains(cfg.seriesFactor)) {
+        final nextS = factors.where((f) => f != cfg.xFactor).firstOrNull;
+        cfg = cfg.copyWith(seriesFactor: nextS, clearSeries: nextS == null);
+      }
+      if (cfg.facetColFactor != null && !factors.contains(cfg.facetColFactor)) {
+        cfg = cfg.copyWith(clearFacetCol: true);
+      }
+      if (cfg.facetRowFactor != null && !factors.contains(cfg.facetRowFactor)) {
+        cfg = cfg.copyWith(clearFacetRow: true);
+      }
+      _plotConfig = cfg;
+
       final payload = <String, dynamic>{
         'headers': headers,
         'rows': rows,
@@ -1007,7 +1171,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             '${_fittedFactorial ? 'Fitted GLM/LMM' : 'Factorial permutation'} complete (${resultsList.length} metric(s)).';
       });
     } catch (e) {
-      _showSnack('Permutation analysis failed: $e');
+      _showSnack('Analysis failed: $e');
     } finally {
       if (mounted) setState(() => _isAnalyzing = false);
     }
@@ -1275,12 +1439,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 SegmentedButton<bool>(
                   segments: const [
                     ButtonSegment(
-                      value: false,
-                      label: Text('Standard comparison + report'),
+                      value: true,
+                      label: Text('Multi-Factor GLM / LMM (Native)'),
                     ),
                     ButtonSegment(
-                      value: true,
-                      label: Text('Several labels + interactive results'),
+                      value: false,
+                      label: Text('Legacy Python Report (1–2 factors)'),
                     ),
                   ],
                   selected: {_usePermutation},
@@ -1293,8 +1457,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   padding: const EdgeInsets.all(12),
                   child: Text(
                     _usePermutation
-                        ? 'Compare ${_dartFactors.join(", ")} together. Measurements with the same $_selectedSubjectIdCol belong to the same person.'
-                        : 'Compare values of $_selectedGroupCol${_selectedSubgroupCol == "None" ? "" : " and $_selectedSubgroupCol"}. Rows with the same $_selectedSubjectIdCol belong to the same person.',
+                        ? 'Recommended (no Python needed): fits native REML Linear Mixed Models or OLS GLM across ${_dartFactors.isEmpty ? "your selected factors" : _dartFactors.join(", ")} (cohort × condition × session), supports direct ERP Difference (B − A), and shows interactive tables & plots.'
+                        : 'Optional external Python script (requires local Python with statsmodels/matplotlib) to generate a static report comparing $_selectedGroupCol${_selectedSubgroupCol == "None" ? "" : " and $_selectedSubgroupCol"}.',
                   ),
                 ),
                 if (!_groupsReady)
@@ -2386,9 +2550,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             ),
             Wrap(
               spacing: 12,
+              runSpacing: 6,
               children: [
                 ChoiceChip(
-                  label: const Text('Fitted GLM / LMM (Python)'),
+                  label: const Text('Fitted GLM / LMM (Native)'),
                   selected: _fittedFactorial,
                   onSelected: _isAnalyzing
                       ? null
@@ -2416,7 +2581,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                         ? null
                         : () => _openGroupedFigures(),
                     icon: const Icon(Icons.image),
-                    label: const Text('Grouped publication figures…'),
+                    label: const Text('Group Grand Averages & Topomaps…'),
                   ),
                   OutlinedButton.icon(
                     onPressed: _isAnalyzing
@@ -2429,8 +2594,116 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ],
             ),
             const Text(
-              'Fitted models report Wald/OLS tests and fitted-design contrasts. Native split-plot permutations are an ANOVA approximation, not a fitted random-effects LMM. Differences are group B minus group A; adjusted p-values share one family per metric.',
+              'Fitted GLM / LMM runs natively inside the app (no Python needed) with REML random intercepts, Wald χ²/OLS tests, and FDR/Bonferroni contrasts. Native factorial permutations use balanced split-plot ANOVA approximations.',
               style: TextStyle(fontSize: 11),
+            ),
+            Builder(
+              builder: (context) {
+                final condCol = _detectConditionFactorCol(_dartInspection);
+                final condLevels = condCol == null
+                    ? const <String>[]
+                    : _conditionLevelsForCol(_dartInspection, condCol);
+                if (condCol == null || condLevels.length < 2) {
+                  return const SizedBox.shrink();
+                }
+                final selB = (_erpDiffCondB != null && condLevels.contains(_erpDiffCondB))
+                    ? _erpDiffCondB!
+                    : (condLevels.contains('Rare') ? 'Rare' : condLevels[1]);
+                final selA = (_erpDiffCondA != null && condLevels.contains(_erpDiffCondA))
+                    ? _erpDiffCondA!
+                    : (condLevels.contains('Freq') ? 'Freq' : condLevels[0]);
+                return Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        const Text(
+                          'ERP Condition Mode:',
+                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+                        ),
+                        ChoiceChip(
+                          label: const Text('All conditions', style: TextStyle(fontSize: 11)),
+                          selected: !_erpDiffMode,
+                          onSelected: _isAnalyzing
+                              ? null
+                              : (_) => setState(() => _erpDiffMode = false),
+                        ),
+                        ChoiceChip(
+                          label: const Text('ERP Difference (B − A)', style: TextStyle(fontSize: 11)),
+                          selected: _erpDiffMode,
+                          onSelected: _isAnalyzing
+                              ? null
+                              : (_) => setState(() {
+                                    _erpDiffMode = true;
+                                    _erpDiffCondB ??= selB;
+                                    _erpDiffCondA ??= selA;
+                                  }),
+                        ),
+                        if (_erpDiffMode) ...[
+                          SizedBox(
+                            width: 120,
+                            child: DropdownButtonFormField<String>(
+                              initialValue: selB,
+                              isDense: true,
+                              decoration: const InputDecoration(
+                                labelText: 'Condition B',
+                                border: OutlineInputBorder(),
+                              ),
+                              items: [
+                                for (final lv in condLevels)
+                                  DropdownMenuItem(
+                                    value: lv,
+                                    child: Text(
+                                      _plotConfig.levelLabel(condCol, lv),
+                                      style: const TextStyle(fontSize: 11.5),
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (v) => setState(() => _erpDiffCondB = v),
+                            ),
+                          ),
+                          const Text('−', style: TextStyle(fontWeight: FontWeight.bold)),
+                          SizedBox(
+                            width: 120,
+                            child: DropdownButtonFormField<String>(
+                              initialValue: selA,
+                              isDense: true,
+                              decoration: const InputDecoration(
+                                labelText: 'Condition A',
+                                border: OutlineInputBorder(),
+                              ),
+                              items: [
+                                for (final lv in condLevels)
+                                  DropdownMenuItem(
+                                    value: lv,
+                                    child: Text(
+                                      _plotConfig.levelLabel(condCol, lv),
+                                      style: const TextStyle(fontSize: 11.5),
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (v) => setState(() => _erpDiffCondA = v),
+                            ),
+                          ),
+                          Text(
+                            'Computes $selB − $selA per recording before fitting GLM / LMM.',
+                            style: const TextStyle(fontSize: 11, color: Colors.white70),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
             const SizedBox(height: 10),
             const Text(
