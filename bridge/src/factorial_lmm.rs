@@ -21,6 +21,10 @@ pub struct FactorialLmmJob {
     pub subject_col: Option<String>,
     #[serde(rename = "excludedLevels", alias = "excluded_levels", default)]
     pub excluded_levels: HashMap<String, Vec<String>>,
+    #[serde(rename = "customLevelOrder", alias = "custom_level_order", default)]
+    pub custom_level_order: HashMap<String, Vec<String>>,
+    #[serde(rename = "contrastFactors", alias = "contrast_factors", default)]
+    pub contrast_factors: Vec<String>,
     #[serde(rename = "includeInteractions", alias = "include_interactions")]
     pub include_interactions: Option<bool>,
     #[serde(rename = "posthocMethod", alias = "posthoc_method")]
@@ -81,7 +85,7 @@ pub struct MetricModelResult {
     pub n_obs: usize,
     pub n_subjects: usize,
     pub warnings: Vec<String>,
-    pub posthoc_family: &'static str,
+    pub posthoc_family: String,
     pub mean_difference_direction: &'static str,
 }
 
@@ -258,7 +262,19 @@ fn analyse_metric(
     }
     let levels: Vec<Vec<String>> = level_sets
         .into_iter()
-        .map(|s| s.into_iter().collect())
+        .enumerate()
+        .map(|(fi, mut available)| {
+            let mut ordered = Vec::with_capacity(available.len());
+            if let Some(custom) = job.custom_level_order.get(&factors[fi]) {
+                for lv in custom {
+                    if available.remove(lv) {
+                        ordered.push(lv.clone());
+                    }
+                }
+            }
+            ordered.extend(available);
+            ordered
+        })
         .collect();
     if levels.iter().any(|lv| lv.len() < 2) {
         return Err(
@@ -307,7 +323,7 @@ fn analyse_metric(
     let mut terms_cols: Vec<TermCols> = Vec::new();
     let mut term_specs: Vec<(String, Vec<usize>, Vec<Vec<usize>>)> = Vec::new();
 
-    // Assign column indices matching treatment coding (level 0 is reference)
+    // Assign column indices matching sum-to-zero (effects/deviation) coding (level 0 is reference)
     let mut total_cols = 0usize;
     for subset in &term_subsets {
         let label = if subset.is_empty() {
@@ -349,11 +365,20 @@ fn analyse_metric(
                 v.push(1.0);
             } else {
                 for combo in combos {
-                    let active = subset
+                    let prod: f64 = subset
                         .iter()
                         .zip(combo.iter())
-                        .all(|(&fi, &target_l)| lvl_idx[fi] == target_l);
-                    v.push(if active { 1.0 } else { 0.0 });
+                        .map(|(&fi, &target_l)| {
+                            if lvl_idx[fi] == target_l {
+                                1.0
+                            } else if lvl_idx[fi] == 0 {
+                                -1.0
+                            } else {
+                                0.0
+                            }
+                        })
+                        .product();
+                    v.push(prod);
                 }
             }
         }
@@ -518,7 +543,16 @@ fn analyse_metric(
         f64,
     )> = Vec::new();
 
+    let active_contrast_factors: Vec<String> = factors
+        .iter()
+        .filter(|f| job.contrast_factors.is_empty() || job.contrast_factors.contains(*f))
+        .cloned()
+        .collect();
+
     for fi in 0..k {
+        if !job.contrast_factors.is_empty() && !job.contrast_factors.contains(&factors[fi]) {
+            continue;
+        }
         let other: Vec<usize> = (0..k).filter(|&o| o != fi).collect();
         let mut strata: Vec<Vec<(usize, usize)>> = vec![Vec::new()];
         if !other.is_empty() {
@@ -653,7 +687,14 @@ fn analyse_metric(
         n_obs: n,
         n_subjects,
         warnings: warnings_out,
-        posthoc_family: "All marginal and simple-effect contrasts within this metric",
+        posthoc_family: if job.contrast_factors.is_empty() {
+            "All marginal and simple-effect contrasts within this metric".to_string()
+        } else {
+            format!(
+                "Marginal and simple-effect contrasts for {} within this metric",
+                active_contrast_factors.join(", ")
+            )
+        },
         mean_difference_direction: "group_b minus group_a",
     }))
 }
@@ -988,6 +1029,8 @@ mod tests {
             metrics: vec!["val".into()],
             subject_col: Some("subject".into()),
             excluded_levels: HashMap::new(),
+            custom_level_order: HashMap::new(),
+            contrast_factors: Vec::new(),
             include_interactions: Some(true),
             posthoc_method: Some("fdr".into()),
             preferred_model: Some("auto".into()),
@@ -1038,6 +1081,8 @@ mod tests {
             metrics: vec!["y".into()],
             subject_col: Some("sid".into()),
             excluded_levels: HashMap::new(),
+            custom_level_order: HashMap::new(),
+            contrast_factors: Vec::new(),
             include_interactions: Some(true),
             posthoc_method: Some("fdr".into()),
             preferred_model: Some("auto".into()),
@@ -1062,5 +1107,131 @@ mod tests {
             .find(|c| c.factor == "cond" && c.stratum.is_empty())
             .expect("marginal cond contrast");
         assert!((marg_cond.mean_diff - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn respects_custom_level_order_and_type3_invariance() {
+        let headers = vec!["sid".into(), "group".into(), "Session".into(), "y".into()];
+        let groups = ["ADV", "CON", "INT", "NOV"];
+        let mut rows = Vec::new();
+        for (gi, &grp) in groups.iter().enumerate() {
+            for si in 0..8 {
+                let sid = format!("{grp}_{si:02}");
+                let re = ((si % 4) as f64 - 1.5) * 0.4;
+                let noise = if si % 2 == 0 { 0.08 } else { -0.08 };
+                let (v03, v05) = if grp == "CON" {
+                    (3.0 + re + noise, 0.5 + re - noise)
+                } else {
+                    let base = 1.0 + (gi as f64) * 0.1;
+                    (base + re + noise, base + re - noise)
+                };
+                rows.push(vec![sid.clone(), grp.into(), "03".into(), format!("{v03}")]);
+                rows.push(vec![sid, grp.into(), "05".into(), format!("{v05}")]);
+            }
+        }
+
+        let mut order_adv_first = HashMap::new();
+        order_adv_first.insert(
+            "group".into(),
+            vec!["ADV".into(), "CON".into(), "INT".into(), "NOV".into()],
+        );
+        let mut order_con_first = HashMap::new();
+        order_con_first.insert(
+            "group".into(),
+            vec!["CON".into(), "NOV".into(), "INT".into(), "ADV".into()],
+        );
+
+        let make_job = |order| FactorialLmmJob {
+            headers: headers.clone(),
+            rows: rows.clone(),
+            factors: vec!["group".into(), "Session".into()],
+            metrics: vec!["y".into()],
+            subject_col: Some("sid".into()),
+            excluded_levels: HashMap::new(),
+            custom_level_order: order,
+            contrast_factors: Vec::new(),
+            include_interactions: Some(true),
+            posthoc_method: Some("fdr".into()),
+            preferred_model: Some("auto".into()),
+            output_path: None,
+        };
+
+        let out1 = run_factorial_lmm(&make_job(order_adv_first)).expect("run 1");
+        let out2 = run_factorial_lmm(&make_job(order_con_first)).expect("run 2");
+        let r1 = &out1.results[0];
+        let r2 = &out2.results[0];
+
+        assert_eq!(
+            r2.factor_levels.get("group").expect("group levels"),
+            &vec!["CON", "NOV", "INT", "ADV"]
+        );
+
+        let eff1 = r1
+            .model_effects
+            .iter()
+            .find(|e| e.term == "Session")
+            .expect("Session effect 1");
+        let eff2 = r2
+            .model_effects
+            .iter()
+            .find(|e| e.term == "Session")
+            .expect("Session effect 2");
+        assert!(
+            (eff1.f_stat - eff2.f_stat).abs() <= 1e-5 * eff1.f_stat.max(1.0),
+            "eff1=({}, p={}) eff2=({}, p={})",
+            eff1.f_stat,
+            eff1.p_value,
+            eff2.f_stat,
+            eff2.p_value
+        );
+        assert!((eff1.p_value - eff2.p_value).abs() < 1e-6);
+        assert!(eff1.p_value < 0.01);
+    }
+
+    #[test]
+    fn respects_contrast_factors_scope() {
+        let headers = vec!["sid".into(), "group".into(), "cond".into(), "y".into()];
+        let mut rows = Vec::new();
+        for i in 0..20 {
+            let grp = if i < 10 { "CON" } else { "ADV" };
+            let re = ((i % 5) as f64 - 2.0) * 0.5;
+            let noise = if i % 2 == 0 { 0.1 } else { -0.1 };
+            let grp_eff = if grp == "ADV" { 2.0 } else { 0.0 };
+            rows.push(vec![
+                format!("S{i:02}"),
+                grp.into(),
+                "Freq".into(),
+                format!("{}", 1.0 + grp_eff + re + noise),
+            ]);
+            rows.push(vec![
+                format!("S{i:02}"),
+                grp.into(),
+                "Rare".into(),
+                format!("{}", 3.0 + grp_eff + re - noise),
+            ]);
+        }
+
+        let job = FactorialLmmJob {
+            headers,
+            rows,
+            factors: vec!["group".into(), "cond".into()],
+            metrics: vec!["y".into()],
+            subject_col: Some("sid".into()),
+            excluded_levels: HashMap::new(),
+            custom_level_order: HashMap::new(),
+            contrast_factors: vec!["group".into()],
+            include_interactions: Some(true),
+            posthoc_method: Some("fdr".into()),
+            preferred_model: Some("auto".into()),
+            output_path: None,
+        };
+
+        let out = run_factorial_lmm(&job).expect("contrast scope job should succeed");
+        let r = &out.results[0];
+        assert!(r.model_effects.iter().any(|e| e.term == "cond"));
+        assert!(r.model_effects.iter().any(|e| e.term == "group:cond"));
+        assert!(!r.posthoc.is_empty());
+        assert!(r.posthoc.iter().all(|c| c.factor == "group"));
+        assert!(r.posthoc_family.contains("group"));
     }
 }

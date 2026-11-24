@@ -118,12 +118,15 @@ class StatMath {
 /// Pure-Dart N-way Factorial GLM & LMM engine with restricted/exchangeable
 /// permutation testing (inspired by CCS_SleepStudio's GroupStatsEngine).
 class ErpGroupStatsEngine {
-  /// Inspects a CSV (and optional CSV/XLSX metadata sheet) and returns
-  /// detected factors, levels, counts, and numeric metrics.
+  /// Inspects a CSV (plus optional composable filename/folder rules and
+  /// multiple CSV/XLSX sheets) and returns detected factors, levels, counts,
+  /// column sources, and numeric metrics.
   static Future<Map<String, dynamic>> inspectDataset({
     required String csvPath,
     String? metadataPath,
     String? metadataKey,
+    List<Map<String, dynamic>> factorRules = const [],
+    List<Map<String, dynamic>> externalSheets = const [],
   }) async {
     final parsed = await TabularSheetReader.read(csvPath);
     var headers = List<String>.from(parsed.headers);
@@ -132,31 +135,148 @@ class ErpGroupStatsEngine {
       for (final h in headers) h: 'Measurement table · $h',
     };
 
-    if (metadataPath != null &&
-        metadataPath.trim().isNotEmpty &&
-        await File(metadataPath.trim()).exists()) {
-      final meta = await TabularSheetReader.read(metadataPath.trim());
-      if (meta.headers.isNotEmpty) {
-        final merged = _mergeMetadata(
-          headers: headers,
-          rows: rows,
-          metaHeaders: meta.headers,
-          metaRows: meta.rows,
-          explicitKey: metadataKey,
-        );
-        headers = merged.headers;
-        rows = merged.rows;
-        for (final h in meta.headers) {
-          final actual = headers
-              .where((c) => c.toLowerCase() == h.toLowerCase())
-              .firstOrNull;
-          if (actual != null)
-            columnSources[actual] =
-                'Participant file ${File(metadataPath.trim()).uri.pathSegments.last} · $h (fills missing labels)';
+    // 1. Apply composable factor rules (filename crop, delimiter, folder, regex, manual_map)
+    for (final rule in factorRules) {
+      final mode = '${rule['mode'] ?? ''}'.trim();
+      if (mode == 'manual_map') {
+        final rawMap = rule['rows'] as Map? ?? const {};
+        if (rawMap.isEmpty) continue;
+        final fnIdx = _findFilenameColIndex(headers);
+        if (fnIdx < 0) continue;
+        // Collect all column names present with at least one non-empty value
+        final colsToMerge = <String>{};
+        final normalizedMap = <String, Map<String, String>>{};
+        for (final entry in rawMap.entries) {
+          final key = '${entry.key}'.trim();
+          final fields = (entry.value as Map? ?? const {});
+          final cleaned = <String, String>{};
+          for (final fe in fields.entries) {
+            final colName = '${fe.key}' == 'Subject'
+                ? 'participant_id'
+                : '${fe.key}'.trim();
+            final val = '${fe.value}'.trim();
+            if (colName.isNotEmpty && colName != 'filename' && val.isNotEmpty) {
+              cleaned[colName] = val;
+              colsToMerge.add(colName);
+            }
+          }
+          if (cleaned.isNotEmpty) {
+            normalizedMap[key] = cleaned;
+            normalizedMap[_basename(key)] = cleaned;
+          }
         }
+        for (final col in colsToMerge) {
+          final values = <String>[];
+          final existingIdx = headers.indexWhere(
+            (h) => h.toLowerCase() == col.toLowerCase(),
+          );
+          for (var r = 0; r < rows.length; r++) {
+            final rawFn = fnIdx < rows[r].length ? rows[r][fnIdx].trim() : '';
+            final hit = normalizedMap[rawFn] ?? normalizedMap[_basename(rawFn)];
+            final newVal = hit?[col];
+            if (newVal != null && newVal.isNotEmpty) {
+              values.add(newVal);
+            } else if (existingIdx >= 0 && existingIdx < rows[r].length) {
+              values.add(rows[r][existingIdx]);
+            } else {
+              values.add('');
+            }
+          }
+          final actualName = existingIdx >= 0 ? headers[existingIdx] : col;
+          _upsertColumn(headers, rows, actualName, values);
+          columnSources[actualName] = 'Reviewed filename labels · $actualName';
+        }
+        continue;
+      }
+
+      final factorName = '${rule['factorName'] ?? ''}'.trim();
+      if (factorName.isEmpty) continue;
+      final sourceCol = '${rule['sourceCol'] ?? 'filename'}'.trim();
+      final srcIdx = _resolveSourceColIndex(headers, sourceCol);
+      if (srcIdx < 0) continue;
+      final isFileSource = const {
+        'filename',
+        'file',
+        'source_file',
+        'source_path',
+        'path',
+      }.contains(headers[srcIdx].toLowerCase());
+
+      final extracted = <String>[];
+      var sourceLabel = 'Custom rule';
+
+      if (mode == 'crop') {
+        final cropRule = FilenameCropRule(
+          label: '${rule['label'] ?? 'Crop'}',
+          pattern: '${rule['pattern'] ?? ''}',
+          isFixedSlice: rule['isFixedSlice'] == true,
+          start: (rule['start'] as num?)?.toInt() ?? 0,
+          end: (rule['end'] as num?)?.toInt() ?? 0,
+        );
+        sourceLabel = 'Filename crop · ${cropRule.label}';
+        for (final r in rows) {
+          final raw = srcIdx < r.length ? r[srcIdx].trim() : '';
+          final input = isFileSource ? _basename(raw) : raw;
+          final val = cropRule.apply(input).trim();
+          extracted.add(val.isEmpty ? 'Unknown' : val);
+        }
+      } else if (mode == 'delimiter') {
+        final sep = '${rule['separator'] ?? '_'}';
+        final partIndex = (rule['partIndex'] as num?)?.toInt() ?? 0;
+        sourceLabel = 'Filename part ${partIndex + 1} (sep "$sep")';
+        for (final r in rows) {
+          final raw = srcIdx < r.length ? r[srcIdx].trim() : '';
+          final stem = (isFileSource ? _basename(raw) : raw)
+              .replaceFirst(RegExp(r'\.[^.]+$'), '');
+          final parts = sep.isEmpty
+              ? [stem]
+              : stem.split(sep).where((p) => p.isNotEmpty).toList();
+          final val = (partIndex >= 0 && partIndex < parts.length)
+              ? parts[partIndex].trim()
+              : '';
+          extracted.add(val.isEmpty ? 'Unknown' : val);
+        }
+      } else if (mode == 'folder') {
+        final level = ((rule['folderLevel'] as num?)?.toInt() ?? 1).clamp(1, 10);
+        sourceLabel = 'Folder level $level';
+        for (final r in rows) {
+          final raw = srcIdx < r.length ? r[srcIdx].trim() : '';
+          final segs = raw
+              .split(RegExp(r'[/\\]'))
+              .where((s) => s.isNotEmpty)
+              .toList();
+          // Last segment is the file itself; parent is segs.length - 1 - level
+          final targetIdx = segs.length - 1 - level;
+          final val = (targetIdx >= 0 && targetIdx < segs.length)
+              ? segs[targetIdx].trim()
+              : '';
+          extracted.add(val.isEmpty ? 'Unknown' : val);
+        }
+      } else if (mode == 'regex') {
+        final pat = '${rule['pattern'] ?? ''}'.trim();
+        sourceLabel = 'Filename regex · $pat';
+        RegExp? re;
+        try {
+          if (pat.isNotEmpty) re = RegExp(pat);
+        } catch (_) {}
+        for (final r in rows) {
+          final raw = srcIdx < r.length ? r[srcIdx].trim() : '';
+          final input = isFileSource ? _basename(raw) : raw;
+          final m = re?.firstMatch(input);
+          final val = m == null
+              ? ''
+              : (m.groupCount >= 1 ? (m.group(1) ?? '') : (m.group(0) ?? ''));
+          extracted.add(val.trim().isEmpty ? 'Unknown' : val.trim());
+        }
+      }
+
+      if (extracted.isNotEmpty) {
+        _upsertColumn(headers, rows, factorName, extracted);
+        columnSources[factorName] = sourceLabel;
       }
     }
 
+    // 2. Auto-detect participant_id and Session if not already explicitly defined
     final subjectIndex = headers.indexWhere(
       (h) => const {
         'subjid',
@@ -199,6 +319,89 @@ class ErpGroupStatsEngine {
               if (addSession) matches[i]?.group(2) ?? 'Unknown',
             ],
         ];
+      }
+    }
+
+    // Also auto-detect Session from recording filename when no Session column exists yet
+    final hasSessionCol = headers.any(
+      (h) => const {'session', 'sessn'}.contains(h.toLowerCase()),
+    );
+    final fnColIdx = _findFilenameColIndex(headers);
+    if (!hasSessionCol && fnColIdx >= 0) {
+      final fnSessionRe = RegExp(
+        r'(?:session|ses|visit)[_-]?([A-Za-z0-9]+)',
+        caseSensitive: false,
+      );
+      final fnMatches = <String>[];
+      final distinctSessions = <String>{};
+      for (final r in rows) {
+        final rawFn = fnColIdx < r.length ? r[fnColIdx] : '';
+        final stem = _basename(rawFn).replaceFirst(RegExp(r'\.[^.]+$'), '');
+        final m = fnSessionRe.firstMatch(stem);
+        // Strip trailing hyphen/extension token like "-epo" if attached
+        final rawSess = (m?.group(1) ?? '').split('-').first.trim();
+        if (rawSess.isNotEmpty) {
+          distinctSessions.add(rawSess);
+          fnMatches.add(rawSess);
+        } else {
+          fnMatches.add('Unknown');
+        }
+      }
+      if (distinctSessions.length >= 2) {
+        _upsertColumn(headers, rows, 'Session', fnMatches);
+        columnSources['Session'] = 'Auto-detected from recording filename';
+      }
+    }
+
+    // 3. Apply external Excel/CSV sheets (composable; legacy metadataPath supported too)
+    final allSheets = <Map<String, dynamic>>[
+      ...externalSheets,
+      if (metadataPath != null &&
+          metadataPath.trim().isNotEmpty &&
+          !externalSheets.any(
+            (s) => '${s['path'] ?? ''}'.trim() == metadataPath.trim(),
+          ))
+        {
+          'path': metadataPath.trim(),
+          if (metadataKey != null && metadataKey.trim().isNotEmpty)
+            'sheetJoinCol': metadataKey.trim(),
+        },
+    ];
+
+    for (final sheet in allSheets) {
+      final path = '${sheet['path'] ?? ''}'.trim();
+      if (path.isEmpty || !await File(path).exists()) continue;
+      final meta = await TabularSheetReader.read(path);
+      if (meta.headers.isEmpty) continue;
+      final tableJoinCol = '${sheet['tableJoinCol'] ?? ''}'.trim();
+      final sheetJoinCol = '${sheet['sheetJoinCol'] ?? ''}'.trim();
+      final selectedCols = (sheet['selectedColumns'] as List?)
+          ?.map((e) => '$e')
+          .toList();
+      final merged = _mergeMetadata(
+        headers: headers,
+        rows: rows,
+        metaHeaders: meta.headers,
+        metaRows: meta.rows,
+        explicitKey: sheetJoinCol.isNotEmpty ? sheetJoinCol : null,
+        explicitTableKey: tableJoinCol.isNotEmpty ? tableJoinCol : null,
+        selectedColumns: selectedCols,
+      );
+      headers = merged.headers;
+      rows = merged.rows;
+      final fileName = _basename(path);
+      final importedNames = selectedCols != null && selectedCols.isNotEmpty
+          ? selectedCols
+          : meta.headers;
+      for (final h in importedNames) {
+        if (h == sheetJoinCol) continue;
+        final actual = headers
+            .where((c) => c.toLowerCase() == h.toLowerCase())
+            .firstOrNull;
+        if (actual != null) {
+          columnSources[actual] =
+              'Participant file $fileName · $h (fills missing labels)';
+        }
       }
     }
 
@@ -293,19 +496,72 @@ class ErpGroupStatsEngine {
     };
   }
 
+  static String _basename(String path) => path.split(RegExp(r'[/\\]')).last;
+
+  static int _findFilenameColIndex(List<String> headers) {
+    for (final cand in const ['filename', 'file', 'source_file', 'source_path', 'path']) {
+      final idx = headers.indexWhere((h) => h.toLowerCase() == cand);
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  }
+
+  static int _resolveSourceColIndex(List<String> headers, String sourceCol) {
+    final exact = headers.indexWhere(
+      (h) => h.toLowerCase() == sourceCol.toLowerCase(),
+    );
+    if (exact >= 0) return exact;
+    return _findFilenameColIndex(headers);
+  }
+
+  static void _upsertColumn(
+    List<String> headers,
+    List<List<String>> rows,
+    String colName,
+    List<String> values,
+  ) {
+    final existingIdx = headers.indexWhere(
+      (h) => h.toLowerCase() == colName.toLowerCase(),
+    );
+    if (existingIdx >= 0) {
+      for (var i = 0; i < rows.length; i++) {
+        while (rows[i].length <= existingIdx) {
+          rows[i].add('');
+        }
+        rows[i][existingIdx] = i < values.length ? values[i] : '';
+      }
+    } else {
+      final colIdx = headers.length;
+      headers.add(colName);
+      for (var i = 0; i < rows.length; i++) {
+        while (rows[i].length < colIdx) {
+          rows[i].add('');
+        }
+        rows[i].add(i < values.length ? values[i] : '');
+      }
+    }
+  }
+
   static ({List<String> headers, List<List<String>> rows}) _mergeMetadata({
     required List<String> headers,
     required List<List<String>> rows,
     required List<String> metaHeaders,
     required List<List<String>> metaRows,
     String? explicitKey,
+    String? explicitTableKey,
+    List<String>? selectedColumns,
   }) {
     String? csvKey;
     String? metaKey;
+    if (explicitTableKey != null &&
+        explicitTableKey.trim().isNotEmpty &&
+        headers.contains(explicitTableKey.trim())) {
+      csvKey = explicitTableKey.trim();
+    }
     if (explicitKey != null &&
         explicitKey.trim().isNotEmpty &&
         metaHeaders.contains(explicitKey.trim())) {
-      csvKey = headers.contains(explicitKey.trim())
+      csvKey ??= headers.contains(explicitKey.trim())
           ? explicitKey.trim()
           : headers
                 .where(
@@ -318,7 +574,8 @@ class ErpGroupStatsEngine {
                 )
                 .firstOrNull;
       metaKey = explicitKey.trim();
-    } else {
+    }
+    if (csvKey == null || metaKey == null) {
       const candidates = [
         'subjid',
         'subject',
@@ -345,11 +602,17 @@ class ErpGroupStatsEngine {
     final lowerHeaders = {
       for (var i = 0; i < headers.length; i++) headers[i].toLowerCase(): i,
     };
+    final allowedCols = selectedColumns == null || selectedColumns.isEmpty
+        ? null
+        : selectedColumns.map((c) => c.toLowerCase()).toSet();
     final replaceCols = <({int csvIdx, int metaIdx})>[];
     final newCols = <String>[];
     for (var mi = 0; mi < metaHeaders.length; mi++) {
       final h = metaHeaders[mi];
       if (h == metaKey) continue;
+      if (allowedCols != null && !allowedCols.contains(h.toLowerCase())) {
+        continue;
+      }
       final existingIdx = lowerHeaders[h.toLowerCase()];
       if (existingIdx != null) {
         replaceCols.add((csvIdx: existingIdx, metaIdx: mi));
@@ -407,21 +670,30 @@ class ErpGroupStatsEngine {
       ..sort((a, b) => b.length.compareTo(a.length));
     String? findMatchKey(String k) {
       if (k.isEmpty) return null;
-      if (lookup.containsKey(k)) return k;
-      for (final cand in sortedKeys) {
-        if (cand.length < 3) continue;
-        if (k.startsWith(cand)) {
-          if (k.length == cand.length ||
-              !RegExp(r'[0-9]').hasMatch(k[cand.length])) {
-            return cand;
+      final probes = <String>[
+        k,
+        if (_basename(k) != k) _basename(k),
+      ];
+      for (final probe in probes) {
+        if (lookup.containsKey(probe)) return probe;
+      }
+      for (final probe in probes) {
+        for (final cand in sortedKeys) {
+          if (cand.length < 3) continue;
+          if (probe.startsWith(cand)) {
+            if (probe.length == cand.length ||
+                !RegExp(r'[0-9]').hasMatch(probe[cand.length])) {
+              return cand;
+            }
           }
-        }
-        final idx = k.indexOf(cand);
-        if (idx > 0) {
-          final leftOk = !RegExp(r'[a-z0-9]').hasMatch(k[idx - 1]);
-          final end = idx + cand.length;
-          final rightOk = end == k.length || !RegExp(r'[0-9]').hasMatch(k[end]);
-          if (leftOk && rightOk) return cand;
+          final idx = probe.indexOf(cand);
+          if (idx > 0) {
+            final leftOk = !RegExp(r'[a-z0-9]').hasMatch(probe[idx - 1]);
+            final end = idx + cand.length;
+            final rightOk =
+                end == probe.length || !RegExp(r'[0-9]').hasMatch(probe[end]);
+            if (leftOk && rightOk) return cand;
+          }
         }
       }
       return null;
@@ -439,12 +711,18 @@ class ErpGroupStatsEngine {
       );
       if (matchKey != null) {
         final repl = replaceLookup[matchKey]!;
+        final allowOverride =
+            csvKey.toLowerCase() == 'filename' ||
+            (selectedColumns != null && selectedColumns.isNotEmpty);
         for (var j = 0; j < replaceCols.length; j++) {
           final ci = replaceCols[j].csvIdx;
           final cur = rowBase[ci].trim().toLowerCase();
           final nextVal = repl[j];
           if (nextVal.isNotEmpty &&
-              (cur.isEmpty || cur == 'unknown' || cur == 'unassigned')) {
+              (allowOverride ||
+                  cur.isEmpty ||
+                  cur == 'unknown' ||
+                  cur == 'unassigned')) {
             rowBase[ci] = nextVal;
           }
         }
@@ -456,6 +734,238 @@ class ErpGroupStatsEngine {
       ]);
     }
     return (headers: mergedHeaders, rows: mergedRows);
+  }
+
+  /// Transforms measurement [rows] into paired ERP difference scores (`B - A`).
+  ///
+  /// Supports both:
+  /// - Unified comparison mode ([pairs.length >= 2] and [condCol] in [factors]):
+  ///   emits one row per `(recording, pair)` with `condCol` set to `'B − A'` and
+  ///   each metric renamed to `'<metric> (Difference)'`.
+  /// - Separate-metric mode (single pair, or [condCol] omitted from [factors]):
+  ///   drops [condCol] and writes one column `'<metric> (B − A)'` per pair.
+  static Map<String, dynamic> buildErpDifferenceDataset({
+    required List<String> headers,
+    required List<List<String>> rows,
+    required String condCol,
+    required List<({String condB, String condA})> pairs,
+    required List<String> factors,
+    required List<String> metrics,
+    required String? subjectCol,
+    Map<String, List<String>> excludedLevels = const {},
+  }) {
+    final seenPairs = <String>{};
+    final validPairs = <({String condB, String condA, String label})>[];
+    for (final p in pairs) {
+      if (p.condB.isEmpty || p.condA.isEmpty || p.condB == p.condA) continue;
+      final label = '${p.condB} − ${p.condA}';
+      if (seenPairs.add(label)) {
+        validPairs.add((condB: p.condB, condA: p.condA, label: label));
+      }
+    }
+    if (validPairs.isEmpty) {
+      return {
+        'error':
+            'Choose two distinct conditions (B and A) for ERP Difference.',
+      };
+    }
+
+    final headerIdx = <String, int>{
+      for (var i = 0; i < headers.length; i++) headers[i]: i,
+    };
+    final condIdx = headerIdx[condCol];
+    if (condIdx == null) {
+      return {'error': 'Condition column "$condCol" was not found.'};
+    }
+
+    final useUnifiedDiffFactor =
+        validPairs.length >= 2 && factors.contains(condCol);
+    final nonCondFactors = factors
+        .where((f) => f != condCol && f.toLowerCase() != 'epoch_label')
+        .toList();
+    if (!useUnifiedDiffFactor && nonCondFactors.isEmpty) {
+      return {
+        'error':
+            'Keep at least one non-condition factor (e.g. group or session) selected to model ${validPairs.first.label}.',
+      };
+    }
+
+    final nonCondFactorCols = <int>[];
+    for (final f in nonCondFactors) {
+      final idx = headerIdx[f];
+      if (idx == null) {
+        return {'error': 'Factor column "$f" was not found.'};
+      }
+      nonCondFactorCols.add(idx);
+    }
+
+    final fileIdx = [
+      for (final k in const ['filename', 'file', 'source_file', 'source_path', 'path'])
+        headerIdx[k],
+    ].whereType<int>().firstOrNull;
+    final subjIdx = subjectCol != null ? headerIdx[subjectCol] : null;
+
+    final neededConds = <String>{
+      for (final p in validPairs) ...[p.condB, p.condA],
+    };
+    final grouped = <String, Map<String, List<List<String>>>>{};
+    for (final row in rows) {
+      if (row.length < headers.length) continue;
+      final cVal = row[condIdx];
+      if (!neededConds.contains(cVal)) continue;
+      var skip = false;
+      for (var i = 0; i < nonCondFactors.length; i++) {
+        final fName = nonCondFactors[i];
+        final fVal = row[nonCondFactorCols[i]];
+        if (fVal.isEmpty || (excludedLevels[fName]?.contains(fVal) ?? false)) {
+          skip = true;
+          break;
+        }
+      }
+      if (skip) continue;
+      final recKey = fileIdx != null && row[fileIdx].isNotEmpty
+          ? row[fileIdx]
+          : '${subjIdx != null ? row[subjIdx] : ''}|${[for (final ci in nonCondFactorCols) row[ci]].join('|')}';
+      grouped
+          .putIfAbsent(recKey, () => <String, List<List<String>>>{})
+          .putIfAbsent(cVal, () => <List<String>>[])
+          .add(row);
+    }
+
+    String computeDiff(
+      int mIdx,
+      List<List<String>> rowsB,
+      List<List<String>> rowsA,
+    ) {
+      var sumB = 0.0;
+      var sumA = 0.0;
+      var nB = 0;
+      var nA = 0;
+      for (final r in rowsB) {
+        final v = double.tryParse(r[mIdx].trim());
+        if (v != null && v.isFinite) {
+          sumB += v;
+          nB++;
+        }
+      }
+      for (final r in rowsA) {
+        final v = double.tryParse(r[mIdx].trim());
+        if (v != null && v.isFinite) {
+          sumA += v;
+          nA++;
+        }
+      }
+      return (nB > 0 && nA > 0) ? '${(sumB / nB) - (sumA / nA)}' : 'NaN';
+    }
+
+    final diffLabels = [for (final p in validPairs) p.label];
+    final newHeaders = List<String>.from(headers);
+    final diffRows = <List<String>>[];
+
+    if (useUnifiedDiffFactor) {
+      final metricPairs = <(int idx, String diffMetric)>[];
+      for (final m in metrics) {
+        final mIdx = headerIdx[m];
+        if (mIdx == null) continue;
+        final newName = '$m (Difference)';
+        newHeaders[mIdx] = newName;
+        metricPairs.add((mIdx, newName));
+      }
+      for (final buckets in grouped.values) {
+        for (final p in validPairs) {
+          final rowsB = buckets[p.condB];
+          final rowsA = buckets[p.condA];
+          if (rowsB == null || rowsB.isEmpty || rowsA == null || rowsA.isEmpty) {
+            continue;
+          }
+          final outRow = List<String>.from(rowsB.first);
+          outRow[condIdx] = p.label;
+          for (final (mIdx, _) in metricPairs) {
+            outRow[mIdx] = computeDiff(mIdx, rowsB, rowsA);
+          }
+          diffRows.add(outRow);
+        }
+      }
+      if (diffRows.length < 3) {
+        return {
+          'error':
+              'Not enough paired ${diffLabels.join(', ')} recordings found (need >= 3).',
+        };
+      }
+      return {
+        'headers': newHeaders,
+        'rows': diffRows,
+        'factors': List<String>.from(factors),
+        'metrics': [for (final (_, n) in metricPairs) n],
+        'diff_labels': diffLabels,
+      };
+    } else {
+      final outMetrics = <String>[];
+      final slots =
+          <({int srcIdx, int dstIdx, String condB, String condA})>[];
+      for (final m in metrics) {
+        final mIdx = headerIdx[m];
+        if (mIdx == null) continue;
+        for (var pi = 0; pi < validPairs.length; pi++) {
+          final p = validPairs[pi];
+          final newName = '$m (${p.label})';
+          int dstIdx;
+          if (pi == 0) {
+            newHeaders[mIdx] = newName;
+            dstIdx = mIdx;
+          } else {
+            dstIdx = newHeaders.length;
+            newHeaders.add(newName);
+          }
+          outMetrics.add(newName);
+          slots.add((srcIdx: mIdx, dstIdx: dstIdx, condB: p.condB, condA: p.condA));
+        }
+      }
+      final extraCols = newHeaders.length - headers.length;
+      for (final buckets in grouped.values) {
+        List<String>? templateRow;
+        for (final p in validPairs) {
+          final rb = buckets[p.condB];
+          final ra = buckets[p.condA];
+          if (rb != null && rb.isNotEmpty && ra != null && ra.isNotEmpty) {
+            templateRow = rb.first;
+            break;
+          }
+        }
+        if (templateRow == null) continue;
+        final outRow = [
+          ...templateRow,
+          if (extraCols > 0) ...List.filled(extraCols, 'NaN'),
+        ];
+        outRow[condIdx] = diffLabels.join(' | ');
+        var anyFinite = false;
+        for (final slot in slots) {
+          final rb = buckets[slot.condB];
+          final ra = buckets[slot.condA];
+          if (rb != null && rb.isNotEmpty && ra != null && ra.isNotEmpty) {
+            final val = computeDiff(slot.srcIdx, rb, ra);
+            outRow[slot.dstIdx] = val;
+            if (val != 'NaN') anyFinite = true;
+          } else {
+            outRow[slot.dstIdx] = 'NaN';
+          }
+        }
+        if (anyFinite) diffRows.add(outRow);
+      }
+      if (diffRows.length < 3) {
+        return {
+          'error':
+              'Not enough paired ${diffLabels.join(', ')} recordings found (need >= 3).',
+        };
+      }
+      return {
+        'headers': newHeaders,
+        'rows': diffRows,
+        'factors': nonCondFactors,
+        'metrics': outMetrics,
+        'diff_labels': diffLabels,
+      };
+    }
   }
 
   /// Runs N-way Permutation-based GLM / LMM analysis on [rows].
@@ -472,6 +982,7 @@ class ErpGroupStatsEngine {
     int seed = 42,
     Map<String, Set<String>> excludedLevels = const {},
     Map<String, List<String>> customLevelOrder = const {},
+    List<String> contrastFactors = const [],
   }) {
     final colIdx = {for (var i = 0; i < headers.length; i++) headers[i]: i};
     final subjIdx = subjectCol != null ? colIdx[subjectCol] : null;
@@ -680,6 +1191,9 @@ class ErpGroupStatsEngine {
       // Collapse duplicate rows within participant/cell before any pairwise test.
       final posthocs = <Map<String, dynamic>>[];
       for (final f in activeFactors) {
+        if (contrastFactors.isNotEmpty && !contrastFactors.contains(f)) {
+          continue;
+        }
         final others = activeFactors.where((v) => v != f).toList();
         final strata = <String, Map<String, String>>{'': {}};
         if (others.isNotEmpty)
@@ -746,6 +1260,10 @@ class ErpGroupStatsEngine {
         posthocs[i]['significant'] = adjPs[i] < 0.05;
       }
 
+      final activeContrastFactors = [
+        for (final f in activeFactors)
+          if (contrastFactors.isEmpty || contrastFactors.contains(f)) f,
+      ];
       metricResults.add({
         'metric': metric,
         'model_type': useLmm
@@ -755,8 +1273,9 @@ class ErpGroupStatsEngine {
         'factor_levels': factorLevels,
         'model_effects': modelEffects,
         'posthoc': posthocs,
-        'posthoc_family':
-            'All marginal and simple-effect contrasts within this metric',
+        'posthoc_family': contrastFactors.isEmpty
+            ? 'All marginal and simple-effect contrasts within this metric'
+            : 'Marginal and simple-effect contrasts for ${activeContrastFactors.join(', ')} within this metric',
         'mean_difference_direction': 'group_b minus group_a',
         'cell_descriptives': cellDescriptives,
         'n_obs': obs.length,

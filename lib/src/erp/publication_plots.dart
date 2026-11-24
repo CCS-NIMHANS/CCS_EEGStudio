@@ -12,6 +12,7 @@ import '../topostats/mpl_colormaps.dart';
 import '../topostats/topo_interp.dart';
 import '../topostats/topo_paint.dart';
 import '../group_statistics.dart';
+import 'factor_grouping_designer.dart';
 
 const List<Color> kPublicationGroupColors = [
   Color(0xFF0072B2), // Okabe-Ito Blue
@@ -822,21 +823,26 @@ class _ErpPublicationPlotsViewState extends State<ErpPublicationPlotsView> {
     }
   }
 
-  void _openGroupLabelDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => ErpGroupLabelDialog(
-        files: _activeFiles,
-        initialGroups: widget.participantGroups,
-        onSaved: (newGroups) {
-          widget.onGroupsChanged(newGroups);
-          setState(() {});
-          if (widget.outputDir != null) {
-            _saveGroupsCsv(newGroups);
-          }
-        },
-      ),
+  Future<void> _openGroupLabelDialog() async {
+    final active = _activeFiles;
+    final paths = active
+        .map((f) => '${f['path'] ?? f['subject'] ?? ''}'.trim())
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (paths.isEmpty) return;
+    final res = await FactorGroupingDesignerDialog.show(
+      context,
+      filePaths: paths,
+      initialFileFactors: widget.fileFactors,
+      initialParticipantGroups: widget.participantGroups,
+      initialExcludedFiles: widget.excludedFiles,
     );
+    if (res == null || !mounted) return;
+    widget.onGroupsChanged(res.participantGroups);
+    setState(() {});
+    if (widget.outputDir != null) {
+      await _saveGroupsCsv(res.participantGroups);
+    }
   }
 
   Future<void> _saveGroupsCsv(Map<String, String> groups) async {

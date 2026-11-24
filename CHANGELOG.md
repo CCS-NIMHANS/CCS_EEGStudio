@@ -4,6 +4,29 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.64]
+
+### Standalone Group Statistics, Multiple ERP Differences, Contrast Scope & Plot Readability
+
+- **Standalone Multi-Factor Group Statistics**
+  - Removed legacy Python environment warnings and the `Legacy Python Report` switcher so `GroupStatisticsWorkbench` runs cleanly as a standalone desktop workflow powered by the native Rust LMM/GLM backend (`ccs-eeg-engine`) and built-in permutation engine.
+  - Simplified `2. Design & run` into one model flow (**Linear Mixed Model / GLM** by default, with optional permutation testing and ERP difference mode grouped under **Optional: Advanced model & ERP difference**).
+- **Composable Multi-Source Factors & Unified Grouping Designer**
+  - Added composable factor resolution supporting filename-cropped factors, folder-path factors, and multiple external `.xlsx`/`.csv` sheets together without overwriting earlier assignments, plus automatic `Session` extraction from filenames.
+  - Unified redundant group-labeling dialogs onto **Factor & Grouping Designer** (`Factors & Groups…`) and exported all custom factor columns into `ERP_*_group_input.csv`.
+- **Stage 4 Grouped Grand Average Waveforms**
+  - Added an interactive **Grouped Grand Average** (`mean ± SEM`) waveform viewer directly inside ERP Stage 4 (`ERP & Topo`) with a **`Grand Avg by:`** factor selector and `Panels` vs `Lines` orientation toggle.
+- **Type III Wald Tests, Custom Level Ordering & Contrast Scope**
+  - Switched `factorial_lmm` to sum-to-zero deviation coding so omnibus Wald χ² / F effects are true **Type III marginal tests** invariant to factor level ordering, and preserved custom user level ordering (e.g. `CON → NOV → INT → ADV`) across both LMM/GLM and results plots.
+  - Added an explicit **`Pairwise comparisons (Contrast scope):`** selector (`All factors` or `<Factor> only`) so pairwise comparisons and FDR/Bonferroni adjustments can focus on a chosen factor while keeping all main effects and interactions in the model.
+- **Multiple ERP Differences (`B − A`)**
+  - Added **`+ Add difference`** support (e.g. `Rare − Freq` and `Distr − Freq`) with automatic support for either unified multi-difference modelling (`Condition` kept checked) or separate difference metrics (`Condition` unchecked), plus human-readable difference metric labels.
+- **Readable Statistical Plots & Box Plot Data Points**
+  - Updated `ConfigurableStatsPlotWidget` so bracket stacks never squish curve height, aligned Y-axes across facet columns, added 5 Y-axis ticks and a clearer zero line, added color-coded `SeriesA–SeriesB *` cross-series brackets with an **`Off | Top 4 | All`** toggle, and widened the Metric selector.
+  - Upgraded **Box Plots** with 1.5 × IQR Tukey whiskers and subtle low-discrepancy jittered individual data points behind the median line.
+- **Improved In-App Release Notes Viewer**
+  - Updated `FormattedReleaseNotes` in the update dialog to properly render Markdown headings (`#`–`####`), nested sub-bullets (`◦`), Markdown links, bold+inline-code combinations, italics, blockquotes, fenced code blocks, and a visible scrollbar.
+
 ## [1.2.63]
 
 ### macOS Developer ID Notarization & Windows SignPath Signing Infrastructure

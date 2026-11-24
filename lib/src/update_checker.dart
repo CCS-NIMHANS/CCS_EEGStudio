@@ -290,10 +290,17 @@ class AppUpdateDialog extends StatefulWidget {
 }
 
 class _AppUpdateDialogState extends State<AppUpdateDialog> {
+  final ScrollController _notesScrollCtrl = ScrollController();
   bool _downloading = false;
   double _progress = 0;
   String _status = '';
   File? _downloaded;
+
+  @override
+  void dispose() {
+    _notesScrollCtrl.dispose();
+    super.dispose();
+  }
 
   String _megabytes(int bytes) => (bytes / (1024 * 1024)).toStringAsFixed(1);
 
@@ -524,7 +531,7 @@ fi
               ),
               const SizedBox(height: 8),
               Container(
-                height: 260,
+                height: 300,
                 width: double.infinity,
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -532,9 +539,15 @@ fi
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.white12),
                 ),
-                child: SingleChildScrollView(
-                  child: SelectionArea(
-                    child: _FormattedReleaseNotes(markdown: info.releaseNotes),
+                child: Scrollbar(
+                  thumbVisibility: true,
+                  controller: _notesScrollCtrl,
+                  child: SingleChildScrollView(
+                    controller: _notesScrollCtrl,
+                    padding: const EdgeInsets.only(right: 10),
+                    child: SelectionArea(
+                      child: FormattedReleaseNotes(markdown: info.releaseNotes),
+                    ),
                   ),
                 ),
               ),
@@ -585,34 +598,107 @@ fi
   }
 }
 
-class _FormattedReleaseNotes extends StatelessWidget {
-  const _FormattedReleaseNotes({required this.markdown});
+class FormattedReleaseNotes extends StatelessWidget {
+  const FormattedReleaseNotes({super.key, required this.markdown});
 
   final String markdown;
+
+  static const _defaultBodyStyle = TextStyle(
+    fontSize: 12.5,
+    height: 1.45,
+    color: Color(0xFFE2E8F0),
+  );
 
   @override
   Widget build(BuildContext context) {
     final lines = markdown.replaceAll('\r\n', '\n').split('\n');
     final children = <Widget>[];
+    var inCodeBlock = false;
+    final codeLines = <String>[];
+    var lastWasBlank = false;
+
+    void flushCodeBlock() {
+      if (codeLines.isEmpty) return;
+      children.add(
+        Container(
+          width: double.infinity,
+          margin: const EdgeInsets.symmetric(vertical: 6),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Text(
+            codeLines.join('\n'),
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 11.5,
+              height: 1.4,
+              color: Color(0xFF7DD3FC),
+            ),
+          ),
+        ),
+      );
+      codeLines.clear();
+      lastWasBlank = false;
+    }
+
     for (final raw in lines) {
       final line = raw.trimRight();
       final trimmed = line.trim();
-      if (trimmed.isEmpty) {
-        children.add(const SizedBox(height: 6));
+      if (trimmed.startsWith('```')) {
+        if (inCodeBlock) {
+          inCodeBlock = false;
+          flushCodeBlock();
+        } else {
+          inCodeBlock = true;
+          codeLines.clear();
+        }
         continue;
       }
+      if (inCodeBlock) {
+        codeLines.add(raw);
+        continue;
+      }
+      if (trimmed.isEmpty) {
+        if (!lastWasBlank && children.isNotEmpty) {
+          children.add(const SizedBox(height: 6));
+          lastWasBlank = true;
+        }
+        continue;
+      }
+      lastWasBlank = false;
       if (trimmed == '---' || trimmed == '***' || trimmed == '___') {
         children.add(const Divider(height: 16, color: Colors.white12));
+        continue;
+      }
+      if (trimmed.startsWith('#### ')) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 2),
+            child: _richInline(
+              trimmed.substring(5),
+              baseStyle: const TextStyle(
+                fontSize: 12.5,
+                height: 1.35,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFFCBD5E1),
+              ),
+            ),
+          ),
+        );
         continue;
       }
       if (trimmed.startsWith('### ')) {
         children.add(
           Padding(
             padding: const EdgeInsets.only(top: 8, bottom: 3),
-            child: Text(
+            child: _richInline(
               trimmed.substring(4),
-              style: const TextStyle(
-                fontSize: 13,
+              baseStyle: const TextStyle(
+                fontSize: 13.5,
+                height: 1.35,
                 fontWeight: FontWeight.w700,
                 color: Color(0xFF93C5FD),
               ),
@@ -625,10 +711,11 @@ class _FormattedReleaseNotes extends StatelessWidget {
         children.add(
           Padding(
             padding: const EdgeInsets.only(top: 10, bottom: 4),
-            child: Text(
+            child: _richInline(
               trimmed.substring(3),
-              style: const TextStyle(
+              baseStyle: const TextStyle(
                 fontSize: 14.5,
+                height: 1.35,
                 fontWeight: FontWeight.w700,
                 color: Colors.white,
               ),
@@ -641,10 +728,11 @@ class _FormattedReleaseNotes extends StatelessWidget {
         children.add(
           Padding(
             padding: const EdgeInsets.only(top: 10, bottom: 4),
-            child: Text(
+            child: _richInline(
               trimmed.substring(2),
-              style: const TextStyle(
+              baseStyle: const TextStyle(
                 fontSize: 16,
+                height: 1.35,
                 fontWeight: FontWeight.bold,
                 color: Colors.white,
               ),
@@ -653,11 +741,39 @@ class _FormattedReleaseNotes extends StatelessWidget {
         );
         continue;
       }
+      if (trimmed.startsWith('> ') || trimmed == '>') {
+        final quoteBody = trimmed.length > 2 ? trimmed.substring(2).trimLeft() : '';
+        children.add(
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            padding: const EdgeInsets.only(left: 10, top: 3, bottom: 3),
+            decoration: const BoxDecoration(
+              border: Border(
+                left: BorderSide(color: Color(0xFF38BDF8), width: 2.5),
+              ),
+            ),
+            child: _richInline(
+              quoteBody,
+              baseStyle: const TextStyle(
+                fontSize: 12,
+                height: 1.45,
+                fontStyle: FontStyle.italic,
+                color: Color(0xFF94A3B8),
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
       final bulletMatch = RegExp(r'^(\s*)([-*]|\d+\.)\s+(.*)$').firstMatch(line);
       if (bulletMatch != null) {
-        final indent = (bulletMatch.group(1)?.length ?? 0) * 6.0;
+        final leadingSpaces = bulletMatch.group(1)?.length ?? 0;
+        final indent = leadingSpaces * 6.0;
         final marker = bulletMatch.group(2)!;
         final body = bulletMatch.group(3)!;
+        final bulletSymbol = marker.endsWith('.')
+            ? marker
+            : (leadingSpaces >= 2 ? '◦' : '•');
         children.add(
           Padding(
             padding: EdgeInsets.only(left: 4 + indent, top: 2, bottom: 2),
@@ -667,10 +783,12 @@ class _FormattedReleaseNotes extends StatelessWidget {
                 SizedBox(
                   width: marker.endsWith('.') ? 22 : 14,
                   child: Text(
-                    marker.endsWith('.') ? marker : '•',
-                    style: const TextStyle(
+                    bulletSymbol,
+                    style: TextStyle(
                       fontSize: 12.5,
-                      color: Color(0xFF60A5FA),
+                      color: leadingSpaces >= 2
+                          ? const Color(0xFF93C5FD)
+                          : const Color(0xFF60A5FA),
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -689,54 +807,80 @@ class _FormattedReleaseNotes extends StatelessWidget {
         ),
       );
     }
+    if (inCodeBlock) {
+      flushCodeBlock();
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: children,
     );
   }
 
-  Widget _richInline(String text) {
+  Widget _richInline(String text, {TextStyle? baseStyle}) {
+    final style = baseStyle ?? _defaultBodyStyle;
+    return Text.rich(TextSpan(style: style, children: _inlineSpans(text, style)));
+  }
+
+  List<InlineSpan> _inlineSpans(String text, TextStyle baseStyle) {
     final spans = <InlineSpan>[];
-    final pattern = RegExp(r'(\*\*[^*]+\*\*|`[^`]+`)');
-    var start = 0;
-    const baseStyle = TextStyle(
-      fontSize: 12.5,
-      height: 1.45,
-      color: Color(0xFFE2E8F0),
+    final pattern = RegExp(
+      r'(\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|(?<![A-Za-z0-9_])\*[^*\n]+\*(?![A-Za-z0-9_*])|(?<![A-Za-z0-9_])_[^_\n]+_(?![A-Za-z0-9_]))',
     );
+    final linkPattern = RegExp(r'^\[([^\]]+)\]\(([^)]+)\)$');
+    var start = 0;
     for (final m in pattern.allMatches(text)) {
       if (m.start > start) {
         spans.add(TextSpan(text: text.substring(start, m.start)));
       }
       final token = m.group(0)!;
-      if (token.startsWith('**') && token.endsWith('**')) {
-        spans.add(
-          TextSpan(
-            text: token.substring(2, token.length - 2),
-            style: const TextStyle(
-              fontWeight: FontWeight.w700,
-              color: Colors.white,
-            ),
-          ),
+      if (token.startsWith('[')) {
+        final linkMatch = linkPattern.firstMatch(token);
+        if (linkMatch != null) {
+          final linkStyle = baseStyle.copyWith(
+            color: const Color(0xFF38BDF8),
+            decoration: TextDecoration.underline,
+            decorationColor: const Color(0xFF38BDF8),
+          );
+          spans.addAll(_inlineSpans(linkMatch.group(1)!, linkStyle));
+        } else {
+          spans.add(TextSpan(text: token));
+        }
+      } else if (token.startsWith('**') && token.endsWith('**')) {
+        final boldStyle = baseStyle.copyWith(
+          fontWeight: FontWeight.w700,
+          color: baseStyle.color == _defaultBodyStyle.color
+              ? Colors.white
+              : baseStyle.color,
+        );
+        spans.addAll(
+          _inlineSpans(token.substring(2, token.length - 2), boldStyle),
         );
       } else if (token.startsWith('`') && token.endsWith('`')) {
         spans.add(
           TextSpan(
             text: ' ${token.substring(1, token.length - 1)} ',
-            style: const TextStyle(
+            style: TextStyle(
               fontFamily: 'monospace',
-              fontSize: 11.5,
-              backgroundColor: Color(0xFF1E293B),
-              color: Color(0xFF7DD3FC),
+              fontSize: ((baseStyle.fontSize ?? 12.5) - 1.0).clamp(9.5, 16.0),
+              backgroundColor: const Color(0xFF1E293B),
+              color: const Color(0xFF7DD3FC),
             ),
           ),
         );
+      } else if ((token.startsWith('*') && token.endsWith('*')) ||
+          (token.startsWith('_') && token.endsWith('_'))) {
+        final italicStyle = baseStyle.copyWith(fontStyle: FontStyle.italic);
+        spans.addAll(
+          _inlineSpans(token.substring(1, token.length - 1), italicStyle),
+        );
+      } else {
+        spans.add(TextSpan(text: token));
       }
       start = m.end;
     }
     if (start < text.length) {
       spans.add(TextSpan(text: text.substring(start)));
     }
-    return Text.rich(TextSpan(style: baseStyle, children: spans));
+    return spans;
   }
 }

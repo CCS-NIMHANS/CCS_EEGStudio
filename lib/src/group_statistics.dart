@@ -2,18 +2,20 @@ import 'erp/group_figure_studio.dart';
 import 'extraction_service.dart';
 import 'topostats/topostats_batch.dart' show preferSessionFeatureCsvs;
 import 'filename_metadata.dart';
-import 'filename_metadata_dialog.dart';
-import 'topostats/topostats_engine.dart' show splitFeatureCsvLine;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'filtered_file_picker.dart';
 import 'group_statistics_engine.dart';
-import 'erp/factor_grouping_designer.dart' show TabularSheetReader;
+import 'erp/factor_grouping_designer.dart'
+    show
+        TabularSheetReader,
+        FilenameCropRule,
+        FactorGroupingDesignerDialog;
 import 'group_statistics_plots.dart';
 
 /// Top-level entry point for running N-way permutation GLM/LMM models inside
@@ -40,6 +42,9 @@ Map<String, dynamic> runDartPermutationsInIsolate(Map<String, dynamic> args) {
     for (final entry in rawOrder.entries)
       '${entry.key}': (entry.value as Iterable).map((e) => '$e').toList(),
   };
+  final contrastFactors = (args['contrastFactors'] as List? ?? const [])
+      .map((e) => '$e')
+      .toList();
 
   return ErpGroupStatsEngine.runAnalysis(
     headers: headers,
@@ -53,6 +58,7 @@ Map<String, dynamic> runDartPermutationsInIsolate(Map<String, dynamic> args) {
     nPermutations: nPermutations,
     excludedLevels: excludedLevels,
     customLevelOrder: customLevelOrder,
+    contrastFactors: contrastFactors,
   );
 }
 
@@ -65,12 +71,16 @@ Future<Map<String, dynamic>> runDartPermutationsInWorker(
 Future<Map<String, dynamic>> inspectGroupDatasetInWorker(
   String csv,
   String metadata,
-  String key,
-) => Isolate.run(
+  String key, {
+  List<Map<String, dynamic>> factorRules = const [],
+  List<Map<String, dynamic>> externalSheets = const [],
+}) => Isolate.run(
   () => ErpGroupStatsEngine.inspectDataset(
     csvPath: csv,
     metadataPath: metadata,
     metadataKey: key,
+    factorRules: factorRules,
+    externalSheets: externalSheets,
   ),
 );
 
@@ -91,15 +101,23 @@ Future<String> prepareGroupMetadataForPython(
   return file.path;
 }
 
-String groupMetricLabel(String name) =>
-    const {
-      'mean_amplitude_ERP': 'Mean amplitude (µV)',
-      'signed_auc_ERP': 'Signed area under the curve (µV·s)',
-      'peak_amplitude_ERP': 'Peak amplitude (µV)',
-      'peak_latency_ms_ERP': 'Peak latency (ms)',
-      'fractional_area_latency_ms_ERP': 'Fractional-area latency (ms)',
-    }[name] ??
-    name;
+String groupMetricLabel(String name) {
+  const labels = {
+    'mean_amplitude_ERP': 'Mean amplitude (µV)',
+    'signed_auc_ERP': 'Signed area under the curve (µV·s)',
+    'peak_amplitude_ERP': 'Peak amplitude (µV)',
+    'peak_latency_ms_ERP': 'Peak latency (ms)',
+    'fractional_area_latency_ms_ERP': 'Fractional-area latency (ms)',
+  };
+  final direct = labels[name];
+  if (direct != null) return direct;
+  final m = RegExp(r'^(.+?)\s*(\([^()]+\))$').firstMatch(name.trim());
+  if (m != null) {
+    final base = labels[m.group(1)!.trim()] ?? m.group(1)!.trim();
+    return '$base ${m.group(2)!}';
+  }
+  return name;
+}
 
 class GroupStatisticsWorkbench extends StatefulWidget {
   const GroupStatisticsWorkbench({
@@ -122,8 +140,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   final TextEditingController _metadataKeyController = TextEditingController();
 
   bool _isInspecting = false;
-  bool _pythonReady = false;
-  bool _usePermutation = false;
+  final List<Map<String, dynamic>> _factorRules = [];
+  final List<Map<String, dynamic>> _externalSheets = [];
 
   String? get _participantGroupColumn {
     final counts = _dartInspection?['factor_counts'] as Map? ?? {};
@@ -193,36 +211,26 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       _dartInspection = null;
       _analysisResults = null;
       _dartAnalysisResults = null;
-      _pythonReady = false;
       _workflowStep = 0;
       _statusMessage =
-          'Data changed. Review data again before running an analysis.';
+          'Data changed. Click Review data to refresh.';
     });
   }
 
   bool _isAnalyzing = false;
-  double _analysisProgress = 0.0;
+  final double _analysisProgress = 0.0;
   String _progressStatus = '';
   String _statusMessage = '';
   final List<String> _consoleLogs = [];
 
   // Inspected Metadata
   Map<String, dynamic>? _inspectionData;
-  String? _selectedGroupCol;
-  String? _selectedSubgroupCol;
   String? _selectedSubjectIdCol;
-  final Set<String> _selectedCovariates = {};
   final Set<String> _selectedMetrics = {};
 
   // Modelling preferences
-  String _channelScope = 'roi';
   String _preferredModel = 'auto'; // 'auto', 'lmm', 'glm'
-  String _posthocMethod = 'fdr'; // 'fdr', 'tukey', 'bonferroni'
-  String _reportFormat = 'both'; // 'both', 'docx', 'pdf'
-  final TextEditingController _excludeChannelsController =
-      TextEditingController();
-  final TextEditingController _includeChannelsController =
-      TextEditingController();
+  String _posthocMethod = 'fdr'; // 'fdr', 'bonferroni'
 
   // Analysis Results
   Map<String, dynamic>? _analysisResults;
@@ -241,7 +249,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   );
   bool _includeInteractions = true;
   bool _fittedFactorial = true;
+  String? _contrastFocusFactor;
   bool _erpDiffMode = false;
+  final List<({String condB, String condA})> _erpDiffPairs = [];
   String? _erpDiffCondB;
   String? _erpDiffCondA;
   StatsPlotLayoutConfig _plotConfig = const StatsPlotLayoutConfig();
@@ -252,12 +262,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialMetadataPath != null &&
+        widget.initialMetadataPath!.isNotEmpty) {
+      _metadataPathController.text = widget.initialMetadataPath!;
+      _externalSheets.add({'path': widget.initialMetadataPath!});
+    }
     if (widget.initialCsvPath != null && widget.initialCsvPath!.isNotEmpty) {
       _csvPathController.text = widget.initialCsvPath!;
       WidgetsBinding.instance.addPostFrameCallback((_) => _inspectCsv());
-    }
-    if (widget.initialMetadataPath != null) {
-      _metadataPathController.text = widget.initialMetadataPath!;
     }
   }
 
@@ -266,8 +278,6 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     _csvPathController.dispose();
     _metadataPathController.dispose();
     _metadataKeyController.dispose();
-    _excludeChannelsController.dispose();
-    _includeChannelsController.dispose();
     _permCountCtrl.dispose();
     super.dispose();
   }
@@ -304,37 +314,6 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       } catch (_) {}
     }
     return null;
-  }
-
-  static Future<String> _resolveGroupStatsScript() async {
-    final currentDir = Directory.current.path;
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final sep = Platform.pathSeparator;
-    final candidates = [
-      '$exeDir/../Frameworks/App.framework/Resources/flutter_assets/assets/group_stats.py',
-      '$exeDir/data/flutter_assets/assets/group_stats.py',
-      '$currentDir${sep}assets${sep}group_stats.py',
-      '$currentDir${sep}backend${sep}group_stats.py',
-      '$currentDir$sep..${sep}backend${sep}group_stats.py',
-      '$exeDir${sep}backend${sep}group_stats.py',
-      '$exeDir$sep..${sep}Resources${sep}backend${sep}group_stats.py',
-      '$exeDir$sep..${sep}Resources${sep}group_stats.py',
-      '$exeDir$sep..${sep}lib${sep}ccseegstudio${sep}backend${sep}group_stats.py',
-    ];
-    for (final c in candidates) {
-      if (File(c).existsSync()) return c;
-    }
-
-    try {
-      final data = await rootBundle.load('assets/group_stats.py');
-      final tempFile = File(
-        '${(await _runtimeDirectory).path}${Platform.pathSeparator}group_stats.py',
-      );
-      await tempFile.writeAsBytes(data.buffer.asUint8List());
-      return tempFile.path;
-    } catch (_) {}
-
-    throw StateError('group_stats.py not found in app bundle or workspace');
   }
 
   Future<void> _pickCsvFile() async {
@@ -423,51 +402,123 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     await _inspectCsv();
   }
 
-  Future<void> _inferMetadata() async {
-    final file = File(_csvPathController.text.trim());
-    if (!file.existsSync()) {
-      _showSnack('Select a feature CSV first.');
+  Future<void> _openFactorDesignerInGroupStats() async {
+    final insp = _dartInspection;
+    if (insp == null) {
+      _showSnack('Load a measurement CSV first.');
       return;
     }
-    final names = <String>{};
-    var index = -1;
-    await for (final line
-        in file
-            .openRead()
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())) {
-      final fields = splitFeatureCsvLine(line);
-      if (index < 0) {
-        index = fields.indexOf('filename');
-        if (index < 0) {
-          _showSnack('This CSV needs a filename column.');
-          return;
+    final headers = (insp['headers'] as List).cast<String>();
+    final rows = (insp['rows'] as List).cast<List>();
+    final fnIdx = headers.indexWhere(
+      (h) => const {
+        'filename',
+        'file',
+        'source_file',
+        'source_path',
+        'path',
+      }.contains(h.toLowerCase()),
+    );
+    final keyIdx = fnIdx >= 0
+        ? fnIdx
+        : headers.indexWhere(
+            (h) => const {
+              'subjid',
+              'subject',
+              'participant_id',
+              'subject_id',
+            }.contains(h.toLowerCase()),
+          );
+    if (keyIdx < 0) {
+      _showSnack('No filename or participant column found.');
+      return;
+    }
+
+    final filePaths = <String>[];
+    final initialFileFactors = <String, Map<String, String>>{};
+    final factorCols = (insp['factor_columns'] as List? ?? []).cast<String>();
+    final subjIdx = _selectedSubjectIdCol != null
+        ? headers.indexOf(_selectedSubjectIdCol!)
+        : -1;
+
+    for (final r in rows) {
+      if (keyIdx >= r.length) continue;
+      final path = '${r[keyIdx]}'.trim();
+      if (path.isEmpty) continue;
+      if (!initialFileFactors.containsKey(path)) {
+        filePaths.add(path);
+        final map = <String, String>{};
+        if (subjIdx >= 0 && subjIdx < r.length && '${r[subjIdx]}'.trim().isNotEmpty) {
+          map['Subject'] = '${r[subjIdx]}'.trim();
         }
-      } else if (fields.length > index && fields[index].isNotEmpty) {
-        names.add(fields[index]);
+        for (final fc in factorCols) {
+          if (const {
+            'filename',
+            'file',
+            'source_file',
+            'source_path',
+            'path',
+            'sl.no.',
+            'sl.no',
+            'sno',
+            'index',
+            'condn',
+            'condition',
+            'epoch_label',
+            'chan',
+            'epoch',
+            'component',
+          }.contains(fc.toLowerCase())) {
+            continue;
+          }
+          final ci = headers.indexOf(fc);
+          if (ci >= 0 && ci < r.length) {
+            final v = '${r[ci]}'.trim();
+            if (v.isNotEmpty && v != 'Unknown') {
+              map[fc] = v;
+            }
+          }
+        }
+        initialFileFactors[path] = map;
       }
     }
-    if (!mounted) return;
-    final rows = await showDialog<List<Map<String, String>>>(
-      context: context,
-      builder: (_) => FilenameMetadataDialog(names: names.toList()),
+
+    if (filePaths.isEmpty) {
+      _showSnack('No recording entries found in measurement table.');
+      return;
+    }
+
+    final res = await FactorGroupingDesignerDialog.show(
+      context,
+      filePaths: filePaths,
+      initialFileFactors: initialFileFactors,
     );
-    if (rows == null || !mounted) return;
-    final runtime = await _runtimeDirectory;
-    final path = '${runtime.path}/reviewed_filename_labels.csv';
-    final reviewed = [
-      for (final row in rows)
-        <String, String>{
-          for (final entry in row.entries)
-            if (entry.key != 'Subject') entry.key: entry.value,
-          'participant_id': row['Subject'] ?? '',
-        },
-    ];
-    await File(path).writeAsString(filenameMetadataCsv(reviewed));
-    if (!mounted) return;
+    if (res == null || !mounted) return;
+
+    final rowMap = <String, Map<String, String>>{};
+    for (final entry in res.fileFactors.entries) {
+      final cleaned = <String, String>{};
+      for (final fe in entry.value.entries) {
+        final v = fe.value.trim();
+        if (v.isNotEmpty) cleaned[fe.key] = v;
+      }
+      if (cleaned.isNotEmpty) rowMap[entry.key] = cleaned;
+    }
+
     setState(() {
-      _metadataPathController.text = path;
-      _metadataKeyController.text = 'filename';
+      _factorRules.removeWhere((r) => r['mode'] == 'manual_map');
+      if (rowMap.isNotEmpty) {
+        _factorRules.add({
+          'mode': 'manual_map',
+          'label': 'Factor & Grouping Designer (${res.factorNames.length} factor(s))',
+          'rows': rowMap,
+        });
+      }
+      for (final e in res.excludedLevelsByFactor.entries) {
+        if (e.value.isNotEmpty) {
+          _dartExcludedLevels[e.key] = Set<String>.from(e.value);
+        }
+      }
     });
     await _inspectCsv();
   }
@@ -476,15 +527,591 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     final result = await pickFilteredFiles(
       context,
       type: FileType.custom,
-      allowedExtensions: ['csv', 'xlsx'],
-      dialogTitle: 'Select Metadata Table (Optional)',
+      allowedExtensions: ['csv', 'xlsx', 'tsv'],
+      dialogTitle: 'Attach Excel / CSV Factor Sheet',
     );
-    if (result != null && result.files.single.path != null) {
+    if (result == null || result.files.single.path == null || !mounted) return;
+    final path = result.files.single.path!;
+    await _showAttachSheetDialog(path);
+  }
+
+  Future<void> _showAttachSheetDialog(String path) async {
+    try {
+      final parsed = await TabularSheetReader.read(path);
+      if (!mounted) return;
+      if (parsed.headers.isEmpty) {
+        _showSnack('The selected sheet has no headers.');
+        return;
+      }
+      final tableHeaders =
+          (_dartInspection?['headers'] as List? ?? const []).cast<String>();
+      final sheetHeaders = parsed.headers;
+      var sheetKey = sheetHeaders.firstWhere(
+        (h) {
+          final l = h.toLowerCase();
+          return l == 'subject' ||
+              l == 'subjid' ||
+              l == 'participant_id' ||
+              l == 'subject_id' ||
+              l == 'id' ||
+              l == 'filename';
+        },
+        orElse: () => sheetHeaders.first,
+      );
+      var tableKey = 'Auto';
+      final selectedCols = sheetHeaders
+          .where((h) {
+            final l = h.toLowerCase();
+            return h != sheetKey &&
+                l != 'sl.no.' &&
+                l != 'sl.no' &&
+                l != 'sno' &&
+                l != 'index';
+          })
+          .toSet();
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setDlg) => AlertDialog(
+            title: Text(
+              'Attach Sheet: ${filenameBasename(path)}',
+            ),
+            content: SizedBox(
+              width: 560,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${parsed.rows.length} rows detected. Choose which column identifies each participant/recording and which factor columns to import.',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: sheetKey,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'ID column in this sheet',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: [
+                        for (final h in sheetHeaders)
+                          DropdownMenuItem(value: h, child: Text(h)),
+                      ],
+                      onChanged: (v) {
+                        if (v != null) {
+                          setDlg(() {
+                            sheetKey = v;
+                            selectedCols.remove(v);
+                          });
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<String>(
+                      initialValue: tableKey,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Match against measurement table column',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: [
+                        const DropdownMenuItem(
+                          value: 'Auto',
+                          child: Text('Auto-detect (Subject ID or Filename)'),
+                        ),
+                        for (final h in tableHeaders)
+                          DropdownMenuItem(value: h, child: Text(h)),
+                      ],
+                      onChanged: (v) => setDlg(() => tableKey = v ?? 'Auto'),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Factor columns to import:',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        for (final h in sheetHeaders)
+                          if (h != sheetKey)
+                            FilterChip(
+                              label: Text(h),
+                              selected: selectedCols.contains(h),
+                              onSelected: (sel) => setDlg(() {
+                                if (sel) {
+                                  selectedCols.add(h);
+                                } else {
+                                  selectedCols.remove(h);
+                                }
+                              }),
+                            ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: selectedCols.isEmpty
+                    ? null
+                    : () => Navigator.pop(ctx, true),
+                child: const Text('Attach Sheet'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (confirmed != true || !mounted) return;
       setState(() {
-        _metadataPathController.text = result.files.single.path!;
+        _externalSheets.removeWhere((s) => s['path'] == path);
+        _externalSheets.add({
+          'path': path,
+          'sheetJoinCol': sheetKey,
+          if (tableKey != 'Auto') 'tableJoinCol': tableKey,
+          'selectedColumns': selectedCols.toList(),
+        });
+        _metadataPathController.text = path;
       });
-      await _inspectCsv();
+      if (_csvPathController.text.trim().isNotEmpty &&
+          File(_csvPathController.text.trim()).existsSync()) {
+        await _inspectCsv();
+      }
+    } catch (e) {
+      if (mounted) _showSnack('Could not read sheet: $e');
     }
+  }
+
+  Future<void> _openAddFilenameFactorDialog() async {
+    final insp = _dartInspection;
+    if (insp == null) {
+      _showSnack('Load a measurement CSV first.');
+      return;
+    }
+    final headers = (insp['headers'] as List).cast<String>();
+    final rows = (insp['rows'] as List).cast<List>();
+    final fnIdx = headers.indexWhere(
+      (h) => const {
+        'filename',
+        'file',
+        'source_file',
+        'source_path',
+        'path',
+      }.contains(h.toLowerCase()),
+    );
+    var sourceCol = fnIdx >= 0 ? headers[fnIdx] : headers.first;
+    List<String> samplesForCol(String col) {
+      final ci = headers.indexOf(col);
+      if (ci < 0) return const [];
+      final seen = <String>{};
+      final out = <String>[];
+      for (final r in rows) {
+        if (ci >= r.length) continue;
+        final raw = '${r[ci]}'.trim();
+        if (raw.isEmpty) continue;
+        if (seen.add(raw)) {
+          out.add(raw);
+          if (out.length >= 25) break;
+        }
+      }
+      return out;
+    }
+
+    var modeTab = 0; // 0: Crop, 1: Delimiter, 2: Folder
+    final factorCtrl = TextEditingController(text: 'Session');
+    var sampleIdx = 0;
+    var cropStart = 0;
+    var cropEnd = 6;
+    var selectedCandidateIdx = 0;
+    var delimiter = '_';
+    var selectedPartIdx = 0;
+    var folderLevel = 1;
+
+    final initSamples = samplesForCol(sourceCol);
+    if (initSamples.isNotEmpty) {
+      final base = filenameBasename(initSamples.first);
+      cropStart = 0;
+      cropEnd = math.min<int>(9, math.max<int>(1, base.length));
+    }
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) {
+          final rawSamples = samplesForCol(sourceCol);
+          final isFileCol = const {
+            'filename',
+            'file',
+            'source_file',
+            'source_path',
+            'path',
+          }.contains(sourceCol.toLowerCase());
+          final currentRaw = rawSamples.isEmpty
+              ? 'SKYMED013SESSION03-epo_clean.edf'
+              : rawSamples[sampleIdx % rawSamples.length];
+          final sampleName = isFileCol ? filenameBasename(currentRaw) : currentRaw;
+          final safeStart = cropStart.clamp(0, math.max<int>(0, sampleName.length - 1));
+          final safeEnd = cropEnd.clamp(safeStart + 1, math.max<int>(1, sampleName.length));
+          final candidates = FilenameCropRule.inferCandidates(
+            sampleName,
+            safeStart,
+            safeEnd,
+          );
+          final activeCand = candidates.isNotEmpty
+              ? candidates[selectedCandidateIdx.clamp(0, candidates.length - 1)]
+              : null;
+
+          final stem = sampleName.replaceFirst(RegExp(r'\.[^.]+$'), '');
+          final delimParts = delimiter.isEmpty
+              ? [stem]
+              : stem.split(delimiter).where((p) => p.isNotEmpty).toList();
+          final pathSegs = currentRaw
+              .split(RegExp(r'[/\\]'))
+              .where((s) => s.isNotEmpty)
+              .toList();
+
+          String previewFor(String raw) {
+            if (modeTab == 0) {
+              if (activeCand == null) return '';
+              return activeCand.apply(isFileCol ? filenameBasename(raw) : raw);
+            } else if (modeTab == 1) {
+              final s = (isFileCol ? filenameBasename(raw) : raw)
+                  .replaceFirst(RegExp(r'\.[^.]+$'), '');
+              final p = delimiter.isEmpty
+                  ? [s]
+                  : s.split(delimiter).where((x) => x.isNotEmpty).toList();
+              return selectedPartIdx < p.length ? p[selectedPartIdx] : '';
+            } else {
+              final segs = raw
+                  .split(RegExp(r'[/\\]'))
+                  .where((s) => s.isNotEmpty)
+                  .toList();
+              final ti = segs.length - 1 - folderLevel;
+              return (ti >= 0 && ti < segs.length) ? segs[ti] : '';
+            }
+          }
+
+          return AlertDialog(
+            title: const Text('Add Factor from Filename or Folder Path'),
+            content: SizedBox(
+              width: 720,
+              height: 520,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: factorCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'New Factor Name (e.g. Session, Site, Drug)',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          initialValue: sourceCol,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Extract from column',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          items: [
+                            for (final h in headers)
+                              DropdownMenuItem(value: h, child: Text(h)),
+                          ],
+                          onChanged: (v) {
+                            if (v != null) {
+                              setDlg(() {
+                                sourceCol = v;
+                                sampleIdx = 0;
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: rawSamples.isEmpty
+                            ? null
+                            : () => setDlg(() => sampleIdx++),
+                        child: const Text('Next Sample'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  SegmentedButton<int>(
+                    segments: const [
+                      ButtonSegment(value: 0, label: Text('Crop from Filename')),
+                      ButtonSegment(value: 1, label: Text('Split by Delimiter')),
+                      ButtonSegment(value: 2, label: Text('From Folder Path')),
+                    ],
+                    selected: {modeTab},
+                    onSelectionChanged: (s) => setDlg(() => modeTab = s.first),
+                  ),
+                  const SizedBox(height: 10),
+                  if (modeTab == 0) ...[
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          RichText(
+                            text: TextSpan(
+                              style: const TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 15,
+                              ),
+                              children: [
+                                TextSpan(
+                                  text: sampleName.substring(0, safeStart),
+                                  style: const TextStyle(color: Colors.white54),
+                                ),
+                                TextSpan(
+                                  text: sampleName.substring(safeStart, safeEnd),
+                                  style: const TextStyle(
+                                    color: Colors.black,
+                                    backgroundColor: Color(0xFFFBBF24),
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                TextSpan(
+                                  text: sampleName.substring(safeEnd),
+                                  style: const TextStyle(color: Colors.white54),
+                                ),
+                              ],
+                            ),
+                          ),
+                          RangeSlider(
+                            min: 0,
+                            max: math.max<int>(1, sampleName.length).toDouble(),
+                            divisions: math.max<int>(1, sampleName.length),
+                            values: RangeValues(
+                              safeStart.toDouble(),
+                              safeEnd.toDouble(),
+                            ),
+                            onChanged: (rv) => setDlg(() {
+                              cropStart = rv.start.round();
+                              cropEnd = math.max<int>(
+                                cropStart + 1,
+                                rv.end.round(),
+                              );
+                              selectedCandidateIdx = 0;
+                            }),
+                          ),
+                          if (candidates.isNotEmpty)
+                            DropdownButtonFormField<int>(
+                              initialValue: selectedCandidateIdx.clamp(
+                                0,
+                                candidates.length - 1,
+                              ),
+                              decoration: const InputDecoration(
+                                labelText: 'Auto-inferred extraction rule',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              items: [
+                                for (var i = 0; i < candidates.length; i++)
+                                  DropdownMenuItem(
+                                    value: i,
+                                    child: Text(candidates[i].label),
+                                  ),
+                              ],
+                              onChanged: (v) {
+                                if (v != null) {
+                                  setDlg(() => selectedCandidateIdx = v);
+                                }
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                  ] else if (modeTab == 1) ...[
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 180,
+                          child: DropdownButtonFormField<String>(
+                            initialValue: delimiter,
+                            decoration: const InputDecoration(
+                              labelText: 'Separator',
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                            items: const [
+                              DropdownMenuItem(value: '_', child: Text('Underscore (_)')),
+                              DropdownMenuItem(value: '-', child: Text('Hyphen (-)')),
+                              DropdownMenuItem(value: ' ', child: Text('Space')),
+                              DropdownMenuItem(value: '.', child: Text('Dot (.)')),
+                            ],
+                            onChanged: (v) => setDlg(() {
+                              delimiter = v ?? '_';
+                              selectedPartIdx = 0;
+                            }),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: [
+                              for (var i = 0; i < delimParts.length; i++)
+                                ChoiceChip(
+                                  label: Text('${i + 1}: ${delimParts[i]}'),
+                                  selected: selectedPartIdx == i,
+                                  onSelected: (_) =>
+                                      setDlg(() => selectedPartIdx = i),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ] else ...[
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        for (var lvl = 1; lvl <= 4; lvl++)
+                          ChoiceChip(
+                            label: Text(
+                              'Parent $lvl: ${pathSegs.length - 1 - lvl >= 0 ? pathSegs[pathSegs.length - 1 - lvl] : "(none)"}',
+                            ),
+                            selected: folderLevel == lvl,
+                            onSelected: (_) => setDlg(() => folderLevel = lvl),
+                          ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Live preview across recordings:',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.white12),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: ListView.builder(
+                        itemCount: rawSamples.length,
+                        itemExtent: 28,
+                        itemBuilder: (_, i) {
+                          final raw = rawSamples[i];
+                          final val = previewFor(raw);
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    isFileCol ? filenameBasename(raw) : raw,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 11.5),
+                                  ),
+                                ),
+                                const Icon(Icons.arrow_forward, size: 13),
+                                const SizedBox(width: 6),
+                                Text(
+                                  val.isEmpty ? '(no match)' : val,
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.bold,
+                                    color: val.isEmpty
+                                        ? Colors.redAccent
+                                        : Colors.greenAccent,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final fName = factorCtrl.text.trim();
+                  if (fName.isEmpty) return;
+                  if (modeTab == 0 && activeCand != null) {
+                    Navigator.pop(ctx, {
+                      'mode': 'crop',
+                      'factorName': fName,
+                      'sourceCol': sourceCol,
+                      'label': activeCand.label,
+                      'pattern': activeCand.pattern,
+                      'isFixedSlice': activeCand.isFixedSlice,
+                      'start': activeCand.start,
+                      'end': activeCand.end,
+                    });
+                  } else if (modeTab == 1) {
+                    Navigator.pop(ctx, {
+                      'mode': 'delimiter',
+                      'factorName': fName,
+                      'sourceCol': sourceCol,
+                      'separator': delimiter,
+                      'partIndex': selectedPartIdx,
+                    });
+                  } else {
+                    Navigator.pop(ctx, {
+                      'mode': 'folder',
+                      'factorName': fName,
+                      'sourceCol': sourceCol,
+                      'folderLevel': folderLevel,
+                    });
+                  }
+                },
+                child: const Text('Add Factor'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    factorCtrl.dispose();
+    if (result == null || !mounted) return;
+    setState(() {
+      final fName = '${result['factorName']}'.toLowerCase();
+      _factorRules.removeWhere(
+        (r) =>
+            r['mode'] != 'manual_map' &&
+            '${r['factorName'] ?? ''}'.toLowerCase() == fName,
+      );
+      _factorRules.add(result);
+    });
+    await _inspectCsv();
   }
 
   Future<void> _inspectCsv() async {
@@ -496,15 +1123,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     setState(() {
       _isInspecting = true;
-      _statusMessage = 'Checking participants, groups and measurements…';
+      _statusMessage = 'Loading measurements and factor sources…';
       _inspectionData = null;
       _dartInspection = null;
       _analysisResults = null;
       _dartAnalysisResults = null;
-      _pythonReady = false;
       _selectedMetrics.clear();
-      _selectedGroupCol = null;
-      _selectedSubgroupCol = 'None';
       _selectedSubjectIdCol = null;
     });
 
@@ -513,84 +1137,21 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         csvPath,
         _metadataPathController.text.trim(),
         _metadataKeyController.text.trim(),
+        factorRules: _factorRules,
+        externalSheets: _externalSheets,
       );
       if (!mounted) return;
       _applyDartInspection(dartInsp);
-
-      final python = await _findPythonExecutable();
-      if (python == null) {
-        setState(() {
-          _statusMessage =
-              'Dataset loaded (Pure-Dart engine): ${dartInsp['row_count']} rows, ${(dartInsp['factor_columns'] as List).length} factor(s).';
-        });
-        return;
-      }
-      final script = await _resolveGroupStatsScript();
-
-      final args = [script, '--csv', csvPath, '--inspect-only'];
-      if (_metadataPathController.text.trim().isNotEmpty) {
-        args.addAll([
-          '--metadata-csv',
-          await prepareGroupMetadataForPython(
-            _metadataPathController.text.trim(),
-            await _runtimeDirectory,
-          ),
-        ]);
-      }
-      if (_metadataKeyController.text.trim().isNotEmpty) {
-        args.addAll(['--metadata-key', _metadataKeyController.text.trim()]);
-      }
-
-      final res = await Process.run(
-        python,
-        args,
-        environment: {'MPLCONFIGDIR': '${(await _runtimeDirectory).path}/mpl'},
-      );
-      if (!mounted) return;
-      if (res.exitCode != 0) {
-        throw StateError('Inspection failed: ${res.stderr}');
-      }
-
-      final jsonMap = jsonDecode(res.stdout as String) as Map<String, dynamic>;
       setState(() {
-        _pythonReady = true;
-        _inspectionData = jsonMap;
-        _selectedGroupCol = jsonMap['group_col'] as String?;
-        _selectedSubgroupCol = jsonMap['subgroup_col'] as String? ?? 'None';
-        _selectedSubjectIdCol = jsonMap['subject_id'] as String?;
-        _selectedCovariates.clear();
-        if (jsonMap['has_composite_roi'] == true ||
-            (jsonMap['channel_count'] as num? ?? 0) <= 1) {
-          _channelScope = 'all';
-        }
-        // Covariates are an explicit design choice, not an automatic default.
-
-        _selectedMetrics.clear();
-        // Default selection: priority metrics
-        final prioritized = ['Alpha_PSD', 'Alpha_Irasa', 'Alpha_FOOOF'];
-        final availMetrics = (jsonMap['metric_columns'] as List<dynamic>? ?? [])
-            .cast<String>();
-        for (final m in prioritized) {
-          if (availMetrics.contains(m)) {
-            _selectedMetrics.add(m);
-            break;
-          }
-        }
-        if (_selectedMetrics.isEmpty) {
-          _selectedMetrics.addAll(availMetrics.take(1));
-        }
-
         _statusMessage =
-            'Ready: ${jsonMap['recording_count']} recordings from ${jsonMap['unique_subjects']} participants. Review the group counts below.';
+            'Ready: ${dartInsp['row_count']} rows · ${_inspectionData?['unique_subjects'] ?? 0} participants · ${_dartFactors.length} factor(s) active.';
       });
     } catch (e) {
       if (!mounted) return;
-      if (_dartInspection == null) _showSnack('Error inspecting file: $e');
+      _showSnack('Error inspecting file: $e');
       setState(() {
         _consoleLogs.add('$e');
-        _statusMessage = _dartInspection != null
-            ? 'Data loaded. Standard reports are unavailable in this Python environment. Choose permutation analysis, or see the activity log for details.'
-            : 'Data could not be loaded: $e';
+        _statusMessage = 'Data could not be loaded: $e';
       });
     } finally {
       if (mounted)
@@ -636,53 +1197,45 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       return lvls.length >= 2;
     }).toList();
 
+    final customRuleFactorNames = <String>{
+      for (final r in _factorRules)
+        if (r['mode'] != 'manual_map' &&
+            '${r['factorName'] ?? ''}'.trim().isNotEmpty)
+          '${r['factorName']}'.trim().toLowerCase(),
+      for (final s in _externalSheets)
+        for (final c in (s['selectedColumns'] as List? ?? const []))
+          '$c'.trim().toLowerCase(),
+    };
+
     setState(() {
       _dartInspection = insp;
       _dartFactors
         ..clear()
         ..addAll(
-          nonSubjFactors.where(
-            (f) => const {
-              'group',
-              'condition',
-              'session',
-              'sessn',
-            }.contains(f.toLowerCase()),
-          ),
+          nonSubjFactors.where((f) {
+            final fl = f.toLowerCase();
+            return const {
+                  'group',
+                  'cohort',
+                  'arm',
+                  'condition',
+                  'session',
+                  'sessn',
+                }.contains(fl) ||
+                customRuleFactorNames.contains(fl);
+          }),
         );
-      if (nonSubjFactors.any((f) => f.toLowerCase() == 'session') &&
-          nonSubjFactors.any((f) => f.toLowerCase() == 'condition'))
-        _usePermutation = true;
+      if (_dartFactors.isEmpty && nonSubjFactors.isNotEmpty) {
+        _dartFactors.addAll(nonSubjFactors.take(4));
+      }
       _dartExcludedLevels.clear();
       _dartLevelOrder.clear();
+      _contrastFocusFactor = null;
       _erpDiffMode = false;
+      _erpDiffPairs.clear();
       _erpDiffCondB = null;
       _erpDiffCondA = null;
       _selectedSubjectIdCol = subjCol;
-      _selectedSubgroupCol =
-          nonSubjFactors
-              .where(
-                (f) => const {
-                  'condition',
-                  'epoch_condition',
-                  'session',
-                }.contains(f.toLowerCase()),
-              )
-              .firstOrNull ??
-          'None';
-      if (_selectedGroupCol == null && nonSubjFactors.isNotEmpty) {
-        _selectedGroupCol =
-            nonSubjFactors
-                .where(
-                  (f) => const {
-                    'group',
-                    'cohort',
-                    'arm',
-                  }.contains(f.toLowerCase()),
-                )
-                .firstOrNull ??
-            nonSubjFactors.first;
-      }
       if (_selectedMetrics.isEmpty && metricCols.isNotEmpty) {
         _selectedMetrics.add(metricCols.first);
       }
@@ -749,7 +1302,6 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     .length <
                 2,
           );
-          _usePermutation = true;
           _workflowStep = 1;
         });
     }
@@ -953,6 +1505,78 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     ];
   }
 
+  List<({String condB, String condA})> _effectiveErpDiffPairs(
+    Map<String, dynamic>? insp,
+    String condCol,
+  ) {
+    final rawLevels =
+        (insp?['factor_levels'] as Map? ?? const {})[condCol] as List? ??
+        const [];
+    final available = {for (final v in rawLevels) '$v'};
+    final valid = <({String condB, String condA})>[];
+    final seen = <String>{};
+    for (final p in _erpDiffPairs) {
+      if (p.condB != p.condA &&
+          available.contains(p.condB) &&
+          available.contains(p.condA)) {
+        final key = '${p.condB} − ${p.condA}';
+        if (seen.add(key)) valid.add(p);
+      }
+    }
+    if (valid.isNotEmpty) return valid;
+    final condLevels = _conditionLevelsForCol(insp, condCol);
+    if (condLevels.length < 2) return const [];
+    final cA = (_erpDiffCondA != null && condLevels.contains(_erpDiffCondA))
+        ? _erpDiffCondA!
+        : (condLevels.contains('Freq') ? 'Freq' : condLevels.first);
+    final cB =
+        (_erpDiffCondB != null &&
+            condLevels.contains(_erpDiffCondB) &&
+            _erpDiffCondB != cA)
+        ? _erpDiffCondB!
+        : (condLevels.contains('Rare') && 'Rare' != cA
+              ? 'Rare'
+              : condLevels.firstWhere((c) => c != cA));
+    return [(condB: cB, condA: cA)];
+  }
+
+  List<String> _activeErpDiffLabels(
+    Map<String, dynamic>? insp,
+    String? condCol,
+  ) {
+    if (!_erpDiffMode || condCol == null) return const [];
+    return [
+      for (final p in _effectiveErpDiffPairs(insp, condCol))
+        '${p.condB} − ${p.condA}',
+    ];
+  }
+
+  void _dropCondFactorFromRoles(String condCol) {
+    final remaining = _dartFactors.where((f) => f != condCol).toList();
+    if (!_dartFactors.contains(condCol) || remaining.isEmpty) return;
+    _dartFactors
+      ..clear()
+      ..addAll(remaining);
+    var cfg = _plotConfig;
+    if (cfg.xFactor == condCol) {
+      final nextX =
+          remaining.where((f) => f != cfg.seriesFactor).firstOrNull ??
+          remaining.firstOrNull;
+      cfg = cfg.copyWith(xFactor: nextX, clearX: nextX == null);
+    }
+    if (cfg.seriesFactor == condCol) {
+      final nextS = remaining.where((f) => f != cfg.xFactor).firstOrNull;
+      cfg = cfg.copyWith(seriesFactor: nextS, clearSeries: nextS == null);
+    }
+    if (cfg.facetColFactor == condCol) {
+      cfg = cfg.copyWith(clearFacetCol: true);
+    }
+    if (cfg.facetRowFactor == condCol) {
+      cfg = cfg.copyWith(clearFacetRow: true);
+    }
+    _plotConfig = cfg;
+  }
+
   Future<void> _runDartPermutationAnalysis() async {
     final insp = _dartInspection;
     if (!_groupsReady) {
@@ -1003,113 +1627,48 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
       final condCol = _detectConditionFactorCol(insp);
       if (_erpDiffMode && condCol != null) {
-        final condLevels = _conditionLevelsForCol(insp, condCol);
-        final cB = (_erpDiffCondB != null && condLevels.contains(_erpDiffCondB))
-            ? _erpDiffCondB!
-            : (condLevels.contains('Rare')
-                ? 'Rare'
-                : (condLevels.length > 1 ? condLevels[1] : null));
-        final cA = (_erpDiffCondA != null && condLevels.contains(_erpDiffCondA))
-            ? _erpDiffCondA!
-            : (condLevels.contains('Freq') ? 'Freq' : condLevels.firstOrNull);
-        if (cB == null || cA == null || cB == cA) {
-          _showSnack('Choose two distinct conditions (B and A) for ERP Difference.');
+        final pairs = _effectiveErpDiffPairs(insp, condCol);
+        final diffRes = ErpGroupStatsEngine.buildErpDifferenceDataset(
+          headers: headers,
+          rows: rows,
+          condCol: condCol,
+          pairs: pairs,
+          factors: factors,
+          metrics: metrics,
+          subjectCol: subjCol,
+          excludedLevels: excluded,
+        );
+        if (diffRes.containsKey('error')) {
+          _showSnack('${diffRes['error']}');
           return;
         }
-        final diffFactors = factors
-            .where((f) => f != condCol && f.toLowerCase() != 'epoch_label')
+        headers = (diffRes['headers'] as List).cast<String>();
+        rows = (diffRes['rows'] as List)
+            .map((r) => (r as List).map((e) => '$e').toList())
             .toList();
-        if (diffFactors.isEmpty) {
-          _showSnack(
-            'Keep at least one non-condition factor (e.g. group or session) selected to model $cB − $cA.',
-          );
-          return;
-        }
-
-        final headerIdx = <String, int>{
-          for (var i = 0; i < headers.length; i++) headers[i]: i,
-        };
-        final condIdx = headerIdx[condCol]!;
-        final fileIdx = [
-          for (final k in const ['filename', 'file', 'source_file', 'path'])
-            headerIdx[k],
-        ].whereType<int>().firstOrNull;
-        final subjIdx = subjCol != null ? headerIdx[subjCol] : null;
-        final diffFactorCols = [for (final f in diffFactors) headerIdx[f]!];
-
-        final paired = <String, ({List<List<String>> b, List<List<String>> a})>{};
-        for (final row in rows) {
-          if (row.length < headers.length) continue;
-          final cVal = row[condIdx];
-          if (cVal != cB && cVal != cA) continue;
-          var skip = false;
-          for (var i = 0; i < diffFactors.length; i++) {
-            final fName = diffFactors[i];
-            final fVal = row[diffFactorCols[i]];
-            if (fVal.isEmpty || (excluded[fName]?.contains(fVal) ?? false)) {
-              skip = true;
-              break;
-            }
+        factors = (diffRes['factors'] as List).cast<String>();
+        metrics = (diffRes['metrics'] as List).cast<String>();
+        final diffLabels = (diffRes['diff_labels'] as List).cast<String>();
+        if (factors.contains(condCol)) {
+          final validDiffSet = diffLabels.toSet();
+          final condExcl = excluded[condCol];
+          if (condExcl != null) {
+            condExcl.retainWhere(validDiffSet.contains);
+            if (condExcl.isEmpty) excluded.remove(condCol);
           }
-          if (skip) continue;
-          final recKey = fileIdx != null && row[fileIdx].isNotEmpty
-              ? row[fileIdx]
-              : '${subjIdx != null ? row[subjIdx] : ''}|${[for (final ci in diffFactorCols) row[ci]].join('|')}';
-          final slot = paired.putIfAbsent(recKey, () => (b: [], a: []));
-          if (cVal == cB) {
-            slot.b.add(row);
-          } else {
-            slot.a.add(row);
-          }
+          final existingOrder = _dartLevelOrder[condCol];
+          order[condCol] = existingOrder != null && existingOrder.isNotEmpty
+              ? [
+                  for (final l in existingOrder)
+                    if (validDiffSet.contains(l)) l,
+                  for (final l in diffLabels)
+                    if (!existingOrder.contains(l)) l,
+                ]
+              : diffLabels;
+        } else {
+          excluded.remove(condCol);
+          order.remove(condCol);
         }
-
-        final diffLabel = '$cB − $cA';
-        final newHeaders = List<String>.from(headers);
-        final metricPairs = <(int idx, String diffMetric)>[];
-        for (final m in metrics) {
-          final mIdx = headerIdx[m];
-          if (mIdx == null) continue;
-          final newName = '$m ($diffLabel)';
-          newHeaders[mIdx] = newName;
-          metricPairs.add((mIdx, newName));
-        }
-        final diffRows = <List<String>>[];
-        for (final entry in paired.values) {
-          if (entry.b.isEmpty || entry.a.isEmpty) continue;
-          final outRow = List<String>.from(entry.b.first);
-          outRow[condIdx] = diffLabel;
-          for (final (mIdx, _) in metricPairs) {
-            double sumB = 0, sumA = 0;
-            var nB = 0, nA = 0;
-            for (final r in entry.b) {
-              final v = double.tryParse(r[mIdx].trim());
-              if (v != null && v.isFinite) {
-                sumB += v;
-                nB++;
-              }
-            }
-            for (final r in entry.a) {
-              final v = double.tryParse(r[mIdx].trim());
-              if (v != null && v.isFinite) {
-                sumA += v;
-                nA++;
-              }
-            }
-            outRow[mIdx] = (nB > 0 && nA > 0)
-                ? '${(sumB / nB) - (sumA / nA)}'
-                : 'NaN';
-          }
-          diffRows.add(outRow);
-        }
-        if (diffRows.length < 3) {
-          _showSnack('Not enough paired $diffLabel recordings found (need >= 3).');
-          return;
-        }
-        headers = newHeaders;
-        rows = diffRows;
-        factors = diffFactors;
-        metrics = [for (final (_, n) in metricPairs) n];
-        excluded.remove(condCol);
       }
 
       var cfg = _plotConfig;
@@ -1143,6 +1702,11 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         'nPermutations': nPerm,
         'excludedLevels': excluded,
         'customLevelOrder': order,
+        'contrastFactors':
+            (_contrastFocusFactor != null &&
+                factors.contains(_contrastFocusFactor))
+            ? [_contrastFocusFactor!]
+            : <String>[],
       };
 
       final res = _fittedFactorial
@@ -1174,175 +1738,6 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       _showSnack('Analysis failed: $e');
     } finally {
       if (mounted) setState(() => _isAnalyzing = false);
-    }
-  }
-
-  Future<void> _runAnalysis() async {
-    if (!_groupsReady || !_pythonReady) {
-      _showSnack('Review data and missing group labels before running.');
-      return;
-    }
-    final csvPath = _csvPathController.text.trim();
-    if (csvPath.isEmpty || !File(csvPath).existsSync()) {
-      _showSnack('Please select a valid CSV file.');
-      return;
-    }
-    if (_selectedGroupCol == null || _selectedGroupCol!.isEmpty) {
-      _showSnack('Please select a primary grouping factor.');
-      return;
-    }
-    if (_selectedMetrics.isEmpty) {
-      _showSnack('Please select at least one sleep metric to analyze.');
-      return;
-    }
-
-    setState(() {
-      _isAnalyzing = true;
-      _analysisProgress = 0.0;
-      _progressStatus = 'Initializing statistical models…';
-      _statusMessage = 'Running group statistical analysis…';
-      _consoleLogs.clear();
-    });
-
-    try {
-      final python = await _findPythonExecutable();
-      if (python == null) {
-        throw StateError('Python 3 environment not found.');
-      }
-      final script = await _resolveGroupStatsScript();
-
-      final args = [
-        script,
-        '--csv',
-        csvPath,
-        '--group',
-        _selectedGroupCol!,
-        if (_selectedSubgroupCol != null && _selectedSubgroupCol != 'None') ...[
-          '--subgroup',
-          _selectedSubgroupCol!,
-        ],
-        if (_selectedSubjectIdCol != null) ...[
-          '--subject-id',
-          _selectedSubjectIdCol!,
-        ],
-        if (_selectedCovariates.isNotEmpty) ...[
-          '--covariates',
-          _selectedCovariates.join(','),
-        ],
-        '--channel',
-        _channelScope,
-        if (_excludeChannelsController.text.trim().isNotEmpty) ...[
-          '--exclude-channels',
-          _excludeChannelsController.text.trim(),
-        ],
-        if (_includeChannelsController.text.trim().isNotEmpty) ...[
-          '--include-channels',
-          _includeChannelsController.text.trim(),
-        ],
-        '--metrics',
-        _selectedMetrics.join(','),
-        '--model',
-        _preferredModel,
-        '--posthoc',
-        _posthocMethod,
-        '--report-format',
-        _reportFormat,
-      ];
-      if (_metadataPathController.text.trim().isNotEmpty) {
-        args.addAll([
-          '--metadata-csv',
-          await prepareGroupMetadataForPython(
-            _metadataPathController.text.trim(),
-            await _runtimeDirectory,
-          ),
-        ]);
-      }
-      if (_metadataKeyController.text.trim().isNotEmpty) {
-        args.addAll(['--metadata-key', _metadataKeyController.text.trim()]);
-      }
-      final exclMap = <String, List<String>>{
-        for (final e in _dartExcludedLevels.entries)
-          if (e.value.isNotEmpty) e.key: e.value.toList(),
-      };
-      if (exclMap.isNotEmpty) {
-        args.addAll(['--exclude-levels', jsonEncode(exclMap)]);
-      }
-
-      final process = await Process.start(
-        python,
-        args,
-        environment: {'MPLCONFIGDIR': '${(await _runtimeDirectory).path}/mpl'},
-      );
-
-      final stdoutBuffer = StringBuffer();
-      final stderrBuffer = StringBuffer();
-
-      process.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((line) {
-            stdoutBuffer.writeln(line);
-            setState(() {
-              _consoleLogs.add(line);
-              if (_consoleLogs.length > 50) _consoleLogs.removeAt(0);
-            });
-          });
-
-      process.stderr
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((line) {
-            stderrBuffer.writeln(line);
-            if (line.startsWith('PROGRESS ')) {
-              final rest = line.substring(9).trim();
-              final spIdx = rest.indexOf(' ');
-              if (spIdx > 0) {
-                final frac = double.tryParse(rest.substring(0, spIdx));
-                final msg = rest.substring(spIdx + 1).trim();
-                if (frac != null) {
-                  setState(() {
-                    _analysisProgress = frac.clamp(0.0, 1.0);
-                    _progressStatus = msg;
-                  });
-                }
-              }
-            }
-            setState(() {
-              _consoleLogs.add('[stderr] $line');
-              if (_consoleLogs.length > 50) _consoleLogs.removeAt(0);
-            });
-          });
-
-      final exitCode = await process.exitCode;
-      if (exitCode != 0) {
-        throw StateError(
-          'Analysis returned exit code $exitCode:\n${stderrBuffer.toString()}',
-        );
-      }
-
-      final outStr = stdoutBuffer.toString();
-      final jsonMap = jsonDecode(outStr) as Map<String, dynamic>;
-
-      setState(() {
-        _analysisResults = jsonMap;
-        _workflowStep = 2;
-        final resList = jsonMap['results'] as List<dynamic>? ?? [];
-        if (resList.isNotEmpty) {
-          _selectedResultMetric =
-              (resList.first as Map<String, dynamic>)['metric'] as String?;
-        }
-        _statusMessage =
-            'Analysis complete. Open Results to see plots, tables and available reports.';
-      });
-    } catch (e) {
-      _showSnack('Analysis failed: $e');
-      setState(() {
-        _statusMessage = 'Analysis failed: $e';
-      });
-    } finally {
-      setState(() {
-        _isAnalyzing = false;
-      });
     }
   }
 
@@ -1436,170 +1831,16 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ],
               const SizedBox(height: 12),
               if (_inspectionData != null && _workflowStep == 1) ...[
-                SegmentedButton<bool>(
-                  segments: const [
-                    ButtonSegment(
-                      value: true,
-                      label: Text('Multi-Factor GLM / LMM (Native)'),
-                    ),
-                    ButtonSegment(
-                      value: false,
-                      label: Text('Legacy Python Report (1–2 factors)'),
-                    ),
-                  ],
-                  selected: {_usePermutation},
-                  onSelectionChanged: _isAnalyzing
-                      ? null
-                      : (v) => setState(() => _usePermutation = v.first),
-                ),
-                const SizedBox(height: 12),
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    _usePermutation
-                        ? 'Recommended (no Python needed): fits native REML Linear Mixed Models or OLS GLM across ${_dartFactors.isEmpty ? "your selected factors" : _dartFactors.join(", ")} (cohort × condition × session), supports direct ERP Difference (B − A), and shows interactive tables & plots.'
-                        : 'Optional external Python script (requires local Python with statsmodels/matplotlib) to generate a static report comparing $_selectedGroupCol${_selectedSubgroupCol == "None" ? "" : " and $_selectedSubgroupCol"}.',
-                  ),
-                ),
                 if (!_groupsReady)
                   const Padding(
                     padding: EdgeInsets.all(12),
                     child: Text(
-                      'Some participants have no group label. Return to Data & groups to assign or exclude them before running.',
+                      'Some participants have no group label. Return to 1. Data & groups to assign or exclude them before running.',
                     ),
                   ),
-                if (!_usePermutation) _buildConfigurationCard(),
-                if (_usePermutation)
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text(
-                      'For this analysis, each participant can have multiple sessions and stimulus conditions.',
-                    ),
-                  ),
-                const SizedBox(height: 12),
                 _buildMetricsSelectionCard(),
                 const SizedBox(height: 12),
-                if (!_usePermutation)
-                  Card(
-                    elevation: 0,
-                    color: const Color(0xFF111827),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      side: BorderSide(color: const Color(0xFF334155)),
-                    ),
-                    child: ExpansionTile(
-                      tilePadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 2,
-                      ),
-                      initiallyExpanded:
-                          !((_inspectionData?['has_composite_roi'] == true) ||
-                              ((_inspectionData?['channel_count'] as num? ??
-                                      0) <=
-                                  1)),
-                      leading: const Icon(
-                        Icons.sensors,
-                        size: 20,
-                        color: Color(0xFF38BDF8),
-                      ),
-                      title: const Text(
-                        'Advanced: EEG Channel Scope & Filtering',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13.5,
-                          color: Colors.white,
-                        ),
-                      ),
-                      subtitle: Text(
-                        _inspectionData?['has_composite_roi'] == true
-                            ? 'Composite ERP ROIs detected — keeping CSV ROI rows intact (scope: $_channelScope)'
-                            : 'Channel aggregation scope: $_channelScope',
-                        style: TextStyle(fontSize: 11.5, color: Colors.white70),
-                      ),
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              DropdownButtonFormField<String>(
-                                key: ValueKey('ch_scope_$_channelScope'),
-                                initialValue: _channelScope,
-                                isExpanded: true,
-                                decoration: const InputDecoration(
-                                  labelText: 'Channel Scope & Grouping',
-                                  border: OutlineInputBorder(),
-                                  isDense: true,
-                                  helperMaxLines: 2,
-                                  helperText:
-                                      'ROIs groups standard 10-20 electrodes into 5 regions. All keeps derivations / composite ROIs intact. Mean averages whole scalp.',
-                                ),
-                                items: const [
-                                  DropdownMenuItem(
-                                    value: 'roi',
-                                    child: Text(
-                                      'Neurophysiological ROIs (Frontal, Central, Temporal, Parietal, Occipital)',
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'mean',
-                                    child: Text(
-                                      'Global Scalp Average (1 observation per recording)',
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'all',
-                                    child: Text(
-                                      'Analyze all channels / composite ROIs as-is',
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                                onChanged: (v) =>
-                                    setState(() => _channelScope = v ?? 'roi'),
-                              ),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _excludeChannelsController,
-                                      decoration: const InputDecoration(
-                                        labelText:
-                                            'Exclude channels (optional)',
-                                        hintText:
-                                            'e.g. Cz, Pz, POL \$A1 (comma separated)',
-                                        border: OutlineInputBorder(),
-                                        isDense: true,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _includeChannelsController,
-                                      decoration: const InputDecoration(
-                                        labelText:
-                                            'Include only channels (optional)',
-                                        hintText:
-                                            'e.g. F3, F4, C3, C4 (comma separated)',
-                                        border: OutlineInputBorder(),
-                                        isDense: true,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                const SizedBox(height: 12),
-                if (_dartInspection != null && _usePermutation) ...[
+                if (_dartInspection != null) ...[
                   _buildConfigurablePlotAndPreviewCard(),
                   const SizedBox(height: 12),
                 ],
@@ -1607,8 +1848,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   const Padding(
                     padding: EdgeInsets.only(bottom: 6),
                     child: Text(
-                      'Choose the subject/group fields and select outcomes above to enable Run.',
-                      style: TextStyle(color: Color(0xFF475569)),
+                      'Select at least one measurement above to enable Run.',
+                      style: TextStyle(color: Color(0xFF94A3B8)),
                     ),
                   ),
                 _buildActionRunCard(),
@@ -1649,6 +1890,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     final sources = (insp['column_sources'] as Map? ?? {});
     final headers = (insp['headers'] as List).cast<String>();
     final rows = (insp['rows'] as List).cast<List>();
+    final factorCols = (insp['factor_columns'] as List? ?? []).cast<String>();
     final participant = _selectedSubjectIdCol;
     final group = _participantGroupColumn;
     final subjectIndex = headers.indexOf(participant ?? '');
@@ -1662,22 +1904,57 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             .add('${row[subjectIndex]}');
       }
     }
-    String? field(List<String> names) =>
-        headers.where((h) => names.contains(h.toLowerCase())).firstOrNull;
-    final condition = field(['condition', 'epoch_condition']);
-    final session = field(['session', 'sessn']);
-    final fields = [
-      if (participant != null) (participant, 'Participant (person)'),
-      if (group != null) (group, 'Participant group (cohort)'),
-      if (session != null) (session, 'Session (visit)'),
-      if (condition != null) (condition, 'Condition (stimulus / task)'),
+
+    const skipReviewCols = {
+      'filename',
+      'file',
+      'source_file',
+      'source_path',
+      'path',
+      'sl.no.',
+      'sl.no',
+      'sno',
+      'index',
+    };
+    final reviewFactors = <String>[
+      ?participant,
+      for (final f in factorCols)
+        if (f != participant &&
+            !skipReviewCols.contains(f.toLowerCase()) &&
+            !const {'subjid', 'subject', 'subject_id', 'participant_id'}
+                .contains(f.toLowerCase()) &&
+            ((levels[f] as List? ?? const []).length >= 2 ||
+                f.toLowerCase() == 'group'))
+          f,
     ];
+    final tablePreviewFactors = reviewFactors
+        .where((f) => f != participant)
+        .toList();
+
+    String roleLabel(String f) {
+      final fl = f.toLowerCase();
+      if (f == participant) return '$f · Participant ID (Random Effect)';
+      if (fl == 'group' || fl == 'cohort' || fl == 'arm') {
+        return '$f · Participant Group';
+      }
+      if (fl == 'session' || fl == 'sessn') return '$f · Session / Visit';
+      if (fl == 'condition' || fl == 'epoch_condition') {
+        return '$f · Condition';
+      }
+      return f;
+    }
+
     String value(List row, String? col) {
       final i = headers.indexOf(col ?? '');
       return i >= 0 && i < row.length ? '${row[i]}' : '—';
     }
 
     return Card(
+      color: const Color(0xFF111827),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Color(0xFF334155)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -1689,32 +1966,32 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             ),
             const SizedBox(height: 8),
             Text(
-              '${(levels[participant] as List? ?? []).length} people · ${insp['row_count']} measurement rows. Each person can have several sessions and conditions.',
+              '${(levels[participant] as List? ?? []).length} participants · ${insp['row_count']} measurement rows · ${tablePreviewFactors.length} active factor(s).',
             ),
             const SizedBox(height: 12),
-            for (final entry in fields)
+            for (final f in reviewFactors)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      entry.$2,
+                      roleLabel(f),
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                     Text(
-                      'Values: ${(levels[entry.$1] as List? ?? []).take(8).join(", ")}${(levels[entry.$1] as List? ?? []).length > 8 ? " …" : ""}',
+                      'Values (${(levels[f] as List? ?? []).length}): ${(levels[f] as List? ?? []).take(8).join(", ")}${(levels[f] as List? ?? []).length > 8 ? " …" : ""}',
                     ),
                     Text(
-                      'Source: ${sources[entry.$1] ?? "Measurement table · ${entry.$1}"}',
-                      style: const TextStyle(fontSize: 12),
+                      'Source: ${sources[f] ?? "Measurement table · $f"}',
+                      style: const TextStyle(fontSize: 12, color: Colors.white70),
                     ),
                   ],
                 ),
               ),
             if (group == null) ...[
               const Text(
-                'No participant cohorts have been assigned. Freq, Rare and Distr are stimulus conditions — they are not groups of people.',
+                'No participant cohort/group sheet attached yet (optional if comparing within-subject factors like Session or Condition).',
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1723,23 +2000,24 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   OutlinedButton.icon(
                     onPressed: _pickMetadataFile,
                     icon: const Icon(Icons.table_chart_outlined),
-                    label: const Text('Add participant group file…'),
+                    label: const Text('+ Attach Excel / CSV Sheet…'),
                   ),
                   TextButton(
                     onPressed: () => setState(() => _workflowStep = 1),
                     child: const Text(
-                      'Continue with conditions / sessions only',
+                      'Continue with current factors',
                     ),
                   ),
                 ],
               ),
             ] else
               Text(
-                'People per group: ${participantsByGroup.entries.map((e) => "${e.key}: ${e.value.length}").join(" · ")}',
+                'Participants per group: ${participantsByGroup.entries.map((e) => "${e.key}: ${e.value.length}").join(" · ")}',
               ),
             if (_unassignedGroupLabels.isNotEmpty) ...[
+              const SizedBox(height: 6),
               Text(
-                'No group label for: ${participantsByGroup.entries.where((e) => _unassignedGroupLabels.contains(e.key)).expand((e) => e.value).join(", ")}. Add these people to your group file or exclude them.',
+                'No group label for: ${participantsByGroup.entries.where((e) => _unassignedGroupLabels.contains(e.key)).expand((e) => e.value).join(", ")}. Add these people to your sheet or exclude them.',
               ),
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,
@@ -1751,19 +2029,20 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ),
             ],
             ExpansionTile(
-              title: const Text(
-                'Preview recording → person → session → condition → group',
+              initiallyExpanded: true,
+              title: Text(
+                'Preview: Recording → ${[?participant, ...tablePreviewFactors].join(" → ")}',
               ),
               children: [
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: DataTable(
-                    columns: const [
-                      DataColumn(label: Text('Recording')),
-                      DataColumn(label: Text('Person')),
-                      DataColumn(label: Text('Session')),
-                      DataColumn(label: Text('Condition')),
-                      DataColumn(label: Text('Group')),
+                    columns: [
+                      const DataColumn(label: Text('Recording')),
+                      if (participant != null)
+                        DataColumn(label: Text(participant)),
+                      for (final f in tablePreviewFactors)
+                        DataColumn(label: Text(f)),
                     ],
                     rows: [
                       for (final row in rows.take(12))
@@ -1777,10 +2056,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                                 ),
                               ),
                             ),
-                            DataCell(Text(value(row, participant))),
-                            DataCell(Text(value(row, session))),
-                            DataCell(Text(value(row, condition))),
-                            DataCell(Text(value(row, group))),
+                            if (participant != null)
+                              DataCell(Text(value(row, participant))),
+                            for (final f in tablePreviewFactors)
+                              DataCell(Text(value(row, f))),
                           ],
                         ),
                     ],
@@ -1965,57 +2244,124 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 ),
               ],
             ),
-            const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: _isAnalyzing || _isInspecting
-                    ? null
-                    : _inferMetadata,
-                icon: const Icon(Icons.auto_fix_high),
-                label: const Text(
-                  'Identify participants & sessions from filenames…',
-                ),
-              ),
+            const SizedBox(height: 12),
+            const Divider(),
+            const SizedBox(height: 8),
+            const Text(
+              'Define Factors (Combine Any Sources — Filename, Folder, Excel/CSV Sheets)',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
             ),
-            Row(
+            const SizedBox(height: 4),
+            const Text(
+              'Combine any number of factor sources without overwriting each other: crop factors from filenames (e.g. Session), extract from folder hierarchy, or attach one or more Excel/CSV sheets (e.g. Groups.xlsx).',
+              style: TextStyle(fontSize: 11.5, color: Colors.white70),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: [
-                Expanded(
-                  child: TextField(
-                    controller: _metadataPathController,
-                    enabled: !_isInspecting && !_isAnalyzing,
-                    onChanged: (_) => _invalidateInspection(),
-                    decoration: InputDecoration(
-                      labelText: 'Participant groups (Excel or CSV, optional)',
-                      hintText:
-                          'Select optional metadata (.csv, .xlsx) to merge demographic/group factors',
-                      border: const OutlineInputBorder(),
-                      isDense: true,
-                      prefixIcon: const Icon(Icons.badge_outlined),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.folder_open),
-                        onPressed: _pickMetadataFile,
-                        tooltip: 'Browse Metadata',
-                      ),
-                    ),
-                  ),
+                FilledButton.icon(
+                  onPressed: _isAnalyzing || _isInspecting || _dartInspection == null
+                      ? null
+                      : _openFactorDesignerInGroupStats,
+                  icon: const Icon(Icons.account_tree_outlined, size: 16),
+                  label: const Text('Factor & Grouping Designer…'),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: _isAnalyzing || _isInspecting || _dartInspection == null
+                      ? null
+                      : _openAddFilenameFactorDialog,
+                  icon: const Icon(Icons.content_cut, size: 16),
+                  label: const Text('+ Factor from Filename / Folder'),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: _isAnalyzing || _isInspecting
+                      ? null
+                      : _pickMetadataFile,
+                  icon: const Icon(Icons.table_chart_outlined, size: 16),
+                  label: const Text('+ Attach Excel / CSV Sheet'),
                 ),
               ],
             ),
-            if (_metadataPathController.text.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              TextField(
-                controller: _metadataKeyController,
-                enabled: !_isInspecting && !_isAnalyzing,
-                onChanged: (_) => _invalidateInspection(),
-                decoration: const InputDecoration(
-                  labelText: 'Participant ID column in group file (optional)',
-                  hintText: 'filename or Subject',
-                  helperText:
-                      'Leave blank to detect subject / participant_id automatically. Then press Review data.',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
+            if (_factorRules.isNotEmpty || _externalSheets.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (var i = 0; i < _factorRules.length; i++)
+                    InputChip(
+                      avatar: const Icon(Icons.label_outline, size: 15),
+                      label: Text(
+                        _factorRules[i]['mode'] == 'manual_map'
+                            ? '${_factorRules[i]['label']}'
+                            : '${_factorRules[i]['factorName']} (${_factorRules[i]['mode']})',
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                      onDeleted: _isInspecting || _isAnalyzing
+                          ? null
+                          : () async {
+                              setState(() => _factorRules.removeAt(i));
+                              if (File(_csvPathController.text.trim()).existsSync()) {
+                                await _inspectCsv();
+                              }
+                            },
+                    ),
+                  for (var i = 0; i < _externalSheets.length; i++)
+                    InputChip(
+                      avatar: const Icon(Icons.grid_on, size: 15),
+                      label: Text(
+                        'Sheet: ${filenameBasename("${_externalSheets[i]['path']}")}'
+                        '${(_externalSheets[i]['selectedColumns'] as List?)?.isNotEmpty == true ? " (${(_externalSheets[i]['selectedColumns'] as List).join(', ')})" : ""}',
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                      onDeleted: _isInspecting || _isAnalyzing
+                          ? null
+                          : () async {
+                              setState(() {
+                                _externalSheets.removeAt(i);
+                                if (_externalSheets.isEmpty) {
+                                  _metadataPathController.clear();
+                                }
+                              });
+                              if (File(_csvPathController.text.trim()).existsSync()) {
+                                await _inspectCsv();
+                              }
+                            },
+                    ),
+                ],
+              ),
+            ],
+            if (_dartInspection != null) ...[
+              const SizedBox(height: 12),
+              Builder(
+                builder: (context) {
+                  final candidateSubj =
+                      (_dartInspection!['factor_columns'] as List? ?? [])
+                          .cast<String>();
+                  final curSubj = candidateSubj.contains(_selectedSubjectIdCol)
+                      ? _selectedSubjectIdCol
+                      : candidateSubj.firstOrNull;
+                  return SizedBox(
+                    width: 340,
+                    child: DropdownButtonFormField<String>(
+                      initialValue: curSubj,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Participant ID (Random Effect / Person)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: [
+                        for (final c in candidateSubj)
+                          DropdownMenuItem(value: c, child: Text(c)),
+                      ],
+                      onChanged: (v) =>
+                          setState(() => _selectedSubjectIdCol = v),
+                    ),
+                  );
+                },
               ),
             ],
             if ((_inspectionData?['excluded_unqualified_fei'] as num? ?? 0) > 0)
@@ -2034,290 +2380,6 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 ),
               ),
             ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildConfigurationCard() {
-    final catCols =
-        (_inspectionData?['categorical_columns'] as List<dynamic>? ?? [])
-            .cast<String>()
-            .where(
-              (c) =>
-                  (_dartInspection?['factor_levels']?[c] as List? ?? [])
-                          .length >=
-                      2 &&
-                  !const {
-                    'filename',
-                    'file',
-                    'subjid',
-                    'subject',
-                    'subject_id',
-                    'participant_id',
-                    'sl.no.',
-                    'epoch',
-                    'epoch_label',
-                  }.contains(c.toLowerCase()),
-            )
-            .toList();
-    final allCols = [
-      ?_selectedGroupCol,
-      ...catCols.where((c) => c != _selectedGroupCol),
-    ];
-    final subgrpOptions = {'None', ?_selectedSubgroupCol, ...catCols}.toList();
-    final candidateSubj =
-        (_inspectionData?['categorical_columns'] as List<dynamic>? ?? [])
-            .cast<String>();
-
-    return Card(
-      elevation: 0,
-      color: const Color(0xFF111827),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: const Color(0xFF334155)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.tune, size: 20, color: Color(0xFF38BDF8)),
-                SizedBox(width: 8),
-                Text(
-                  'What do you want to compare?',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                // Primary Grouping Factor
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('grp_col_$_selectedGroupCol'),
-                    initialValue: _selectedGroupCol,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Main comparison',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      helperText:
-                          'Choose a cohort, condition or session to compare',
-                    ),
-                    items: [
-                      for (final col in allCols)
-                        DropdownMenuItem(
-                          value: col,
-                          child: Text(col, overflow: TextOverflow.ellipsis),
-                        ),
-                    ],
-                    onChanged: (val) => setState(() => _selectedGroupCol = val),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                // Subgroup / Within-Subject Factor
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('subgrp_col_$_selectedSubgroupCol'),
-                    initialValue: _selectedSubgroupCol ?? 'None',
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Compare repeated measurements',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      helperText: 'For example: stimulus Condition or Session',
-                    ),
-                    items: [
-                      for (final col in subgrpOptions)
-                        DropdownMenuItem(
-                          value: col,
-                          child: Text(col, overflow: TextOverflow.ellipsis),
-                        ),
-                    ],
-                    onChanged: (val) =>
-                        setState(() => _selectedSubgroupCol = val),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                // Subject ID Column
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey('subj_col_$_selectedSubjectIdCol'),
-                    initialValue: _selectedSubjectIdCol,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Participant ID',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      helperText:
-                          'The same participant keeps the same ID across sessions',
-                    ),
-                    items: [
-                      if (_selectedSubjectIdCol != null &&
-                          !candidateSubj.contains(_selectedSubjectIdCol))
-                        DropdownMenuItem(
-                          value: _selectedSubjectIdCol,
-                          child: Text(
-                            _selectedSubjectIdCol!,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      for (final col in candidateSubj)
-                        DropdownMenuItem(
-                          value: col,
-                          child: Text(col, overflow: TextOverflow.ellipsis),
-                        ),
-                    ],
-                    onChanged: (val) =>
-                        setState(() => _selectedSubjectIdCol = val),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            // Covariates selection
-            const Text(
-              'Adjust for other variables (optional):',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                for (final cov
-                    in (_inspectionData?['covariates'] as List<dynamic>? ?? [])
-                        .cast<String>())
-                  FilterChip(
-                    label: Text(cov),
-                    selected: _selectedCovariates.contains(cov),
-                    onSelected: (sel) {
-                      setState(() {
-                        if (sel) {
-                          _selectedCovariates.add(cov);
-                        } else {
-                          _selectedCovariates.remove(cov);
-                        }
-                      });
-                    },
-                  ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            // Model Approach & Report Preferences
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _preferredModel,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Model (Auto is a starting point)',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'auto',
-                        child: Text(
-                          'Auto: choose from the data',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      DropdownMenuItem(
-                        value: 'lmm',
-                        child: Text(
-                          'Mixed-Design ANOVA / LMM (Subject Random Intercept)',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      DropdownMenuItem(
-                        value: 'glm',
-                        child: Text(
-                          'General Linear Model (GLM / ANOVA Type II)',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                    onChanged: (v) =>
-                        setState(() => _preferredModel = v ?? 'auto'),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _posthocMethod,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Correction for multiple comparisons',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'fdr',
-                        child: Text(
-                          'Benjamini-Hochberg FDR (Recommended)',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-
-                      DropdownMenuItem(
-                        value: 'bonferroni',
-                        child: Text(
-                          'Bonferroni (Strict)',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                    onChanged: (v) =>
-                        setState(() => _posthocMethod = v ?? 'fdr'),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _reportFormat,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Report format',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'both',
-                        child: Text(
-                          'Both Word (.docx) & PDF (.pdf)',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      DropdownMenuItem(
-                        value: 'docx',
-                        child: Text(
-                          'Microsoft Word Document (.docx)',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      DropdownMenuItem(
-                        value: 'pdf',
-                        child: Text(
-                          'Portable Document Format (.pdf)',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                    onChanged: (v) =>
-                        setState(() => _reportFormat = v ?? 'both'),
-                  ),
-                ),
-              ],
-            ),
           ],
         ),
       ),
@@ -2464,6 +2526,33 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         })
         .toList();
     final rawLevels = (insp['factor_levels'] as Map<String, dynamic>? ?? {});
+    final condCol = _detectConditionFactorCol(insp);
+    final activeDiffLabels = _activeErpDiffLabels(insp, condCol);
+    List<String> displayedRawLevels(String f) {
+      if (_erpDiffMode &&
+          condCol != null &&
+          f == condCol &&
+          activeDiffLabels.length >= 2) {
+        return activeDiffLabels;
+      }
+      return (rawLevels[f] as List? ?? []).map((e) => '$e').toList();
+    }
+
+    final effectiveLevelsMap = <String, List<String>>{};
+    for (final f in _dartFactors) {
+      final raw = displayedRawLevels(f);
+      final custom = _dartLevelOrder[f];
+      final ordered = custom != null && custom.isNotEmpty
+          ? [
+              for (final l in custom)
+                if (raw.contains(l)) l,
+              for (final l in raw)
+                if (!custom.contains(l)) l,
+            ]
+          : raw;
+      final excl = _dartExcludedLevels[f] ?? const <String>{};
+      effectiveLevelsMap[f] = ordered.where((l) => !excl.contains(l)).toList();
+    }
 
     final factorChoices = ['None', ..._dartFactors];
 
@@ -2517,7 +2606,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 const SizedBox(width: 8),
                 const Expanded(
                   child: Text(
-                    'Choose what to compare',
+                    'Statistical Model & Factors',
                     style: TextStyle(
                       fontSize: 14.5,
                       fontWeight: FontWeight.bold,
@@ -2525,189 +2614,32 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     ),
                   ),
                 ),
-                SizedBox(
-                  width: 120,
-                  child: TextField(
-                    controller: _permCountCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Permutations',
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
                 FilterChip(
                   label: const Text(
-                    'Interactions',
+                    'Include interactions',
                     style: TextStyle(fontSize: 11.5),
                   ),
                   selected: _includeInteractions,
                   onSelected: (v) => setState(() => _includeInteractions = v),
                 ),
-              ],
-            ),
-            Wrap(
-              spacing: 12,
-              runSpacing: 6,
-              children: [
-                ChoiceChip(
-                  label: const Text('Fitted GLM / LMM (Native)'),
-                  selected: _fittedFactorial,
-                  onSelected: _isAnalyzing
-                      ? null
-                      : (v) => setState(() => _fittedFactorial = true),
-                ),
-                ChoiceChip(
-                  label: const Text(
-                    'Native factorial permutations (approximation)',
-                  ),
-                  selected: !_fittedFactorial,
-                  onSelected: _isAnalyzing
-                      ? null
-                      : (v) => setState(() => _fittedFactorial = false),
-                ),
+                const SizedBox(width: 8),
                 TextButton.icon(
                   onPressed: _isAnalyzing ? null : _editPlotLabels,
-                  icon: const Icon(Icons.edit),
-                  label: const Text('Rename factors / levels & colours…'),
+                  icon: const Icon(Icons.edit, size: 15),
+                  label: const Text('Rename labels & colours…'),
                 ),
-                if ((_dartInspection?['metric_columns'] as List? ?? []).any(
-                  (m) => '$m'.endsWith('_ERP'),
-                )) ...[
-                  OutlinedButton.icon(
-                    onPressed: _isAnalyzing
-                        ? null
-                        : () => _openGroupedFigures(),
-                    icon: const Icon(Icons.image),
-                    label: const Text('Group Grand Averages & Topomaps…'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _isAnalyzing
-                        ? null
-                        : () => _openGroupedFigures(difference: true),
-                    icon: const Icon(Icons.difference),
-                    label: const Text('ERP difference → GLM / LMM…'),
-                  ),
-                ],
               ],
             ),
-            const Text(
-              'Fitted GLM / LMM runs natively inside the app (no Python needed) with REML random intercepts, Wald χ²/OLS tests, and FDR/Bonferroni contrasts. Native factorial permutations use balanced split-plot ANOVA approximations.',
-              style: TextStyle(fontSize: 11),
-            ),
-            Builder(
-              builder: (context) {
-                final condCol = _detectConditionFactorCol(_dartInspection);
-                final condLevels = condCol == null
-                    ? const <String>[]
-                    : _conditionLevelsForCol(_dartInspection, condCol);
-                if (condCol == null || condLevels.length < 2) {
-                  return const SizedBox.shrink();
-                }
-                final selB = (_erpDiffCondB != null && condLevels.contains(_erpDiffCondB))
-                    ? _erpDiffCondB!
-                    : (condLevels.contains('Rare') ? 'Rare' : condLevels[1]);
-                final selA = (_erpDiffCondA != null && condLevels.contains(_erpDiffCondA))
-                    ? _erpDiffCondA!
-                    : (condLevels.contains('Freq') ? 'Freq' : condLevels[0]);
-                return Padding(
-                  padding: const EdgeInsets.only(top: 10),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.04),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.white12),
-                    ),
-                    child: Wrap(
-                      spacing: 10,
-                      runSpacing: 6,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        const Text(
-                          'ERP Condition Mode:',
-                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
-                        ),
-                        ChoiceChip(
-                          label: const Text('All conditions', style: TextStyle(fontSize: 11)),
-                          selected: !_erpDiffMode,
-                          onSelected: _isAnalyzing
-                              ? null
-                              : (_) => setState(() => _erpDiffMode = false),
-                        ),
-                        ChoiceChip(
-                          label: const Text('ERP Difference (B − A)', style: TextStyle(fontSize: 11)),
-                          selected: _erpDiffMode,
-                          onSelected: _isAnalyzing
-                              ? null
-                              : (_) => setState(() {
-                                    _erpDiffMode = true;
-                                    _erpDiffCondB ??= selB;
-                                    _erpDiffCondA ??= selA;
-                                  }),
-                        ),
-                        if (_erpDiffMode) ...[
-                          SizedBox(
-                            width: 120,
-                            child: DropdownButtonFormField<String>(
-                              initialValue: selB,
-                              isDense: true,
-                              decoration: const InputDecoration(
-                                labelText: 'Condition B',
-                                border: OutlineInputBorder(),
-                              ),
-                              items: [
-                                for (final lv in condLevels)
-                                  DropdownMenuItem(
-                                    value: lv,
-                                    child: Text(
-                                      _plotConfig.levelLabel(condCol, lv),
-                                      style: const TextStyle(fontSize: 11.5),
-                                    ),
-                                  ),
-                              ],
-                              onChanged: (v) => setState(() => _erpDiffCondB = v),
-                            ),
-                          ),
-                          const Text('−', style: TextStyle(fontWeight: FontWeight.bold)),
-                          SizedBox(
-                            width: 120,
-                            child: DropdownButtonFormField<String>(
-                              initialValue: selA,
-                              isDense: true,
-                              decoration: const InputDecoration(
-                                labelText: 'Condition A',
-                                border: OutlineInputBorder(),
-                              ),
-                              items: [
-                                for (final lv in condLevels)
-                                  DropdownMenuItem(
-                                    value: lv,
-                                    child: Text(
-                                      _plotConfig.levelLabel(condCol, lv),
-                                      style: const TextStyle(fontSize: 11.5),
-                                    ),
-                                  ),
-                              ],
-                              onChanged: (v) => setState(() => _erpDiffCondA = v),
-                            ),
-                          ),
-                          Text(
-                            'Computes $selB − $selA per recording before fitting GLM / LMM.',
-                            style: const TextStyle(fontSize: 11, color: Colors.white70),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                );
-              },
+            const SizedBox(height: 4),
+            Text(
+              _fittedFactorial
+                  ? 'Uses Linear Mixed Model (with subject random intercepts for repeated measures) or General Linear Model across the selected factors.'
+                  : 'Runs permutation testing (${_permCountCtrl.text} permutations) across the selected factors.',
+              style: const TextStyle(fontSize: 11.5, color: Colors.white70),
             ),
             const SizedBox(height: 10),
             const Text(
-              'What should the analysis compare? A factor is one label that can change: cohort between people, or session / condition within the same person.',
+              'Select factors to include in the model:',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 6),
@@ -2719,7 +2651,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   if (f != _selectedSubjectIdCol)
                     FilterChip(
                       label: Text(
-                        '${_plotConfig.factorLabel(f)}: ${(rawLevels[f] as List? ?? []).take(4).map((v) => _plotConfig.levelLabel(f, "$v")).join(", ")}',
+                        '${_plotConfig.factorLabel(f)}: ${displayedRawLevels(f).take(4).map((v) => _plotConfig.levelLabel(f, v)).join(", ")}',
                         style: const TextStyle(fontSize: 11.5),
                       ),
                       selected: _dartFactors.contains(f),
@@ -2733,24 +2665,507 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             for (final f in _dartFactors)
               Text(
                 '$f ← ${(_dartInspection?['column_sources'] as Map? ?? {})[f] ?? "measurement table"}',
-                style: const TextStyle(fontSize: 12),
+                style: const TextStyle(fontSize: 11.5, color: Colors.white70),
               ),
-            const SizedBox(height: 12),
+            if (_dartFactors.length >= 2) ...[
+              const SizedBox(height: 10),
+              Builder(
+                builder: (context) {
+                  final effectiveContrastFocus =
+                      (_contrastFocusFactor != null &&
+                          _dartFactors.contains(_contrastFocusFactor))
+                      ? _contrastFocusFactor
+                      : null;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          const Text(
+                            'Pairwise comparisons (Contrast scope):',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          ChoiceChip(
+                            label: const Text(
+                              'All factors',
+                              style: TextStyle(fontSize: 11.5),
+                            ),
+                            selected: effectiveContrastFocus == null,
+                            onSelected: _isAnalyzing
+                                ? null
+                                : (_) => setState(
+                                    () => _contrastFocusFactor = null,
+                                  ),
+                          ),
+                          for (final f in _dartFactors)
+                            ChoiceChip(
+                              label: Text(
+                                '${_plotConfig.factorLabel(f)} only',
+                                style: const TextStyle(fontSize: 11.5),
+                              ),
+                              selected: effectiveContrastFocus == f,
+                              onSelected: _isAnalyzing
+                                  ? null
+                                  : (_) => setState(
+                                      () => _contrastFocusFactor = f,
+                                    ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        effectiveContrastFocus == null
+                            ? 'Model tests all selected factors & interactions; pairwise contrasts & FDR/Bonferroni run across all selected factors.'
+                            : 'Model still tests all factors & interactions, while pairwise contrasts & FDR/Bonferroni focus only on ${_plotConfig.factorLabel(effectiveContrastFocus)} (overall and within each level of other factors).',
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.white70,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ],
+            const SizedBox(height: 10),
             ExpansionTile(
-              title: const Text('Optional: plot layout and level filters'),
+              title: const Text('Optional: Advanced model & ERP difference'),
               subtitle: const Text(
-                'Change axes, panels, level order or exclusions',
+                'Switch to permutation test, subtract Condition B − A, or open grand averages',
+                style: TextStyle(fontSize: 11.5),
               ),
               children: [
-                const Text(
-                  'Plot Role Configuration (Lines, X-Axis Points, Subplot Columns/Rows):',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          ChoiceChip(
+                            label: const Text('Linear Mixed Model / GLM (Default)'),
+                            selected: _fittedFactorial,
+                            onSelected: _isAnalyzing
+                                ? null
+                                : (_) => setState(() => _fittedFactorial = true),
+                          ),
+                          ChoiceChip(
+                            label: const Text('Permutation Test'),
+                            selected: !_fittedFactorial,
+                            onSelected: _isAnalyzing
+                                ? null
+                                : (_) => setState(() => _fittedFactorial = false),
+                          ),
+                          if (!_fittedFactorial)
+                            SizedBox(
+                              width: 120,
+                              child: TextField(
+                                controller: _permCountCtrl,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(
+                                  labelText: 'Permutations',
+                                  isDense: true,
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            ),
+                          if ((_dartInspection?['metric_columns'] as List? ?? [])
+                              .any((m) => '$m'.endsWith('_ERP')))
+                            OutlinedButton.icon(
+                              onPressed: _isAnalyzing
+                                  ? null
+                                  : () => _openGroupedFigures(),
+                              icon: const Icon(Icons.image, size: 16),
+                              label: const Text('Group Grand Averages & Topomaps…'),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              initialValue: _preferredModel,
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                labelText: 'Model Approach',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              items: const [
+                                DropdownMenuItem(
+                                  value: 'auto',
+                                  child: Text('Auto (LMM for repeated, GLM otherwise)'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'lmm',
+                                  child: Text('Linear Mixed Model (Random Intercept)'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'glm',
+                                  child: Text('General Linear Model (GLM / ANOVA)'),
+                                ),
+                              ],
+                              onChanged: (v) => setState(
+                                () => _preferredModel = v ?? 'auto',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              initialValue: _posthocMethod,
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                labelText: 'Multiple Comparisons Correction',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              items: const [
+                                DropdownMenuItem(
+                                  value: 'fdr',
+                                  child: Text('Benjamini-Hochberg FDR'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'bonferroni',
+                                  child: Text('Bonferroni'),
+                                ),
+                              ],
+                              onChanged: (v) => setState(
+                                () => _posthocMethod = v ?? 'fdr',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      Builder(
+                        builder: (context) {
+                          final cc = condCol;
+                          final condLevels = cc == null
+                              ? const <String>[]
+                              : _conditionLevelsForCol(_dartInspection, cc);
+                          if (cc == null || condLevels.length < 2) {
+                            return const SizedBox.shrink();
+                          }
+                          final pairs = _effectiveErpDiffPairs(
+                            _dartInspection,
+                            cc,
+                          );
+                          final selA =
+                              (_erpDiffCondA != null &&
+                                  condLevels.contains(_erpDiffCondA))
+                              ? _erpDiffCondA!
+                              : (pairs.isNotEmpty
+                                    ? pairs.first.condA
+                                    : (condLevels.contains('Freq')
+                                          ? 'Freq'
+                                          : condLevels.first));
+                          final selB =
+                              (_erpDiffCondB != null &&
+                                  condLevels.contains(_erpDiffCondB))
+                              ? _erpDiffCondB!
+                              : (pairs.isNotEmpty
+                                    ? pairs.first.condB
+                                    : (condLevels.contains('Rare') &&
+                                              'Rare' != selA
+                                          ? 'Rare'
+                                          : condLevels.firstWhere(
+                                              (c) => c != selA,
+                                            )));
+                          final pairKeys = {
+                            for (final p in pairs) '${p.condB} − ${p.condA}',
+                          };
+                          final nextToAdd = () {
+                            if (selB != selA &&
+                                !pairKeys.contains('$selB − $selA')) {
+                              return (condB: selB, condA: selA);
+                            }
+                            for (final c in condLevels) {
+                              if (c != selA &&
+                                  !pairKeys.contains('$c − $selA')) {
+                                return (condB: c, condA: selA);
+                              }
+                            }
+                            for (final b in condLevels) {
+                              for (final a in condLevels) {
+                                if (b != a && !pairKeys.contains('$b − $a')) {
+                                  return (condB: b, condA: a);
+                                }
+                              }
+                            }
+                            return null;
+                          }();
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 10),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Wrap(
+                                  spacing: 10,
+                                  runSpacing: 6,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  children: [
+                                    const Text(
+                                      'Condition mode:',
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    ChoiceChip(
+                                      label: const Text(
+                                        'All conditions',
+                                        style: TextStyle(fontSize: 11),
+                                      ),
+                                      selected: !_erpDiffMode,
+                                      onSelected: _isAnalyzing
+                                          ? null
+                                          : (_) => setState(
+                                              () => _erpDiffMode = false,
+                                            ),
+                                    ),
+                                    ChoiceChip(
+                                      label: const Text(
+                                        'Difference (B − A)',
+                                        style: TextStyle(fontSize: 11),
+                                      ),
+                                      selected: _erpDiffMode,
+                                      onSelected: _isAnalyzing
+                                          ? null
+                                          : (_) => setState(() {
+                                              _erpDiffMode = true;
+                                              _erpDiffCondB ??= selB;
+                                              _erpDiffCondA ??= selA;
+                                              if (_erpDiffPairs.isEmpty &&
+                                                  pairs.isNotEmpty) {
+                                                _erpDiffPairs.addAll(pairs);
+                                              }
+                                              if (_erpDiffPairs.length <= 1) {
+                                                _dropCondFactorFromRoles(cc);
+                                              }
+                                            }),
+                                    ),
+                                    if (_erpDiffMode) ...[
+                                      SizedBox(
+                                        width: 120,
+                                        child: DropdownButtonFormField<String>(
+                                          key: ValueKey('erp-diff-b-$selB'),
+                                          initialValue: selB,
+                                          isDense: true,
+                                          decoration: const InputDecoration(
+                                            labelText: 'Condition B',
+                                            border: OutlineInputBorder(),
+                                          ),
+                                          items: [
+                                            for (final lv in condLevels)
+                                              DropdownMenuItem(
+                                                value: lv,
+                                                child: Text(
+                                                  _plotConfig.levelLabel(cc, lv),
+                                                  style: const TextStyle(
+                                                    fontSize: 11.5,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                          onChanged: (v) {
+                                            if (v == null) return;
+                                            setState(() {
+                                              _erpDiffCondB = v;
+                                              if (_erpDiffPairs.length <= 1 &&
+                                                  v != selA) {
+                                                _erpDiffPairs
+                                                  ..clear()
+                                                  ..add((condB: v, condA: selA));
+                                              }
+                                            });
+                                          },
+                                        ),
+                                      ),
+                                      const Text(
+                                        '−',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        width: 120,
+                                        child: DropdownButtonFormField<String>(
+                                          key: ValueKey('erp-diff-a-$selA'),
+                                          initialValue: selA,
+                                          isDense: true,
+                                          decoration: const InputDecoration(
+                                            labelText: 'Condition A',
+                                            border: OutlineInputBorder(),
+                                          ),
+                                          items: [
+                                            for (final lv in condLevels)
+                                              DropdownMenuItem(
+                                                value: lv,
+                                                child: Text(
+                                                  _plotConfig.levelLabel(cc, lv),
+                                                  style: const TextStyle(
+                                                    fontSize: 11.5,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                          onChanged: (v) {
+                                            if (v == null) return;
+                                            setState(() {
+                                              _erpDiffCondA = v;
+                                              if (_erpDiffPairs.length <= 1 &&
+                                                  selB != v) {
+                                                _erpDiffPairs
+                                                  ..clear()
+                                                  ..add((condB: selB, condA: v));
+                                              }
+                                            });
+                                          },
+                                        ),
+                                      ),
+                                      OutlinedButton.icon(
+                                        onPressed:
+                                            (!_isAnalyzing && nextToAdd != null)
+                                            ? () => setState(() {
+                                                if (_erpDiffPairs.isEmpty) {
+                                                  _erpDiffPairs.addAll(pairs);
+                                                }
+                                                _erpDiffPairs.add(nextToAdd);
+                                                _erpDiffCondB = nextToAdd.condB;
+                                                _erpDiffCondA = nextToAdd.condA;
+                                                if (_erpDiffPairs.length >= 2) {
+                                                  if (!_dartFactors.contains(
+                                                    cc,
+                                                  )) {
+                                                    _dartFactors.add(cc);
+                                                  }
+                                                  if (_plotConfig
+                                                              .facetColFactor ==
+                                                          null &&
+                                                      _plotConfig.xFactor !=
+                                                          cc &&
+                                                      _plotConfig
+                                                              .seriesFactor !=
+                                                          cc) {
+                                                    _plotConfig = _plotConfig
+                                                        .copyWith(
+                                                          facetColFactor: cc,
+                                                        );
+                                                  }
+                                                }
+                                              })
+                                            : null,
+                                        icon: const Icon(Icons.add, size: 14),
+                                        label: const Text(
+                                          'Add difference',
+                                          style: TextStyle(fontSize: 11),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                if (_erpDiffMode && pairs.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 6,
+                                    crossAxisAlignment:
+                                        WrapCrossAlignment.center,
+                                    children: [
+                                      const Text(
+                                        'Active differences:',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      for (final p in pairs)
+                                        InputChip(
+                                          label: Text(
+                                            '${_plotConfig.levelLabel(cc, p.condB)} − ${_plotConfig.levelLabel(cc, p.condA)}',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                            ),
+                                          ),
+                                          selected: true,
+                                          onDeleted: pairs.length > 1
+                                              ? () => setState(() {
+                                                  _erpDiffPairs
+                                                    ..clear()
+                                                    ..addAll(
+                                                      pairs.where(
+                                                        (x) =>
+                                                            !(x.condB ==
+                                                                    p.condB &&
+                                                                x.condA ==
+                                                                    p.condA),
+                                                      ),
+                                                    );
+                                                  if (_erpDiffPairs.length ==
+                                                      1) {
+                                                    _erpDiffCondB =
+                                                        _erpDiffPairs
+                                                            .first
+                                                            .condB;
+                                                    _erpDiffCondA =
+                                                        _erpDiffPairs
+                                                            .first
+                                                            .condA;
+                                                    _dropCondFactorFromRoles(
+                                                      cc,
+                                                    );
+                                                  }
+                                                })
+                                              : null,
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                                if (_erpDiffMode && pairs.length >= 2)
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 4),
+                                    child: Text(
+                                      'Keep Condition selected above to compare differences in one model & plot, or uncheck it to fit separate models per difference.',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.white60,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 8),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ExpansionTile(
+              initiallyExpanded: true,
+              title: const Text('Plot layout, level order & live preview'),
+              subtitle: const Text(
+                'Arrange which factor goes on X-axis, lines, and subplot columns/rows',
+                style: TextStyle(fontSize: 11.5),
+              ),
+              children: [
+                const SizedBox(height: 10),
                 Row(
                   children: [
                     roleDropdown(
@@ -2844,13 +3259,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   ],
                 ),
                 const SizedBox(height: 10),
-                // Level Order & Exclusion Chips for active factors
                 for (final f in _dartFactors) ...[
                   Builder(
                     builder: (context) {
-                      final raw = (rawLevels[f] as List? ?? [])
-                          .map((e) => '$e')
-                          .toList();
+                      final raw = displayedRawLevels(f);
                       final custom = _dartLevelOrder[f];
                       final ordered = custom != null && custom.isNotEmpty
                           ? [
@@ -2954,6 +3366,19 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     },
                   ),
                 ],
+                const SizedBox(height: 8),
+                ConfigurableStatsPlotWidget(
+                  config: _plotConfig,
+                  factorLevels: effectiveLevelsMap,
+                  metricName: _selectedMetrics.isNotEmpty
+                      ? (_erpDiffMode && activeDiffLabels.isNotEmpty
+                            ? '${groupMetricLabel(_selectedMetrics.first)} (${activeDiffLabels.length >= 2 && _dartFactors.contains(condCol) ? 'Difference' : activeDiffLabels.first})'
+                            : groupMetricLabel(_selectedMetrics.first))
+                      : 'ERP Metric',
+                  activeFactors: _dartFactors,
+                  isDummyPreview: true,
+                  height: 290,
+                ),
               ],
             ),
           ],
@@ -2973,7 +3398,16 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     final levelsMap = <String, List<String>>{};
     final rawLevels = (active['factor_levels'] as Map<String, dynamic>? ?? {});
     for (final e in rawLevels.entries) {
-      levelsMap[e.key] = (e.value as List).map((x) => '$x').toList();
+      final raw = (e.value as List).map((x) => '$x').toList();
+      final custom = _dartLevelOrder[e.key];
+      levelsMap[e.key] = custom != null && custom.isNotEmpty
+          ? [
+              for (final l in custom)
+                if (raw.contains(l)) l,
+              for (final l in raw)
+                if (!custom.contains(l)) l,
+            ]
+          : raw;
     }
     final effects = (active['model_effects'] as List? ?? [])
         .cast<Map<String, dynamic>>();
@@ -3011,7 +3445,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   ),
                 ),
                 SizedBox(
-                  width: 220,
+                  width: 310,
                   child: DropdownButtonFormField<String>(
                     initialValue: active['metric'] as String?,
                     isExpanded: true,
@@ -3024,7 +3458,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       for (final r in resList)
                         DropdownMenuItem(
                           value: r['metric'] as String,
-                          child: Text(r['metric'] as String),
+                          child: Text(
+                            groupMetricLabel(r['metric'] as String),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                     ],
                     onChanged: (v) => setState(() => _selectedDartMetric = v),
@@ -3069,7 +3506,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ConfigurableStatsPlotWidget(
                 config: _plotConfig,
                 factorLevels: levelsMap,
-                metricName: '${active['metric']}',
+                metricName: groupMetricLabel('${active['metric']}'),
                 cellDescriptives:
                     (active['cell_descriptives'] as Map<String, dynamic>? ??
                     {}),
@@ -3203,65 +3640,39 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           children: [
             Row(
               children: [
-                if (_usePermutation)
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed:
-                          _isAnalyzing ||
-                              _isInspecting ||
-                              !_groupsReady ||
-                              _selectedMetrics.isEmpty ||
-                              _dartInspection == null
-                          ? null
-                          : _runDartPermutationAnalysis,
-                      icon: _isAnalyzing
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.auto_graph),
-                      label: Text(
-                        _isAnalyzing
-                            ? 'Running Permutation GLM/LMM…'
-                            : 'Run comparison',
-                      ),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF0D9488),
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        textStyle: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                        ),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed:
+                        _isAnalyzing ||
+                            _isInspecting ||
+                            !_groupsReady ||
+                            _selectedMetrics.isEmpty ||
+                            _dartInspection == null
+                        ? null
+                        : _runDartPermutationAnalysis,
+                    icon: _isAnalyzing
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.auto_graph),
+                    label: Text(
+                      _isAnalyzing ? 'Running Analysis…' : 'Run Analysis',
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF0D9488),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      textStyle: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
-                const SizedBox(width: 12),
-                if (!_usePermutation)
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed:
-                          _isAnalyzing ||
-                              _isInspecting ||
-                              !_pythonReady ||
-                              !_groupsReady ||
-                              _selectedMetrics.isEmpty
-                          ? null
-                          : _runAnalysis,
-                      icon: const Icon(Icons.play_arrow),
-                      label: Text(
-                        _isAnalyzing
-                            ? 'Running Models & Generating Report…'
-                            : 'Run analysis & create report (${_selectedMetrics.length} measurements)',
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                      ),
-                    ),
-                  ),
+                ),
               ],
             ),
             if (_isAnalyzing) ...[

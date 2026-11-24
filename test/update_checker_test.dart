@@ -1,4 +1,5 @@
 import 'package:ccs_eeg_app/src/update_checker.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -52,4 +53,65 @@ void main() {
       'CCSEEGStudio-linux-x86_64.rpm',
     );
   });
+
+  testWidgets(
+    'FormattedReleaseNotes and AppUpdateDialog format markdown cleanly without raw syntax',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1000, 750));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const md = '''
+### Multi-Factor **Group Stats** (`ccs-eeg-engine`)
+
+- **Standalone Native Engine (`factorial_lmm`)**
+  - Runs _REML MixedLM_ and Type III tests on `mean_amplitude_ERP`
+  - See [Code Signing Policy](CODE_SIGNING_POLICY.md)
+- Second bullet item
+#### Sub-heading with `inline_code`
+> Important note: no Python needed.
+
+```
+flutter test
+```
+''';
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AppUpdateDialog(
+              info: const UpdateInfo(
+                currentVersion: '1.2.63',
+                latestVersion: '1.2.64',
+                hasUpdate: true,
+                releaseNotes: md,
+                releaseUrl: 'https://example.test/release',
+                asset: ReleaseAsset(
+                  name: 'CCSEEGStudio-macos.zip',
+                  downloadUrl: 'https://example.test/app.zip',
+                  sizeBytes: 150000000,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final richTextContent = tester
+          .widgetList<RichText>(find.byType(RichText))
+          .map((w) => w.text.toPlainText())
+          .join('\n');
+      expect(richTextContent, contains('Multi-Factor Group Stats'));
+      expect(richTextContent, contains('Standalone Native Engine'));
+      expect(richTextContent, contains('mean_amplitude_ERP'));
+      expect(richTextContent, contains('Code Signing Policy'));
+      expect(richTextContent, contains('Important note: no Python needed.'));
+      expect(richTextContent, contains('flutter test'));
+      expect(richTextContent, isNot(contains('**')));
+      expect(richTextContent, isNot(contains('`')));
+      expect(richTextContent, isNot(contains('(CODE_SIGNING_POLICY.md)')));
+      expect(richTextContent, isNot(contains('### ')));
+      expect(find.text('◦'), findsNWidgets(2));
+      expect(find.text('•'), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

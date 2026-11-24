@@ -156,7 +156,7 @@ void main() {
       );
       expect(find.text('Interactive batch review'), findsNothing);
       expect(find.text('Export CSV'), findsOneWidget);
-      expect(find.text('Label groups'), findsOneWidget);
+      expect(find.text('Factors & Groups…'), findsOneWidget);
       expect(find.byType(RangeSlider), findsOneWidget);
       expect(find.text('Grand average'), findsOneWidget);
       await tester.tap(find.text('Participant differences'));

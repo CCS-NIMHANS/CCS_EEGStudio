@@ -27,6 +27,7 @@ import 'publication_plots.dart';
 import 'batch_file_selector.dart';
 import 'grand_average_dialog.dart';
 import 'factor_grouping_designer.dart';
+import 'grouped_grand_average_plot.dart';
 import 'erp_component_spec.dart';
 import 'erp_cache_recompute.dart';
 import '../recording_loader.dart';
@@ -259,6 +260,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   String _gallerySearch = '';
   final int _activeStage = 0; // 0 = All stages, 1..4 = focused modular stage
   String? _primaryPlotChannel; // null = Task ROI average, or specific channel name
+  String? _erpSplitByFactor; // null = Collapsed Grand Avg, or factor name (Group, Session, etc.)
   bool _showAxisLimits = false;
   bool _showButterfly = false;
   bool _showChannelMath = false;
@@ -2043,6 +2045,18 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       _excludedLevelsByFactor
         ..clear()
         ..addAll(res.excludedLevelsByFactor);
+      final pgf = _primaryGroupFactor;
+      if (pgf != null && pgf.isNotEmpty) {
+        final distinct = <String>{
+          for (final p in candidatePaths)
+            if (!res.excludedFiles.contains(p))
+              if ((res.fileFactors[p]?[pgf] ?? '').trim().isNotEmpty)
+                res.fileFactors[p]![pgf]!.trim(),
+        };
+        if (distinct.length >= 2) {
+          _erpSplitByFactor = pgf;
+        }
+      }
       if (_resultsGroupFilter != null &&
           !_participantGroups.values.contains(_resultsGroupFilter)) {
         _resultsGroupFilter = null;
@@ -2054,6 +2068,32 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       await _fastRecomputeFromCache(reason: 'Updated groups & exclusions');
     }
     return true;
+  }
+
+  List<String> _availableSplitFactors(List<Map<String, dynamic>> current) {
+    final levelSets = <String, Set<String>>{};
+    for (final f in current) {
+      final path = '${f['path'] ?? ''}';
+      final fMap = _fileFactors[path];
+      if (fMap != null) {
+        for (final entry in fMap.entries) {
+          if (entry.key == 'Subject') continue;
+          final val = entry.value.trim();
+          if (val.isNotEmpty) {
+            levelSets.putIfAbsent(entry.key, () => {}).add(val);
+          }
+        }
+      }
+      final subj = '${f['subject'] ?? ''}';
+      final grp = (_participantGroups[subj] ?? '${f['group'] ?? ''}').trim();
+      if (grp.isNotEmpty) {
+        levelSets.putIfAbsent('Group', () => {}).add(grp);
+      }
+    }
+    return [
+      for (final entry in levelSets.entries)
+        if (entry.value.length >= 2) entry.key,
+    ];
   }
 
   Future<void> _openGrandAverageLocalizer() async {
@@ -5092,8 +5132,32 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     final dir = Directory(File(path).parent.path);
     await dir.create(recursive: true);
     String quote(dynamic v) => '"${v.toString().replaceAll('"', '""')}"';
+    final extraFactorCols = <String>{
+      for (final f in _fileFactors.values)
+        for (final k in f.keys)
+          if (!const {'subject', 'group', 'subjid', 'filename', 'participant_id'}
+              .contains(k.toLowerCase()))
+            k,
+    }.toList()
+      ..sort();
     final lines = <String>[
-      'filename,subjid,group,condn,component,Chan,Epoch,epoch_label,Condition,mean_amplitude_ERP,signed_auc_ERP,peak_amplitude_ERP,peak_latency_ms_ERP,fractional_area_latency_ms_ERP',
+      [
+        'filename',
+        'subjid',
+        'group',
+        ...extraFactorCols,
+        'condn',
+        'component',
+        'Chan',
+        'Epoch',
+        'epoch_label',
+        'Condition',
+        'mean_amplitude_ERP',
+        'signed_auc_ERP',
+        'peak_amplitude_ERP',
+        'peak_latency_ms_ERP',
+        'fractional_area_latency_ms_ERP',
+      ].join(','),
     ];
     final taskFiles = _results
         .where(
@@ -5110,10 +5174,19 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         );
     for (final file in taskFiles) {
       final profile = erpMap(file['profile']);
+      final filePath = '${file['path'] ?? ''}';
+      final fFactors = _fileFactors[filePath] ?? const <String, String>{};
       final subjid = file['subject'].toString();
       final groupVal =
-          (_participantGroups[subjid] ?? '${file['group'] ?? ''}').trim();
+          (fFactors['Group'] ??
+                  fFactors['group'] ??
+                  _participantGroups[subjid] ??
+                  '${file['group'] ?? ''}')
+              .trim();
       final effGrp = groupVal.isEmpty ? 'Unknown' : groupVal;
+      final extraVals = [
+        for (final col in extraFactorCols) quote(fFactors[col] ?? 'Unknown'),
+      ];
       final compMeas = (file['component_measurements'] as List?) ?? const [];
       if (hasMultiComp && compMeas.isNotEmpty) {
         for (final rawCm in compMeas) {
@@ -5130,6 +5203,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               quote(file['path']),
               quote(subjid),
               quote(effGrp),
+              ...extraVals,
               quote(file['task']),
               quote(compName),
               quote(roiJoin),
@@ -5175,6 +5249,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             quote(file['path']),
             quote(file['subject']),
             quote(effGrp),
+            ...extraVals,
             quote(file['task']),
             quote(compName),
             quote((profile['roi'] as List).join('+')),
@@ -5952,21 +6027,16 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               const SizedBox(width: 12),
               OutlinedButton.icon(
                 onPressed: () {
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => ErpGroupLabelDialog(
-                      files: current,
-                      initialGroups: _participantGroups,
-                      onSaved: (newGroups) {
-                        setState(() {
-                          _participantGroups.addAll(newGroups);
-                        });
-                      },
-                    ),
+                  final paths = current
+                      .map((f) => '${f['path'] ?? ''}')
+                      .where((p) => p.isNotEmpty)
+                      .toList();
+                  _openFactorGroupingDesigner(
+                    paths.isNotEmpty ? paths : _paths,
                   );
                 },
-                icon: const Icon(Icons.group, size: 16),
-                label: const Text('Manage Groups'),
+                icon: const Icon(Icons.account_tree_outlined, size: 16),
+                label: const Text('Factor & Grouping Designer…'),
               ),
             ],
           ),
@@ -6525,20 +6595,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     _openFactorGroupingDesigner(
                       paths.isNotEmpty ? paths : _paths,
                     );
-                  } else if (action == 'label_groups') {
-                    showDialog(
-                      context: context,
-                      builder: (ctx) => ErpGroupLabelDialog(
-                        files: current,
-                        initialGroups: _participantGroups,
-                        onSaved: (newGroups) {
-                          setState(() {
-                            _participantGroups.clear();
-                            _participantGroups.addAll(newGroups);
-                          });
-                        },
-                      ),
-                    );
                   } else if (action == 'cond_models') {
                     _groupModels();
                   } else if (action == 'diff_models') {
@@ -6552,14 +6608,6 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       dense: true,
                       leading: Icon(Icons.account_tree_outlined, size: 18),
                       title: Text('Factor & Grouping Designer…'),
-                    ),
-                  ),
-                  PopupMenuItem(
-                    value: 'label_groups',
-                    child: ListTile(
-                      dense: true,
-                      leading: Icon(Icons.label_outlined, size: 18),
-                      title: Text('Label Participant Groups…'),
                     ),
                   ),
                   PopupMenuItem(
@@ -6894,6 +6942,48 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                 ? null
                                 : () => _runWithinSubjectStats(d, current),
                           ),
+                          if (_file == null) ...[
+                            Builder(
+                              builder: (context) {
+                                final splitFactors = _availableSplitFactors(
+                                  current,
+                                );
+                                if (splitFactors.isEmpty) {
+                                  return const SizedBox.shrink();
+                                }
+                                final activeSplit =
+                                    splitFactors.contains(_erpSplitByFactor)
+                                    ? _erpSplitByFactor
+                                    : null;
+                                return SizedBox(
+                                  height: 28,
+                                  child: DropdownButton<String?>(
+                                    value: activeSplit,
+                                    underline: const SizedBox.shrink(),
+                                    items: [
+                                      const DropdownMenuItem<String?>(
+                                        value: null,
+                                        child: Text(
+                                          'Grand Avg: Collapsed (All)',
+                                          style: TextStyle(fontSize: 11),
+                                        ),
+                                      ),
+                                      for (final sf in splitFactors)
+                                        DropdownMenuItem<String?>(
+                                          value: sf,
+                                          child: Text(
+                                            'Grand Avg by: $sf',
+                                            style: const TextStyle(fontSize: 11),
+                                          ),
+                                        ),
+                                    ],
+                                    onChanged: (v) =>
+                                        setState(() => _erpSplitByFactor = v),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -6902,6 +6992,33 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         padding: const EdgeInsets.only(bottom: 8),
                         child: ErpAxisControls(
                           onChanged: (v) => setState(() => _axisLimits = v),
+                        ),
+                      ),
+                    // Grouped Grand Average Plot when a split factor is selected
+                    if (_file == null &&
+                        _erpSplitByFactor != null &&
+                        _availableSplitFactors(
+                          current,
+                        ).contains(_erpSplitByFactor))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Builder(
+                          builder: (context) {
+                            final win = erpNumbers(erpMap(d['profile'])['window']);
+                            final w0Ms = win.length == 2 ? win[0] * 1000.0 : 200.0;
+                            final w1Ms = win.length == 2 ? win[1] * 1000.0 : 500.0;
+                            return GroupedGrandAveragePlot(
+                              files: current,
+                              splitFactor: _erpSplitByFactor!,
+                              fileFactors: _fileFactors,
+                              participantGroups: _participantGroups,
+                              selectedChannel: effectivePlotChannel,
+                              roiLabels: roiLabels,
+                              windowStartMs: w0Ms,
+                              windowEndMs: w1Ms,
+                              negativeUp: _negativeUp,
+                            );
+                          },
                         ),
                       ),
                     // Primary ERP Waveform Card

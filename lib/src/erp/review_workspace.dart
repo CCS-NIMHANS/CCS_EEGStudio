@@ -8,6 +8,7 @@ import 'erp_component_spec.dart';
 import 'workbench_figures.dart';
 import 'review_math.dart';
 import 'channel_grid.dart';
+import 'factor_grouping_designer.dart';
 
 class ErpReviewWorkspace extends StatefulWidget {
   const ErpReviewWorkspace({
@@ -130,57 +131,32 @@ class _ErpReviewWorkspaceState extends State<ErpReviewWorkspace> {
   }
 
   Future<void> _labelGroups() async {
-    final controllers = {
-      for (final id
-          in (_files.map((f) => '${f['subject']}').toSet().toList()..sort()))
-        id: TextEditingController(text: _groups[id] ?? ''),
-    };
-    final accepted = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Participant group labels'),
-        content: SizedBox(
-          width: 440,
-          height: 400,
-          child: ListView(
-            children: [
-              const Text(
-                'Assign between-participant groups, for example Control or Treatment. A/B remain within-participant conditions.',
-              ),
-              for (final e in controllers.entries)
-                TextField(
-                  controller: e.value,
-                  decoration: InputDecoration(labelText: e.key),
-                ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Apply labels'),
-          ),
-        ],
-      ),
+    final paths = _files
+        .map((f) => '${f['path'] ?? f['subject'] ?? ''}'.trim())
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (paths.isEmpty) return;
+    final res = await FactorGroupingDesignerDialog.show(
+      context,
+      filePaths: paths,
+      initialFileFactors: {
+        for (final f in _files)
+          if ('${f['path'] ?? f['subject'] ?? ''}'.trim().isNotEmpty)
+            '${f['path'] ?? f['subject']}'.trim(): {
+              'Subject': '${f['subject'] ?? ''}',
+              if ((_groups['${f['subject'] ?? ''}'] ?? '').isNotEmpty)
+                'Group': _groups['${f['subject'] ?? ''}']!,
+            },
+      },
+      initialParticipantGroups: _groups,
     );
-    if (accepted == true && mounted)
-      setState(() {
-        for (final e in controllers.entries) {
-          _groups[e.key] = e.value.text.trim().isEmpty
-              ? 'Unlabelled'
-              : e.value.text.trim();
-        }
-        _group = 'All groups';
-      });
-    // Dialog route finishes its disposal on the next frame.
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    for (final c in controllers.values) {
-      c.dispose();
-    }
+    if (res == null || !mounted) return;
+    setState(() {
+      _groups
+        ..clear()
+        ..addAll(res.participantGroups);
+      _group = 'All groups';
+    });
   }
 
   Future<void> _export({bool stats = false}) async {
@@ -297,8 +273,8 @@ class _ErpReviewWorkspaceState extends State<ErpReviewWorkspace> {
         actions: [
           TextButton.icon(
             onPressed: _labelGroups,
-            icon: const Icon(Icons.groups),
-            label: const Text('Label groups'),
+            icon: const Icon(Icons.account_tree_outlined),
+            label: const Text('Factors & Groups…'),
           ),
           TextButton.icon(
             onPressed: people.isEmpty ? null : () => _export(),
