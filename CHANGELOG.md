@@ -4,6 +4,15 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.63]
+
+### macOS Developer ID Notarization & Windows SignPath Signing Infrastructure
+
+- **macOS Developer ID Signing & Apple Notarization**
+  - Signed and notarized macOS release builds with Apple Developer ID Application (Team `Y445J7MR4Q`), Hardened Runtime entitlements, and stapled notarization tickets for both `CCSEEGStudio-macos.zip` and drag-to-Applications `CCSEEGStudio-macos.dmg` — eliminating Gatekeeper/`xattr` terminal workarounds.
+- **Windows SignPath Foundation Readiness**
+  - Added [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md), two-pass Authenticode CI signing hooks (for app binaries + Inno Setup installer), and SignPath Foundation attribution on the download page.
+
 ## [1.2.62]
 
 ### Native Python-Free GLM / LMM Engine, Clearer Group Stats & Generic Media Sync
