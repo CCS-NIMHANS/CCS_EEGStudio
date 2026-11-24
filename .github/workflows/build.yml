@@ -71,11 +71,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # macOS build job
-  # Runner: macos-15 (runner-native architecture)
-  # Output: CCSEEGStudio-macos.zip (ad-hoc signed .app bundle)
-  # ──────────────────────────────────────────────────────────────────────────
   validate-loading:
     name: Windows loading and epoch worker preflight
     needs: validate-release
@@ -92,6 +87,11 @@ jobs:
       - name: Verify cancellation closes files and epochs use data-only workers
         run: flutter test test/xdf_loader_test.dart test/epoch_worker_compact_test.dart test/recording_file_identity_test.dart
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # macOS build job
+  # Runner: macos-15 (runner-native architecture)
+  # Output: CCSEEGStudio-macos.zip (+ CCSEEGStudio-macos.dmg when notarized)
+  # ──────────────────────────────────────────────────────────────────────────
   build-macos:
     name: macOS
     needs: [validate-release, validate-loading]
@@ -141,7 +141,7 @@ jobs:
       - name: Run Flutter unit tests
         run: flutter test
 
-      # ── App bundle: package ───────────────────────────────────────────────
+      # ── App bundle: package, sign & notarize ─────────────────────────────
       - name: Build macOS Flutter app
         run: flutter build macos --release
 
@@ -152,35 +152,36 @@ jobs:
           chmod +x "$APP/Contents/MacOS/ccs-eeg-engine"
           test -x "$APP/Contents/MacOS/ccs-eeg-engine"
 
-      - name: Ad-hoc sign macOS app bundle
-        run: |
-          codesign --force --deep --sign - \
-            "build/macos/Build/Products/Release/CCS EEG Studio.app"
+      - name: Sign, package, and notarize macOS app
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          APPLE_TEAM_ID: Y445J7MR4Q
+        run: bash scripts/sign_and_notarize_macos.sh
 
-      - name: Package macOS app as ZIP
-        run: |
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent \
-            "build/macos/Build/Products/Release/CCS EEG Studio.app" \
-            dist/CCSEEGStudio-macos.zip
-
-      - name: Upload macOS artifact
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
         with:
           name: CCSEEGStudio-macos
-          path: dist/CCSEEGStudio-macos.zip
+          path: dist/CCSEEGStudio-macos.*
           if-no-files-found: error
           retention-days: 14
 
   # ──────────────────────────────────────────────────────────────────────────
   # Windows build job
-  # Runner: windows-2022
-  # Output: CCSEEGStudio-Installer.exe (Inno Setup installer)
+  # Runner: windows-2022 (GitHub-hosted for SignPath Foundation compliance)
+  # Output: CCSEEGStudio-Installer.exe (Inno Setup installer; signed via SignPath)
   # ──────────────────────────────────────────────────────────────────────────
   build-windows:
     name: Windows
     needs: [validate-release, validate-loading]
     runs-on: windows-2022
+    env:
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && secrets.SIGNPATH_ORG_ID != '' }}
     if: >-
       github.event_name == 'workflow_dispatch' ||
       startsWith(github.ref, 'refs/tags/v') ||
@@ -226,7 +227,7 @@ jobs:
       - name: Run Flutter unit tests
         run: flutter test
 
-      # ── App: build + package ──────────────────────────────────────────────
+      # ── App: build + copy engine ──────────────────────────────────────────
       - name: Build Windows Flutter app
         run: flutter build windows --release
 
@@ -237,6 +238,53 @@ jobs:
           Copy-Item bridge\target\release\ccs-eeg-engine.exe "$dest\ccs-eeg-engine.exe"
           if (-not (Test-Path "$dest\ccs-eeg-engine.exe")) { exit 1 }
 
+      # ── Sign Windows app binaries (.exe + .dll) before bundling installer ─
+      - name: Package unsigned Windows app binaries for SignPath
+        if: env.HAS_SIGNPATH == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "dist\windows-app-unsigned.zip" -Force
+
+      - name: Upload unsigned Windows app binaries
+        id: upload-unsigned-app
+        if: env.HAS_SIGNPATH == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-app-unsigned
+          path: dist\windows-app-unsigned.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign Windows app binaries via SignPath
+        if: env.HAS_SIGNPATH == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ccs-eeg-studio
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: app-binaries
+          github-artifact-id: ${{ steps.upload-unsigned-app.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: dist\signed-app
+          parameters: |
+            version: ${{ needs.validate-release.outputs.version }}
+
+      - name: Restore signed Windows app binaries into Release directory
+        if: env.HAS_SIGNPATH == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+        shell: pwsh
+        run: |
+          $dest = "build\windows\x64\runner\Release"
+          $zip = Get-ChildItem -Path "dist\signed-app" -Filter "*.zip" -Recurse | Select-Object -First 1
+          if ($zip) {
+            Expand-Archive -Path $zip.FullName -DestinationPath $dest -Force
+          } else {
+            Copy-Item -Path "dist\signed-app\*" -Destination $dest -Recurse -Force
+          }
+
       # Requires Inno Setup to be pre-installed on windows-2022 runner.
       # windows-2022 includes Inno Setup in the default tool cache.
       - name: Build Windows installer (Inno Setup)
@@ -244,6 +292,52 @@ jobs:
         run: |
           iscc /DAppVersion="${{ needs.validate-release.outputs.version }}" `
             /F"CCSEEGStudio-Installer" windows\installer.iss
+
+      # ── Sign Inno Setup installer executable via SignPath ─────────────────
+      - name: Upload unsigned Windows installer
+        id: upload-unsigned-installer
+        if: env.HAS_SIGNPATH == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer-unsigned
+          path: dist\CCSEEGStudio-Installer.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign Windows installer via SignPath
+        if: env.HAS_SIGNPATH == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ccs-eeg-studio
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: dist\signed-installer
+          parameters: |
+            version: ${{ needs.validate-release.outputs.version }}
+
+      - name: Verify and stage signed Windows installer
+        if: env.HAS_SIGNPATH == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+        shell: pwsh
+        run: |
+          $signed = Get-ChildItem -Path "dist\signed-installer" -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $signed) {
+            $zip = Get-ChildItem -Path "dist\signed-installer" -Filter "*.zip" -Recurse | Select-Object -First 1
+            if ($zip) {
+              Expand-Archive -Path $zip.FullName -DestinationPath "dist\signed-installer-extracted" -Force
+              $signed = Get-ChildItem -Path "dist\signed-installer-extracted" -Filter "*.exe" -Recurse | Select-Object -First 1
+            }
+          }
+          if (-not $signed) { throw "Signed installer executable not found in dist\signed-installer" }
+          Copy-Item $signed.FullName "dist\CCSEEGStudio-Installer.exe" -Force
+          $sig = Get-AuthenticodeSignature "dist\CCSEEGStudio-Installer.exe"
+          Write-Host "Installer signature status: $($sig.Status) ($($sig.SignerCertificate.Subject))"
+          if ($sig.Status -ne "Valid") { throw "Expected Valid Authenticode signature, got $($sig.Status)" }
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v7
@@ -447,12 +541,17 @@ jobs:
         shell: bash
         run: |
           cd dist
-          sha256sum \
-            CCSEEGStudio-macos.zip \
-            CCSEEGStudio-Installer.exe \
-            CCSEEGStudio-linux-amd64.deb \
-            CCSEEGStudio-linux-x86_64.rpm \
-            CCSEEGStudio-linux-x86_64.tar.gz > SHA256SUMS.txt
+          FILES=(
+            CCSEEGStudio-macos.zip
+            CCSEEGStudio-Installer.exe
+            CCSEEGStudio-linux-amd64.deb
+            CCSEEGStudio-linux-x86_64.rpm
+            CCSEEGStudio-linux-x86_64.tar.gz
+          )
+          if [[ -f CCSEEGStudio-macos.dmg ]]; then
+            FILES=(CCSEEGStudio-macos.dmg "${FILES[@]}")
+          fi
+          sha256sum "${FILES[@]}" > SHA256SUMS.txt
 
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
@@ -461,7 +560,7 @@ jobs:
           name: ${{ steps.release_info.outputs.title }}
           prerelease: ${{ steps.release_info.outputs.prerelease == 'true' }}
           files: |
-            dist/CCSEEGStudio-macos.zip
+            dist/CCSEEGStudio-macos.*
             dist/CCSEEGStudio-Installer.exe
             dist/CCSEEGStudio-linux-amd64.deb
             dist/CCSEEGStudio-linux-x86_64.rpm
