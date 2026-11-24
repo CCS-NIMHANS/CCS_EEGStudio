@@ -10,10 +10,11 @@
 #   3. Copies ccs-eeg-engine into the .app bundle's MacOS directory so that
 #      the Flutter ExtractionService can locate and launch it at runtime.
 #   4. Removes any stale tools/ directory from the bundle Resources folder.
-#   5. Ad-hoc signs the bundle with codesign so Gatekeeper accepts it after
-#      the user runs: xattr -rd com.apple.quarantine <app>
+#   5. Signs the bundle with a Developer ID Application identity (and optionally
+#      notarizes) via scripts/sign_and_notarize_macos.sh when available; otherwise
+#      falls back to ad-hoc signing (`codesign --sign -`).
 #
-# Output: build/macos/Build/Products/Release/ccs_eeg_app.app
+# Output: build/macos/Build/Products/Release/CCS EEG Studio.app
 set -euo pipefail
 
 # ── Locate repository root ─────────────────────────────────────────────────
@@ -54,12 +55,21 @@ chmod +x "$APP/Contents/MacOS/ccs-eeg-engine"
 # Remove stale developer tools directory if it crept in from a previous run.
 rm -rf "$APP/Contents/Resources/tools"
 
-# ── Ad-hoc code sign ──────────────────────────────────────────────────────
-echo "==> Ad-hoc signing bundle..."
-codesign --force --deep --sign - "$APP"
+# ── Code sign (Developer ID if available, else ad-hoc fallback) ────────────
+DEVID_DETECTED="$(security find-identity -v -p codesigning 2>/dev/null \
+  | grep -m 1 'Developer ID Application:' || true)"
 
-echo ""
-echo "✅  Built: $APP"
-echo ""
-echo "To clear Gatekeeper quarantine after distributing:"
-echo "    xattr -rd com.apple.quarantine ~/Downloads/CCS\\ EEG\\ Studio.app"
+if [[ -n "${MACOS_SIGN_IDENTITY:-}" || -n "$DEVID_DETECTED" ]]; then
+  echo "==> Signing bundle with Developer ID..."
+  APP_PATH="$APP" OUT_DIR="$ROOT/dist" bash "$ROOT/scripts/sign_and_notarize_macos.sh"
+  echo ""
+  echo "✅  Built & Developer ID signed: $APP"
+else
+  echo "==> Ad-hoc signing bundle..."
+  codesign --force --deep --sign - "$APP"
+  echo ""
+  echo "✅  Built (ad-hoc signed): $APP"
+  echo ""
+  echo "To clear Gatekeeper quarantine after distributing:"
+  echo "    xattr -rd com.apple.quarantine ~/Downloads/CCS\\ EEG\\ Studio.app"
+fi
