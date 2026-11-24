@@ -45,6 +45,8 @@
 | **Linux (RHEL / AlmaLinux)** | x86_64 `.rpm` | [CCSEEGStudio-linux-x86_64.rpm](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-linux-x86_64.rpm) |
 
 > 📦 Checksums (`SHA256SUMS.txt`) and all assets are on the **[GitHub Releases Page](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest)**. Use **Updates** in the app header for in-app upgrades.
+>
+> 🔐 Free Windows code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/) (see [Code Signing Policy](CODE_SIGNING_POLICY.md)).
 
 <details>
 <summary><b>🍏 macOS Gatekeeper Setup & 🐧 Multi-User Linux Server Install</b></summary>
