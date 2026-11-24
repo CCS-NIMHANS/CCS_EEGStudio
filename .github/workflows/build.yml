@@ -339,11 +339,28 @@ jobs:
           Write-Host "Installer signature status: $($sig.Status) ($($sig.SignerCertificate.Subject))"
           if ($sig.Status -ne "Valid") { throw "Expected Valid Authenticode signature, got $($sig.Status)" }
 
+      - name: Build Microsoft Store MSIX package
+        shell: pwsh
+        env:
+          MS_STORE_IDENTITY_NAME: ${{ secrets.MS_STORE_IDENTITY_NAME }}
+          MS_STORE_PUBLISHER_ID: ${{ secrets.MS_STORE_PUBLISHER_ID }}
+          MS_STORE_PUBLISHER_DISPLAY_NAME: ${{ secrets.MS_STORE_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          pwsh -File scripts\package_windows_msix.ps1 `
+            -ReleaseDir "build\windows\x64\runner\Release" `
+            -OutputPath "dist\CCSEEGStudio-windows-x64.msix" `
+            -AppName "CCS EEG Studio" `
+            -ExeName "ccs_eeg_app.exe" `
+            -Version "${{ needs.validate-release.outputs.version }}" `
+            -IconPath "windows\runner\resources\app_icon.ico"
+
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v7
         with:
           name: CCSEEGStudio-Installer
-          path: dist\CCSEEGStudio-Installer.exe
+          path: |
+            dist\CCSEEGStudio-Installer.exe
+            dist\CCSEEGStudio-windows-x64.msix
           if-no-files-found: error
           retention-days: 14
 
@@ -544,6 +561,7 @@ jobs:
           FILES=(
             CCSEEGStudio-macos.zip
             CCSEEGStudio-Installer.exe
+            CCSEEGStudio-windows-x64.msix
             CCSEEGStudio-linux-amd64.deb
             CCSEEGStudio-linux-x86_64.rpm
             CCSEEGStudio-linux-x86_64.tar.gz
@@ -562,6 +580,7 @@ jobs:
           files: |
             dist/CCSEEGStudio-macos.*
             dist/CCSEEGStudio-Installer.exe
+            dist/CCSEEGStudio-windows-x64.msix
             dist/CCSEEGStudio-linux-amd64.deb
             dist/CCSEEGStudio-linux-x86_64.rpm
             dist/CCSEEGStudio-linux-x86_64.tar.gz
