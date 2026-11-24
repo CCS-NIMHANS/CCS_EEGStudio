@@ -39,7 +39,26 @@ xcrun notarytool store-credentials "ccs-notary" \
 
 ---
 
-## 2. Windows — Free SignPath Foundation Open-Source Signing
+## 2. Windows — Free Microsoft Store Signing (Recommended, \$0)
+
+Publishing an MSIX package to the **Microsoft Store** lets Microsoft **sign your app for free**, eliminating both Windows 11 **Smart App Control** and **SmartScreen** warnings.
+
+1. Register a free **Individual Developer** account at [storedeveloper.microsoft.com](https://storedeveloper.microsoft.com) (verified with a government photo ID + mobile selfie — \$0 fee).
+2. In **Partner Center**, reserve your app name (e.g., `CCS EEG Studio`, `CCS Sleep Studio`, `CCS fMRI Studio`), then open **Product management → Product Identity** and copy:
+   - `Package/Identity/Name` → `MS_STORE_IDENTITY_NAME`
+   - `Package/Identity/Publisher` (`CN=...`) → `MS_STORE_PUBLISHER_ID`
+   - `Package/Properties/PublisherDisplayName` → `MS_STORE_PUBLISHER_DISPLAY_NAME`
+3. Add those 3 secrets to each GitHub repo:
+```bash
+gh secret set MS_STORE_IDENTITY_NAME -b "YOUR-IDENTITY-NAME" -R CCS-NIMHANS/CCS_EEGStudio
+gh secret set MS_STORE_PUBLISHER_ID -b "CN=YOUR-PUBLISHER-UUID" -R CCS-NIMHANS/CCS_EEGStudio
+gh secret set MS_STORE_PUBLISHER_DISPLAY_NAME -b "Arun Sasidharan" -R CCS-NIMHANS/CCS_EEGStudio
+```
+4. Every release build now outputs `*-windows-x64.msix` on GitHub Releases — upload that `.msix` in Partner Center under **Packages** (for `runFullTrust`, add a 1-line note explaining the app runs a bundled Rust signal-processing engine on user-selected local research files).
+
+---
+
+## 2b. Windows (Alternative) — SignPath Foundation Open-Source Signing
 
 SignPath Foundation eliminates **both** Windows 11 **Smart App Control** and **Microsoft Defender SmartScreen** warnings at zero cost for public MIT-licensed repositories (`https://github.com/CCS-NIMHANS/CCS_EEGStudio`).
 
