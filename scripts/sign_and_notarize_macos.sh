@@ -191,19 +191,7 @@ if [[ ${#NOTARY_ARGS[@]} -eq 0 ]]; then
   exit 0
 fi
 
-# ── Notarize, staple, and repackage .zip ───────────────────────────────────
-echo "==> Submitting ZIP for Apple Notarization..."
-xcrun notarytool submit "$ZIP_OUT" "${NOTARY_ARGS[@]}" --wait --timeout 15m
-
-echo "==> Stapling notarization ticket to .app bundle..."
-xcrun stapler staple "$APP_PATH"
-xcrun stapler validate "$APP_PATH"
-
-rm -f "$ZIP_OUT"
-ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_OUT"
-echo "    Notarized & stapled ZIP updated: $ZIP_OUT"
-
-# ── Build, sign, notarize, and staple drag-to-Applications .dmg ────────────
+# ── Build, sign, and notarize drag-to-Applications .dmg once (covers .app + .dmg) ─
 echo "==> Creating drag-to-Applications DMG..."
 [[ -n "$TEMP_DIR" ]] || TEMP_DIR="$(mktemp -d)"
 DMG_STAGE="$TEMP_DIR/dmg-stage"
@@ -221,10 +209,15 @@ hdiutil create \
 
 codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_OUT"
 
-echo "==> Submitting DMG for Apple Notarization..."
-xcrun notarytool submit "$DMG_OUT" "${NOTARY_ARGS[@]}" --wait --timeout 15m
+echo "==> Submitting DMG for Apple Notarization (single submission for .dmg & .app)..."
+xcrun notarytool submit "$DMG_OUT" "${NOTARY_ARGS[@]}" --wait --timeout 45m
 
-echo "==> Stapling notarization ticket to DMG..."
+echo "==> Stapling notarization tickets to DMG and .app bundle..."
 xcrun stapler staple "$DMG_OUT"
 xcrun stapler validate "$DMG_OUT"
+xcrun stapler staple "$APP_PATH"
+xcrun stapler validate "$APP_PATH"
+
+rm -f "$ZIP_OUT"
+ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_OUT"
 echo "✅  Notarized macOS artifacts ready in $OUT_DIR"
