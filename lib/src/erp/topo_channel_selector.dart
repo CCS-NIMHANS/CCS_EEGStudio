@@ -130,7 +130,7 @@ class _TopoChannelSelectorState extends State<TopoChannelSelector> {
               : (widget.multiSelect
                   ? 'Click any electrode on scalp to toggle'
                   : 'Click any electrode on scalp to select'),
-          style: const TextStyle(fontSize: 10.5, color: Colors.white60),
+          style: const TextStyle(fontSize: 10.5, color: Color(0xFF64748B)),
         ),
       ],
     );
@@ -160,10 +160,10 @@ class _TopoSelectorPainter extends CustomPainter {
     canvas.drawCircle(
       Offset(cx, cy),
       r,
-      Paint()..color = const Color(0xFF0F172A),
+      Paint()..color = const Color(0xFFFFFFFF),
     );
     final outlinePaint = Paint()
-      ..color = Colors.white38
+      ..color = const Color(0xFF64748B)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.6;
     canvas.drawCircle(Offset(cx, cy), r, outlinePaint);
@@ -202,7 +202,7 @@ class _TopoSelectorPainter extends CustomPainter {
       final isSel = selectedUpper.contains(item.label.toUpperCase());
       final isHov = hovered?.toUpperCase() == item.label.toUpperCase();
 
-      Color fill = const Color(0xFF334155);
+      Color fill = const Color(0xFFE2E8F0);
       final val = values[item.label];
       if (val != null && val.isFinite) {
         final t = (val / maxAbs).clamp(-1.0, 1.0);
@@ -222,7 +222,7 @@ class _TopoSelectorPainter extends CustomPainter {
           pos,
           dotR + 1.5,
           Paint()
-            ..color = isSel ? Colors.cyanAccent : Colors.white
+            ..color = isSel ? const Color(0xFF0284C7) : const Color(0xFF475569)
             ..style = PaintingStyle.stroke
             ..strokeWidth = isSel ? 2.2 : 1.4,
         );
@@ -231,7 +231,7 @@ class _TopoSelectorPainter extends CustomPainter {
           pos,
           dotR,
           Paint()
-            ..color = Colors.white24
+            ..color = const Color(0xFFCBD5E1)
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1.0,
         );
@@ -245,7 +245,7 @@ class _TopoSelectorPainter extends CustomPainter {
             fontWeight: isSel ? FontWeight.bold : FontWeight.w500,
             color: (val != null && val.abs() / maxAbs < 0.35)
                 ? Colors.black87
-                : Colors.white,
+                : const Color(0xFF1E293B),
           ),
         ),
         textDirection: TextDirection.ltr,

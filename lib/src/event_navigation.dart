@@ -165,7 +165,7 @@ class _OverviewPainter extends CustomPainter {
           style: const TextStyle(
             fontFamily: 'DejaVuSans',
             fontSize: 10,
-            color: Color(0xFFCBD5E1),
+            color: Color(0xFF475569),
           ),
         ),
         textDirection: TextDirection.ltr,

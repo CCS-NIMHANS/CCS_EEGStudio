@@ -1,5 +1,7 @@
 import 'package:ccs_eeg_app/src/app.dart';
 import 'package:ccs_eeg_app/src/models.dart';
+import 'package:ccs_eeg_app/src/processing_progress.dart';
+import 'package:ccs_eeg_app/src/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -109,7 +111,10 @@ void main() {
 
       expect(find.text('Fixed window length'), findsNothing);
       await tester.ensureVisible(find.text('6. Saved output data structure'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('6. Saved output data structure'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Continuous recording'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Continuous recording'));
       await tester.pumpAndSettle();
@@ -473,4 +478,28 @@ void main() {
       expect(find.text('Open Group Analysis Workbench'), findsOneWidget);
     },
   );
+
+  testWidgets('ProcessingProgress uses readable light clinical contrast', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildCcsLightTheme(),
+        home: Scaffold(
+          body: ProcessingProgress(
+            progress: 0.42,
+            message: 'Extracting spectral features...',
+            stopping: false,
+            onCancel: () {},
+          ),
+        ),
+      ),
+    );
+    final msg = tester.widget<Text>(
+      find.text('Extracting spectral features...'),
+    );
+    expect(msg.style?.color, CcsTheme.text);
+    final pct = tester.widget<Text>(find.text('Workflow progress: 42%'));
+    expect(pct.style?.color, CcsTheme.textSecondary);
+  });
 }

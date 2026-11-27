@@ -31,16 +31,62 @@ const List<String> kStandard19Labels = [
 
 class BatchChannels {
   final Map<String, String> names;
-  BatchChannels(this.names);
+  final Map<int, String> byIndex;
+  BatchChannels(this.names, {this.byIndex = const {}});
+
+  static int? parseChannelNumber(String label) {
+    final trimmed = label.trim();
+    final direct = int.tryParse(trimmed);
+    if (direct != null && direct > 0) return direct;
+    final m = RegExp(
+      r'^(?:ch|chan|channel|eeg)[_\-\s#]*0*(\d+)$',
+      caseSensitive: false,
+    ).firstMatch(trimmed);
+    if (m != null) return int.tryParse(m.group(1)!);
+    return null;
+  }
+
+  static Map<int, String> indexMapFromOrdered(Iterable<String> orderedNames) {
+    final map = <int, String>{};
+    var idx = 1;
+    for (final name in orderedNames) {
+      map[idx] = name.trim();
+      idx++;
+    }
+    return map;
+  }
+
   EegRecording apply(EegRecording r) {
+    final lowerNames = <String, String>{
+      for (final e in names.entries) e.key.trim().toLowerCase(): e.value,
+    };
+    final normNames = <String, String>{
+      for (final e in names.entries)
+        suggestedEegName(e.key).toLowerCase(): e.value,
+    };
+    final targetValuesLower = {
+      for (final v in names.values)
+        if (v.trim().isNotEmpty) v.trim().toLowerCase(): v.trim(),
+    };
     final selected = <int>[];
     final labels = <String>[];
     for (var i = 0; i < r.labels.length; i++) {
-      final name =
-          names[r.labels[i]] ??
-          (names.containsValue(r.labels[i]) ? r.labels[i] : null);
+      final raw = r.labels[i];
+      final rawLower = raw.trim().toLowerCase();
+      final normLower = suggestedEegName(raw).toLowerCase();
+      String? name =
+          names[raw] ?? lowerNames[rawLower] ?? normNames[normLower];
+      if (name == null && byIndex.isNotEmpty) {
+        final parsedNum = parseChannelNumber(raw);
+        if (parsedNum != null && byIndex.containsKey(parsedNum)) {
+          name = byIndex[parsedNum];
+        } else if (byIndex.containsKey(i + 1)) {
+          name = byIndex[i + 1];
+        }
+      }
+      name ??= targetValuesLower[rawLower];
       if (name == null || name.trim().isEmpty) continue;
-      if (labels.any((x) => x.toLowerCase() == name.trim().toLowerCase()))
+      if (labels.any((x) => x.toLowerCase() == name!.trim().toLowerCase()))
         throw StateError('Duplicate mapped channel: $name');
       selected.add(i);
       labels.add(name.trim());

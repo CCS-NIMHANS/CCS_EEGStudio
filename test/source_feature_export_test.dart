@@ -33,10 +33,14 @@ void main() {
       );
       expect(outputs, hasLength(1));
       expect(await File(outputs.single.path).length(), greaterThan(1000));
-      expect(
-        await File(outputs.single.path.replaceFirst('.png', '.pdf')).exists(),
-        isTrue,
-      );
+      final pdfFiles = File(outputs.single.path)
+          .parent
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('_TopoStats_report.pdf'))
+          .toList();
+      expect(pdfFiles, isNotEmpty);
+      expect(await pdfFiles.first.length(), greaterThan(1000));
     },
   );
   testWidgets(

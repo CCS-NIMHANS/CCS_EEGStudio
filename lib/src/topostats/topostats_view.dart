@@ -12,34 +12,35 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import '../filtered_file_picker.dart';
-import '../feature_plotter.dart' show generateSourceFeaturePlots;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
+import 'glass_brain_paint.dart';
 import 'mpl_colormaps.dart';
 import 'topo_interp.dart' show isStandard1020Channel;
 import 'topostats_engine.dart';
 import 'topostats_batch.dart'
-    show prepareSessionFeatureCsvs, groupByRecording, generateTopoStatsFigures;
+    show prepareSessionFeatureCsvs, groupByRecording;
 import 'topostats_figure.dart';
 import 'topostats_runner.dart';
 import '../state_dynamics/state_dynamics_view.dart';
+import '../theme.dart';
 import '../media/media_sync_service.dart' show SyncedMediaSegment;
 import '../media/synced_media_panel.dart'
     show MediaSyncController, SessionAlignedAudioPainter, TrackingSeriesPainter, SpeechTrackingMethod;
 
-// Design tokens (match app.dart)
-const _bg = Color(0xFF0F172A);
-const _panel = Color(0xFF0A1628);
-const _card = Color(0xFF1E293B);
-const _border = Color(0x1FFFFFFF);
-const _amber = Color(0xFFF59E0B);
-const _muted = Color(0xFF94A3B8);
-const _text = Color(0xFFE2E8F0);
-const _green = Color(0xFF22C55E);
+// Design tokens (CCS Studio Light Clinical palette)
+const _bg = CcsTheme.bg;
+const _panel = CcsTheme.panel;
+const _card = CcsTheme.surface;
+const _border = CcsTheme.border;
+const _amber = CcsTheme.accentAmber;
+const _muted = CcsTheme.textMuted;
+const _text = CcsTheme.text;
+const _green = CcsTheme.accentGreen;
 
 /// Represents a distinct recording or dataset group within TopoStats.
 class TopoPlotGroup {
@@ -113,7 +114,6 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   List<String> _features = [];
 
   final Map<String, TopoStatsResult> _cache = {};
-  final Map<String, List<String>> _sourceFigures = {};
 
   bool _running = false;
   double _progress = 0;
@@ -416,9 +416,14 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       try {
         final det = detectChannels(allFiles.first);
         final known = det.where(isStandard1020Channel).toList();
-        s = s.copyWith(channels: known.length >= 3 ? known : det);
+        final chans = known.length >= 3 ? known : det;
+        s = s.copyWith(channels: chans);
         if (s.reprChan != null && !s.channels.contains(s.reprChan)) {
-          s = s.copyWith(reprChan: s.channels.contains('Fz') ? 'Fz' : null);
+          s = s.copyWith(
+            reprChan: s.channels.contains('Fz')
+                ? 'Fz'
+                : (s.channels.isNotEmpty ? s.channels.first : null),
+          );
         }
       } catch (_) {}
     }
@@ -571,7 +576,6 @@ class _TopoStatsViewState extends State<TopoStatsView> {
       _groups.clear();
       _selectedGroupIndex = 0;
       _cache.clear();
-      _sourceFigures.clear();
       _sourceDir = null;
       _trackingDetails.clear();
       _trackingMsg = null;
@@ -787,6 +791,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
 
     final sw = Stopwatch()..start();
     try {
+      await GlassBrainAtlas.ensureLoaded();
       for (var i = 0; i < runnableTargets.length; i++) {
         final g = runnableTargets[i];
         final groupRecId = g.recId.isNotEmpty ? g.recId : _s.recId;
@@ -799,26 +804,12 @@ class _TopoStatsViewState extends State<TopoStatsView> {
           );
         }
         groupSettings = settingsForSessions(groupSettings, sNames);
-
-        final labels = detectChannels(g.activeFiles.first);
-        if (labels.isNotEmpty &&
-            labels.every((label) => !isStandard1020Channel(label))) {
-          _sessionScratch ??= Directory.systemTemp.createTempSync(
-            'ccs_plot_sessions_',
+        if (isSourceRoiLabels(groupSettings.channels)) {
+          groupSettings = groupSettings.copyWith(
+            customAdjacency:
+                GlassBrainAtlas.cached?.adjacencyFor(groupSettings.channels),
           );
-          final plots = await generateSourceFeaturePlots(
-            csvPaths: g.activeFiles,
-            outputDir: _sessionScratch!.path,
-            epochSeconds: groupSettings.epochSize,
-            features: [groupSettings.feature],
-          );
-          if (!mounted) return;
-          setState(
-            () => _sourceFigures[g.id] = plots.map((p) => p.path).toList(),
-          );
-          continue;
         }
-        _sourceFigures.remove(g.id);
         final key = groupSettings.statsKey(g.activeFiles);
         final cached = _cache[key];
         if (cached != null) {
@@ -1068,6 +1059,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
     var saved = 0;
     final errors = <String>[];
     try {
+      await GlassBrainAtlas.ensureLoaded();
       final totalSteps = features.length * active.length;
       var step = 0;
       for (final g in active) {
@@ -1081,6 +1073,12 @@ class _TopoStatsViewState extends State<TopoStatsView> {
           );
         }
         groupSettings = settingsForSessions(groupSettings, sNames);
+        if (isSourceRoiLabels(groupSettings.channels)) {
+          groupSettings = groupSettings.copyWith(
+            customAdjacency:
+                GlassBrainAtlas.cached?.adjacencyFor(groupSettings.channels),
+          );
+        }
 
         final job = await startTopoStatsJob(
           files: g.activeFiles,
@@ -1226,7 +1224,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         suffixText: suffix,
         isDense: true,
         labelStyle: const TextStyle(color: _muted, fontSize: 11),
-        hintStyle: const TextStyle(color: Colors.white24, fontSize: 11),
+        hintStyle: TextStyle(color: _muted.withValues(alpha: 0.65), fontSize: 11),
         suffixStyle: const TextStyle(color: _muted, fontSize: 10),
         contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
         enabledBorder: OutlineInputBorder(
@@ -2038,7 +2036,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
         onPressed: onTap,
         icon: Icon(icon, size: 18),
         color: _text,
-        disabledColor: Colors.white24,
+        disabledColor: _muted.withValues(alpha: 0.35),
         visualDensity: VisualDensity.compact,
       );
 
@@ -2156,14 +2154,14 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 avatar: Icon(
                   Icons.timeline,
                   size: 13,
-                  color: _trackingRunning ? Colors.amberAccent : Colors.tealAccent,
+                  color: _trackingRunning ? _amber : const Color(0xFF0F766E),
                 ),
                 label: Text(
                   _trackingRunning ? 'Tracking…' : 'Speech Tracking',
                   style: const TextStyle(color: _text, fontSize: 11),
                 ),
                 backgroundColor: _panel,
-                side: BorderSide(color: Colors.tealAccent.withValues(alpha: 0.6)),
+                side: BorderSide(color: const Color(0xFF0F766E).withValues(alpha: 0.6)),
                 onPressed: _trackingRunning ? null : _runTrackingForSessions,
               ),
             ),
@@ -2453,69 +2451,6 @@ class _TopoStatsViewState extends State<TopoStatsView> {
   }
 
   Widget _buildCanvas() {
-    final targets = _showAllGroups
-        ? _groups
-        : [_currentGroup].whereType<TopoPlotGroup>();
-    final sourcePaths = targets
-        .expand((g) => _sourceFigures[g.id] ?? <String>[])
-        .toList();
-    if (sourcePaths.isNotEmpty) {
-      return Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Source ROI traces and feature heatmaps',
-                    style: TextStyle(color: _text),
-                  ),
-                ),
-                TextButton.icon(
-                  icon: const Icon(Icons.save_alt),
-                  label: const Text('Export ROI figures…'),
-                  onPressed: _running
-                      ? null
-                      : () async {
-                          final folder = await FilePicker.getDirectoryPath(
-                            dialogTitle: 'Export source ROI figures',
-                          );
-                          if (folder == null) return;
-                          await generateTopoStatsFigures(
-                            csvPaths: targets
-                                .expand((g) => g.activeFiles)
-                                .toList(),
-                            outputDir: folder,
-                            base: _s,
-                            features: [_s.feature],
-                          );
-                          if (mounted)
-                            setState(
-                              () => _status =
-                                  'ROI PNG and PDF figures saved to $folder',
-                            );
-                        },
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: ListView(
-              children: [
-                for (final path in sourcePaths)
-                  InteractiveViewer(
-                    minScale: 0.5,
-                    maxScale: 5,
-                    child: Image.file(File(path), fit: BoxFit.fitWidth),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      );
-    }
-
     final active = _showAllGroups
         ? _groups.where((g) => g.figure != null).toList()
         : (_currentGroup?.figure != null
@@ -2932,7 +2867,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: Row(
                   children: [
-                    const Icon(Icons.graphic_eq, size: 14, color: Colors.cyanAccent),
+                    const Icon(Icons.graphic_eq, size: 14, color: CcsTheme.accentCyan),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
@@ -2956,13 +2891,13 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                             avatar: Icon(
                               Icons.swap_horiz,
                               size: 14,
-                              color: _slideAudioToSync ? Colors.amberAccent : _muted,
+                              color: _slideAudioToSync ? _amber : _muted,
                             ),
                             label: Text(
                               _slideAudioToSync ? 'Slide to sync (ON)' : 'Slide to sync',
                               style: TextStyle(
                                 fontSize: 10,
-                                color: _slideAudioToSync ? Colors.amberAccent : _text,
+                                color: _slideAudioToSync ? _amber : _text,
                               ),
                             ),
                             selected: _slideAudioToSync,
@@ -2995,7 +2930,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                   child: Text(
                     'Recording start time unknown for: ${unknownClock.join(', ')} — '
                     'media cannot be placed on these plots.',
-                    style: const TextStyle(color: Colors.amberAccent, fontSize: 10),
+                    style: const TextStyle(color: _amber, fontSize: 10),
                   ),
                 ),
               if (lanes.isEmpty && unknownClock.isEmpty)
@@ -3003,7 +2938,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                   padding: EdgeInsets.fromLTRB(12, 2, 12, 4),
                   child: Text(
                     'None of the loaded media overlaps the plotted recordings.',
-                    style: TextStyle(color: Colors.amberAccent, fontSize: 10),
+                    style: TextStyle(color: _amber, fontSize: 10),
                   ),
                 ),
               if (lanes.isNotEmpty || haveSeries.isNotEmpty)
@@ -3014,13 +2949,13 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                     runSpacing: 4,
                     children: [
                       if (lanes.isNotEmpty) ...[
-                        if (_showWaveform) _traceLegend(Colors.lightBlueAccent, 'Audio waveform (normalized)'),
-                        if (_showEnvelope) _traceLegend(Colors.amberAccent, 'Audio amplitude envelope (normalized)'),
+                        if (_showWaveform) _traceLegend(CcsTheme.accentBlue, 'Audio waveform (normalized)'),
+                        if (_showEnvelope) _traceLegend(_amber, 'Audio amplitude envelope (normalized)'),
                       ],
                       if (_showTracking && haveSeries.isNotEmpty) ...[
-                        _traceLegend(Colors.cyanAccent, 'Tracking: decoder r (EEG -> envelope; dots > 95% chance)'),
-                        _traceLegend(Colors.amberAccent, 'Tracking: forward TRF r (mean across channels)'),
-                        _traceLegend(Colors.white54, 'Dashed: 95% chance level', dashed: true),
+                        _traceLegend(CcsTheme.accentCyan, 'Tracking: decoder r (EEG -> envelope; dots > 95% chance)'),
+                        _traceLegend(_amber, 'Tracking: forward TRF r (mean across channels)'),
+                        _traceLegend(_muted, 'Dashed: 95% chance level', dashed: true),
                       ],
                     ],
                   ),
@@ -3136,7 +3071,7 @@ class _TopoStatsViewState extends State<TopoStatsView> {
                   padding: const EdgeInsets.fromLTRB(12, 2, 12, 0),
                   child: Text(
                     _trackingMsg!,
-                    style: const TextStyle(color: Colors.amberAccent, fontSize: 10),
+                    style: const TextStyle(color: _amber, fontSize: 10),
                   ),
                 ),
             ],

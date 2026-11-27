@@ -37,6 +37,9 @@ struct Job {
 }
 
 fn main() -> Result<(), String> {
+    let _ = rayon::ThreadPoolBuilder::new()
+        .stack_size(8 * 1024 * 1024)
+        .build_global();
     let job_path = env::args()
         .nth(1)
         .ok_or("usage: ccs-eeg-engine <job.json>")?;
@@ -44,8 +47,9 @@ fn main() -> Result<(), String> {
         println!("usage: ccs-eeg-engine <job.json>");
         return Ok(());
     }
+    let resolved_job_path = preprocessing::long_path(Path::new(&job_path));
     let erp_value: serde_json::Value =
-        serde_json::from_slice(&fs::read(&job_path).map_err(err)?).map_err(err)?;
+        serde_json::from_slice(&fs::read(&resolved_job_path).map_err(err)?).map_err(err)?;
     if erp_value["job_type"]
         .as_str()
         .is_some_and(|t| t == "erp_workbench" || t == "inspect_erp")
@@ -200,7 +204,7 @@ fn main() -> Result<(), String> {
         println!("{}", serde_json::to_string(&res).map_err(err)?);
         return Ok(());
     }
-    let job: Job = serde_json::from_slice(&fs::read(&job_path).map_err(err)?).map_err(err)?;
+    let job: Job = serde_json::from_slice(&fs::read(&resolved_job_path).map_err(err)?).map_err(err)?;
     eprintln!("PROGRESS 0 Loading {}", job.input);
     if job.job_type == "microstates" {
         let paths = if job.microstate_inputs.is_empty() {
@@ -509,7 +513,7 @@ fn main() -> Result<(), String> {
         .source_epoch_samples
         .unwrap_or_else(|| (job.epoch_seconds * recording.rate).round() as usize)
         .max(4);
-    if job.options.psd {
+    if job.options.psd || job.options.spectral_ratios || job.options.individual_alpha {
         let is_multitaper = job.options.psd_method.eq_ignore_ascii_case("multitaper");
         if is_multitaper {
             if !job.options.psd_multitaper_nw.is_finite()
@@ -1078,10 +1082,25 @@ fn sliding_median_filter(x: &[f64], win_odd: usize) -> Vec<f64> {
 /// Klimesch individual theta/alpha relative PSD, and Cohen (2014) 10-order
 /// median-filtered plateau-bandpass frequency sliding.
 fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f64) {
+    iaf_and_sliding_features_range(signal, rate, 7.0, 14.0)
+}
+
+fn iaf_and_sliding_features_range(
+    signal: &[f64],
+    rate: f64,
+    iaf_min_hz: f64,
+    iaf_max_hz: f64,
+) -> (f64, f64, f64, f64, f64) {
     use rustfft::{num_complex::Complex, FftPlanner};
+    let (search_lo, search_hi) = if iaf_min_hz.is_finite() && iaf_max_hz.is_finite() && iaf_max_hz > iaf_min_hz {
+        (iaf_min_hz.clamp(4.0, 18.0), iaf_max_hz.clamp(5.0, 20.0))
+    } else {
+        (7.0, 14.0)
+    };
+    let default_iaf = 0.5 * (search_lo + search_hi);
     let n = signal.len();
     if n < 32 || !rate.is_finite() || rate < 30.0 {
-        return (10.0, 0.0, 0.0, 6.0, 10.0);
+        return (default_iaf, 0.0, 0.0, (default_iaf - 4.0).max(2.0), default_iaf);
     }
 
     // 1. Compute Welch PSD on the exact same density scale as *_PSD
@@ -1146,7 +1165,7 @@ fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f
     let alpha_idx: Vec<usize> = fit_freqs
         .iter()
         .enumerate()
-        .filter_map(|(idx, &f)| (7.0..=14.0).contains(&f).then_some(idx))
+        .filter_map(|(idx, &f)| (search_lo..=search_hi).contains(&f).then_some(idx))
         .collect();
     let mut res_vals: Vec<(usize, f64)> = Vec::with_capacity(alpha_idx.len());
     let mut best_pos = None;
@@ -1169,7 +1188,7 @@ fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f
     let paf_cog = if best_res > 0.15 {
         if let Some(pidx) = best_pos {
             let mut f_peak = fit_freqs[pidx];
-            if pidx > 0 && pidx + 1 < fit_freqs.len() && fit_freqs[pidx] > 7.2 && fit_freqs[pidx] < 13.8 {
+            if pidx > 0 && pidx + 1 < fit_freqs.len() && fit_freqs[pidx] > search_lo + 0.2 && fit_freqs[pidx] < search_hi - 0.2 {
                 let y_l = (smooth_log[pidx - 1] - (intercept + slope * fit_freqs[pidx - 1].ln())).max(0.0);
                 let y_c = best_res;
                 let y_r = (smooth_log[pidx + 1] - (intercept + slope * fit_freqs[pidx + 1].ln())).max(0.0);
@@ -1182,14 +1201,14 @@ fn iaf_and_sliding_features(signal: &[f64], rate: f64) -> (f64, f64, f64, f64, f
             }
             f_peak
         } else {
-            10.0
+            default_iaf
         }
     } else if weight_sum > 1e-6 {
         weighted_f / weight_sum
     } else {
-        10.0
+        default_iaf
     };
-    let iaf = paf_cog.clamp(7.0, 14.0);
+    let iaf = paf_cog.clamp(search_lo, search_hi);
 
     // 3. Klimesch (1999) individual bands on matching relative PSD scale [1..40 Hz]
     let alpha_lo = (iaf - 2.0).max(6.0);
@@ -1334,7 +1353,7 @@ fn psd_bands(options: &Options) -> Vec<(f64, f64, &str)> {
 fn features(x: &[f32], rate: f64, o: &Options, dfa_context: &[f32]) -> Vec<f64> {
     let signal: Vec<f64> = x.iter().map(|value| *value as f64).collect();
     let mut out = Vec::new();
-    if o.psd {
+    let psd_values = if o.psd || o.spectral_ratios {
         let bands = psd_bands(o);
         let values = features::bandpowers_with_options(
             &signal,
@@ -1346,9 +1365,16 @@ fn features(x: &[f32], rate: f64, o: &Options, dfa_context: &[f32]) -> Vec<f64> 
             o.psd_multitaper_adaptive,
             &bands,
         );
-        out.extend(bands.iter().map(|band| values[&format!("{}_PSD", band.2)]));
+        if o.psd {
+            out.extend(bands.iter().map(|band| values[&format!("{}_PSD", band.2)]));
+        }
+        Some(values)
+    } else {
+        None
+    };
+    if o.individual_alpha {
         let (iaf_hz, ind_theta_psd, ind_alpha_psd, theta_fs_hz, alpha_fs_hz) =
-            iaf_and_sliding_features(&signal, rate);
+            iaf_and_sliding_features_range(&signal, rate, o.iaf_min_hz, o.iaf_max_hz);
         out.extend([
             iaf_hz,
             ind_theta_psd,
@@ -1356,6 +1382,15 @@ fn features(x: &[f32], rate: f64, o: &Options, dfa_context: &[f32]) -> Vec<f64> 
             theta_fs_hz,
             alpha_fs_hz,
         ]);
+    }
+    if o.spectral_ratios {
+        let bp = psd_values.as_ref().expect("computed above");
+        let ratios = features::spectral_ratios_from_bandpowers(bp);
+        out.extend(
+            features::SPECTRAL_RATIO_NAMES
+                .iter()
+                .map(|name| ratios[*name]),
+        );
     }
     if o.fooof {
         let values = spectral::fooof_features_banded(
@@ -1449,6 +1484,8 @@ fn columns(o: &Options) -> Vec<String> {
     let mut c = Vec::new();
     if o.psd {
         c.extend(psd_bands(o).iter().map(|b| format!("{}_PSD", b.2)));
+    }
+    if o.individual_alpha {
         c.extend([
             "IAF_Hz".to_string(),
             "IndTheta_PSD".to_string(),
@@ -1456,6 +1493,9 @@ fn columns(o: &Options) -> Vec<String> {
             "Theta_FreqSliding_Hz".to_string(),
             "Alpha_FreqSliding_Hz".to_string(),
         ]);
+    }
+    if o.spectral_ratios {
+        c.extend(features::SPECTRAL_RATIO_NAMES.iter().map(|s| s.to_string()));
     }
     if o.fooof {
         c.extend(psd_bands(o).iter().map(|b| format!("{}_FOOOF", b.2)));
@@ -1582,7 +1622,12 @@ fn remove_non_eeg_and_reference_configured(
             .map(|(index, _)| index)
             .collect()
     };
-    if drop_auxiliary && !keep.is_empty() && keep.len() != recording.channels.len() {
+    let is_source_rois = !recording.labels.is_empty()
+        && recording
+            .labels
+            .iter()
+            .all(|l| l.ends_with("-lh") || l.ends_with("-rh"));
+    if drop_auxiliary && !is_source_rois && !keep.is_empty() && keep.len() != recording.channels.len() {
         recording.labels = keep.iter().map(|i| recording.labels[*i].clone()).collect();
         recording.channels = keep
             .iter()
@@ -1922,7 +1967,8 @@ fn write_csv(
     dfa_context_times: &[(f64, f64)],
     connectivity_settings: &str,
 ) -> Result<(), String> {
-    let mut w = fs::File::create(path).map_err(err)?;
+    let resolved_out = preprocessing::long_path(Path::new(path));
+    let mut w = fs::File::create(&resolved_out).map_err(err)?;
     let mut h = cols.to_vec();
     h.extend(
         [
@@ -2047,6 +2093,10 @@ mod tests {
             end_seconds: 10.0,
             bin_seconds: 4.0,
             psd: true,
+            individual_alpha: false,
+            iaf_min_hz: 7.0,
+            iaf_max_hz: 14.0,
+            spectral_ratios: false,
             fooof: false,
             irasa: false,
             nonlinear: false,

@@ -825,7 +825,7 @@ class _FactorGroupingDesignerDialogState
       children: [
         const Text(
           'Highlight/crop the part of a sample filename representing a factor (e.g., Subject or Session). Logic is inferred automatically for all files.',
-          style: TextStyle(fontSize: 11.5, color: Colors.white70),
+          style: TextStyle(fontSize: 11.5, color: Color(0xFF475569)),
         ),
         const SizedBox(height: 8),
         Row(
@@ -856,9 +856,9 @@ class _FactorGroupingDesignerDialogState
         Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: const Color(0xFF0F172A),
+            color: const Color(0xFFF8F9FB),
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.white12),
+            border: Border.all(color: const Color(0xFFCBD5E1)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -872,7 +872,7 @@ class _FactorGroupingDesignerDialogState
                   children: [
                     TextSpan(
                       text: sampleName.substring(0, safeStart),
-                      style: const TextStyle(color: Colors.white54),
+                      style: const TextStyle(color: Color(0xFF64748B)),
                     ),
                     TextSpan(
                       text: cropped,
@@ -884,7 +884,7 @@ class _FactorGroupingDesignerDialogState
                     ),
                     TextSpan(
                       text: sampleName.substring(safeEnd),
-                      style: const TextStyle(color: Colors.white54),
+                      style: const TextStyle(color: Color(0xFF64748B)),
                     ),
                   ],
                 ),
@@ -904,7 +904,7 @@ class _FactorGroupingDesignerDialogState
               ),
               Text(
                 'Cropped: "$cropped" (chars $safeStart..$safeEnd)',
-                style: const TextStyle(fontSize: 11.5, color: Colors.amberAccent),
+                style: const TextStyle(fontSize: 11.5, color: Color(0xFFD97706)),
               ),
             ],
           ),
@@ -936,7 +936,7 @@ class _FactorGroupingDesignerDialogState
             Container(
               height: 150,
               decoration: BoxDecoration(
-                border: Border.all(color: Colors.white12),
+                border: Border.all(color: const Color(0xFFCBD5E1)),
                 borderRadius: BorderRadius.circular(6),
               ),
               child: ListView.builder(
@@ -964,8 +964,8 @@ class _FactorGroupingDesignerDialogState
                             fontSize: 11,
                             fontWeight: FontWeight.bold,
                             color: val.isEmpty
-                                ? Colors.redAccent
-                                : Colors.greenAccent,
+                                ? Color(0xFFDC2626)
+                                : Color(0xFF16A34A),
                           ),
                         ),
                       ],
@@ -991,7 +991,7 @@ class _FactorGroupingDesignerDialogState
       children: [
         const Text(
           'Load an Excel (.xlsx) or CSV/TSV mapping sheet (e.g. Groups.xlsx) and map columns onto recordings.',
-          style: TextStyle(fontSize: 11.5, color: Colors.white70),
+          style: TextStyle(fontSize: 11.5, color: Color(0xFF475569)),
         ),
         const SizedBox(height: 8),
         Row(
@@ -1019,7 +1019,7 @@ class _FactorGroupingDesignerDialogState
           const SizedBox(height: 6),
           Text(
             _sheetStatus,
-            style: const TextStyle(fontSize: 11.5, color: Colors.lightBlueAccent),
+            style: const TextStyle(fontSize: 11.5, color: Color(0xFF3B6EA5)),
           ),
         ],
         if (_sheetHeaders.isNotEmpty) ...[
@@ -1318,19 +1318,19 @@ class _FactorGroupingDesignerDialogState
           decoration: BoxDecoration(
             color: hasUnknown
                 ? Colors.amber.withValues(alpha: 0.14)
-                : const Color(0xFF0F2744),
+                : const Color(0xFFF0F4F8),
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
               color: hasUnknown
                   ? Colors.amber.withValues(alpha: 0.5)
-                  : Colors.cyanAccent.withValues(alpha: 0.35),
+                  : Color(0xFF0284C7).withValues(alpha: 0.35),
             ),
           ),
           child: Text(
             '$factor (${sorted.length}): $preview$extra',
             style: TextStyle(
               fontSize: 11,
-              color: hasUnknown ? Colors.amberAccent : Colors.cyanAccent,
+              color: hasUnknown ? Color(0xFFD97706) : Color(0xFF0284C7),
             ),
           ),
         ),
@@ -1340,23 +1340,23 @@ class _FactorGroupingDesignerDialogState
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF0B1120),
+        color: const Color(0xFFF0F4F8),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white12),
+        border: Border.all(color: const Color(0xFFCBD5E1)),
       ),
       child: Row(
         children: [
           Icon(
             _factorNames.isEmpty ? Icons.info_outline : Icons.check_circle_outline,
             size: 16,
-            color: _factorNames.isEmpty ? Colors.amber : Colors.greenAccent,
+            color: _factorNames.isEmpty ? Colors.amber : Color(0xFF16A34A),
           ),
           const SizedBox(width: 8),
           Expanded(
             child: _factorNames.isEmpty
                 ? const Text(
                     'No factors detected yet — load a sheet (Tab 2) or extract from filenames (Tab 3).',
-                    style: TextStyle(fontSize: 11.5, color: Colors.amberAccent),
+                    style: TextStyle(fontSize: 11.5, color: Color(0xFFD97706)),
                   )
                 : Wrap(
                     spacing: 6,
@@ -1409,7 +1409,7 @@ class _FactorGroupingDesignerDialogState
         Expanded(
           child: Container(
             decoration: BoxDecoration(
-              border: Border.all(color: Colors.white12),
+              border: Border.all(color: const Color(0xFFCBD5E1)),
               borderRadius: BorderRadius.circular(8),
             ),
             child: ListView(

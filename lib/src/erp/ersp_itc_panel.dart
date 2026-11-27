@@ -337,7 +337,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Card(
-            color: const Color(0xFF1E293B),
+            color: const Color(0xFFFFFFFF),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Wrap(
@@ -453,7 +453,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
           if (_status.isNotEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Text(_status, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+              child: Text(_status, style: const TextStyle(fontSize: 12, color: Color(0xFF475569))),
             ),
           if (res != null) ...[
             const SizedBox(height: 8),
@@ -709,7 +709,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Card(
-          color: const Color(0xFF1E293B),
+          color: const Color(0xFFFFFFFF),
           margin: const EdgeInsets.only(bottom: 8),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -720,7 +720,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
               children: [
                 const Text(
                   'Topo Window:',
-                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amberAccent),
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFD97706)),
                 ),
                 SizedBox(
                   width: 92,
@@ -830,7 +830,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
     ]..sort((a, b) => a.idx.compareTo(b.idx));
 
     return Card(
-      color: const Color(0xFF0F172A),
+      color: const Color(0xFFF0F4F8),
       child: Padding(
         padding: const EdgeInsets.all(10),
         child: Column(
@@ -871,7 +871,7 @@ class _ErspItcPanelState extends State<ErspItcPanel> {
                             ? const Color(0xFF1E3A8A)
                             : const Color(0xFF991B1B),
                         borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: Colors.white24),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
                       ),
                       child: Text(
                         '${tr.idx + 1}',

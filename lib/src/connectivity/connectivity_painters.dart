@@ -111,7 +111,7 @@ class ConnMatrixPainter extends CustomPainter {
     for (var a = 0; a < n; a++) {
       for (var b = 0; b < n; b++) {
         final v = net.matrix[order[a]][order[b]];
-        final color = a == b || v.isNaN ? const Color(0xFF1E293B) : viridis((v - lo) / (hi - lo));
+        final color = a == b || v.isNaN ? const Color(0xFFE2E8F0) : viridis((v - lo) / (hi - lo));
         canvas.drawRect(Rect.fromLTWH(left + b * cell, top + a * cell, cell + .5, cell + .5), Paint()..color = color);
       }
     }
@@ -135,7 +135,7 @@ class ConnMatrixPainter extends CustomPainter {
     final fs = math.max(6.0, math.min(10.0, cell * .8));
     if (cell >= 6) {
       for (var a = 0; a < n; a++) {
-        final color = comm == null ? Colors.white70 : communityColor(comm[order[a]]);
+        final color = comm == null ? const Color(0xFF1E293B) : communityColor(comm[order[a]]);
         final t = _text(net.labels[order[a]], fs, color);
         t.paint(canvas, Offset(left - t.width - 4, top + a * cell + (cell - t.height) / 2));
         canvas.save();
@@ -145,7 +145,7 @@ class ConnMatrixPainter extends CustomPainter {
         canvas.restore();
       }
     }
-    final head = _text(net.directed ? 'rows = source  →  columns = target' : 'symmetric (undirected)', 10, Colors.white54);
+    final head = _text(net.directed ? 'rows = source  →  columns = target' : 'symmetric (undirected)', 10, const Color(0xFF64748B));
     head.paint(canvas, Offset(left, 4));
     // colour bar
     final bx = left + side + 14;
@@ -155,8 +155,8 @@ class ConnMatrixPainter extends CustomPainter {
         Paint()..color = viridis(i / 99),
       );
     }
-    _text(hi.toStringAsFixed(2), 9, Colors.white70).paint(canvas, Offset(bx + 13, top - 4));
-    _text(lo.toStringAsFixed(2), 9, Colors.white70).paint(canvas, Offset(bx + 13, top + side - 10));
+    _text(hi.toStringAsFixed(2), 9, const Color(0xFF475569)).paint(canvas, Offset(bx + 13, top - 4));
+    _text(lo.toStringAsFixed(2), 9, const Color(0xFF475569)).paint(canvas, Offset(bx + 13, top + side - 10));
   }
 
   @override
@@ -197,7 +197,7 @@ class ConnGraphPainter extends CustomPainter {
       final head = Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5
-        ..color = Colors.white24;
+        ..color = const Color(0xFF94A3B8);
       canvas.drawCircle(c, r + 12, head);
       canvas.drawPath(
         Path()
@@ -281,10 +281,10 @@ class ConnGraphPainter extends CustomPainter {
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.2
-          ..color = comm == null ? Colors.white54 : communityColor(comm[i]),
+          ..color = comm == null ? const Color(0xFF475569) : communityColor(comm[i]),
       );
       if (showLabels) {
-        final t = _text(net.labels[i], 9, Colors.white);
+        final t = _text(net.labels[i], 9, const Color(0xFF1E293B));
         Offset at = nodes[i] - Offset(t.width / 2, t.height / 2);
         if (positions == null) {
           final dir = nodes[i] - c;
@@ -295,7 +295,7 @@ class ConnGraphPainter extends CustomPainter {
       }
     }
     if (values != null && lo.isFinite) {
-      final lt = _text('${kMeasureTitles[metric] ?? metric}: ${lo.toStringAsFixed(2)} – ${hi.toStringAsFixed(2)}', 10, Colors.white70);
+      final lt = _text('${kMeasureTitles[metric] ?? metric}: ${lo.toStringAsFixed(2)} – ${hi.toStringAsFixed(2)}', 10, const Color(0xFF475569));
       lt.paint(canvas, Offset(8, size.height - lt.height - 6));
     }
   }

@@ -1194,9 +1194,9 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF020617),
+                      color: const Color(0xFFF8F9FB),
                       borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.white24),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
                     ),
                     child: Row(
                       children: [
@@ -1225,7 +1225,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                       'Or download from https://www.gyan.dev/ffmpeg/builds/ (release-essentials ZIP) '
                       'and copy bin\\ffmpeg.exe + bin\\ffprobe.exe either onto PATH or into the '
                       'CCS EEG Studio folder next to ccs_eeg_app.exe.',
-                      style: TextStyle(fontSize: 11, color: Colors.white70),
+                      style: TextStyle(fontSize: 11, color: const Color(0xFF475569)),
                     ),
                   ],
                   if (feedback != null) ...[
@@ -1234,7 +1234,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                       feedback!,
                       style: TextStyle(
                         fontSize: 11.5,
-                        color: ok ? Colors.greenAccent : Colors.amberAccent,
+                        color: ok ? const Color(0xFF16A34A) : const Color(0xFFD97706),
                       ),
                     ),
                   ],
@@ -1274,10 +1274,10 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
         final tracking = ctrl.trackingFor(ctrl.eegPath);
         return Material(
           elevation: 12,
-          color: const Color(0xFF0F172A),
+          color: const Color(0xFFF8F9FB),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
-            side: const BorderSide(color: Color(0xFF334155)),
+            side: const BorderSide(color: Color(0xFFCBD5E1)),
           ),
           child: Column(
             children: [
@@ -1287,12 +1287,12 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: const BoxDecoration(
-                    color: Color(0xFF1E293B),
+                    color: Color(0xFFFFFFFF),
                     borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.ondemand_video, size: 15, color: Colors.cyanAccent),
+                      const Icon(Icons.ondemand_video, size: 15, color: const Color(0xFF0284C7)),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Tooltip(
@@ -1363,7 +1363,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                     style: TextStyle(
                       fontSize: 10,
                       color: MediaSyncService.findTool('ffmpeg') == null
-                          ? Colors.white54
+                          ? const Color(0xFF64748B)
                           : null,
                     ),
                   ),
@@ -1377,16 +1377,16 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   decoration: BoxDecoration(
                     color: Colors.amber.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.35)),
+                    border: Border.all(color: const Color(0xFFD97706).withValues(alpha: 0.35)),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.info_outline, size: 13, color: Colors.amberAccent),
+                      const Icon(Icons.info_outline, size: 13, color: const Color(0xFFD97706)),
                       const SizedBox(width: 6),
                       const Expanded(
                         child: Text(
                           'FFmpeg not found: playback & .wav work, but waveform/envelope & Speech Tracking for .mp4/.m4a/.mp3 need FFmpeg.',
-                          style: TextStyle(fontSize: 9.5, color: Colors.amberAccent),
+                          style: TextStyle(fontSize: 9.5, color: const Color(0xFFD97706)),
                         ),
                       ),
                       TextButton(
@@ -1434,7 +1434,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                             'No loaded media covers this moment '
                             '(EEG ${_hms(ctrl.eegSec)}). Click inside a media range on the plot.',
                             textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 11, color: Colors.amberAccent),
+                            style: const TextStyle(fontSize: 11, color: const Color(0xFFD97706)),
                           ),
                         ),
                     ],
@@ -1450,7 +1450,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                           : ctrl.outOfRange
                               ? 'No loaded media covers this moment (EEG ${_hms(ctrl.eegSec)}).'
                               : '${seg.audioSourceKind} · ${seg.durationSeconds.toStringAsFixed(1)} s',
-                      style: const TextStyle(fontSize: 11, color: Colors.white70),
+                      style: const TextStyle(fontSize: 11, color: const Color(0xFF475569)),
                       textAlign: TextAlign.center,
                     ),
                   ),
@@ -1466,14 +1466,14 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   child: Row(
                     children: [
                       Icon(seg.isVideo ? Icons.movie : Icons.headphones,
-                          size: 12, color: Colors.amberAccent),
+                          size: 12, color: const Color(0xFFD97706)),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Tooltip(
                           message: '${seg.path}\n${seg.syncNote}',
                           child: Text(
                             'Blue: waveform · Yellow: speech envelope · ${seg.audioSourceDescription}',
-                            style: const TextStyle(fontSize: 9.5, color: Colors.white70),
+                            style: const TextStyle(fontSize: 9.5, color: const Color(0xFF475569)),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -1494,13 +1494,13 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                               decoration: BoxDecoration(
                                 color: _windowHalfSec == opt.$2
-                                    ? Colors.cyanAccent.withValues(alpha: 0.22)
-                                    : Colors.white10,
+                                    ? const Color(0xFF0284C7).withValues(alpha: 0.22)
+                                    : const Color(0xFFE2E8F0),
                                 borderRadius: BorderRadius.circular(4),
                                 border: Border.all(
                                   color: _windowHalfSec == opt.$2
-                                      ? Colors.cyanAccent
-                                      : Colors.white24,
+                                      ? const Color(0xFF0284C7)
+                                      : const Color(0xFFCBD5E1),
                                   width: 0.7,
                                 ),
                               ),
@@ -1509,8 +1509,8 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                                 style: TextStyle(
                                   fontSize: 9,
                                   color: _windowHalfSec == opt.$2
-                                      ? Colors.cyanAccent
-                                      : Colors.white70,
+                                      ? const Color(0xFF0284C7)
+                                      : const Color(0xFF475569),
                                 ),
                               ),
                             ),
@@ -1523,9 +1523,9 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   height: 62,
                   margin: const EdgeInsets.fromLTRB(8, 2, 8, 2),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF020617),
+                    color: const Color(0xFFF8F9FB),
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.white12),
+                    border: Border.all(color: const Color(0xFFCBD5E1)),
                   ),
                   child: LayoutBuilder(
                     builder: (ctx, box) {
@@ -1608,7 +1608,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                     ),
                     Text(
                       'EEG ${ctrl.eegSec.toStringAsFixed(1)}s',
-                      style: const TextStyle(fontSize: 10, color: Colors.cyanAccent),
+                      style: const TextStyle(fontSize: 10, color: const Color(0xFF0284C7)),
                     ),
                     if (seg != null) ...[
                       TextButton(
@@ -1656,7 +1656,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                             minimumSize: Size.zero,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            side: const BorderSide(color: Colors.white24),
+                            side: const BorderSide(color: const Color(0xFFCBD5E1)),
                           ),
                         ),
                       ),
@@ -1733,7 +1733,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: Text(
                     seg.syncNote,
-                    style: const TextStyle(fontSize: 9.5, color: Colors.white54),
+                    style: const TextStyle(fontSize: 9.5, color: const Color(0xFF64748B)),
                   ),
                 ),
               if (_trackingError != null)
@@ -1741,7 +1741,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   child: Text(
                     _trackingError!,
-                    style: const TextStyle(fontSize: 10, color: Colors.redAccent),
+                    style: const TextStyle(fontSize: 10, color: const Color(0xFFDC2626)),
                   ),
                 ),
               if (tracking != null)
@@ -1752,7 +1752,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   decoration: BoxDecoration(
                     color: Colors.teal.withValues(alpha: 0.14),
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.tealAccent.withValues(alpha: 0.35)),
+                    border: Border.all(color: const Color(0xFF0F766E).withValues(alpha: 0.35)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1762,7 +1762,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                         'Decoder Reconstruction r=${tracking.decoderReconstructionR.toStringAsFixed(3)} '
                         '(p≈${tracking.decoderPApprox.toStringAsExponential(1)}, ${tracking.overlapSeconds.toStringAsFixed(1)} s overlap) — '
                         'time series shown in Plots & Report',
-                        style: const TextStyle(fontSize: 10, color: Colors.tealAccent),
+                        style: const TextStyle(fontSize: 10, color: const Color(0xFF0F766E)),
                       ),
                     ],
                   ),
@@ -1775,7 +1775,7 @@ class _SyncedMediaPanelState extends State<SyncedMediaPanel> {
                   onPanUpdate: (d) => widget.onResize(d.delta),
                   child: const Padding(
                     padding: EdgeInsets.all(4),
-                    child: Icon(Icons.drag_handle, size: 14, color: Colors.white38),
+                    child: Icon(Icons.drag_handle, size: 14, color: const Color(0xFF94A3B8)),
                   ),
                 ),
               ),
@@ -1882,7 +1882,7 @@ class _SyncMediaDialogState extends State<_SyncMediaDialog> {
             children: [
               const Text(
                 'Works for independent phone, recorder, or laptop files (no video required):',
-                style: TextStyle(fontSize: 11.5, color: Colors.white70),
+                style: TextStyle(fontSize: 11.5, color: const Color(0xFF475569)),
               ),
               const SizedBox(height: 12),
               const Text(
@@ -1893,7 +1893,7 @@ class _SyncMediaDialogState extends State<_SyncMediaDialog> {
               const Text(
                 'Pick a shared moment you can hear/see in the media and locate on the EEG plot '
                 '(e.g. a clap, bell, verbal cue, or bell silence). Accepts seconds or mm:ss.',
-                style: TextStyle(fontSize: 11, color: Colors.white70),
+                style: TextStyle(fontSize: 11, color: const Color(0xFF475569)),
               ),
               const SizedBox(height: 8),
               Row(
@@ -2021,7 +2021,7 @@ class _SyncMediaDialogState extends State<_SyncMediaDialog> {
                 Text(
                   'EEG started at ${_formatClockTime(ctrl.eegStartTime!)}. Enter the true local '
                   'start time when the phone/recorder started:',
-                  style: const TextStyle(fontSize: 11, color: Colors.white70),
+                  style: const TextStyle(fontSize: 11, color: const Color(0xFF475569)),
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -2060,7 +2060,7 @@ class _SyncMediaDialogState extends State<_SyncMediaDialog> {
               ],
               if (_errorMsg != null) ...[
                 const SizedBox(height: 10),
-                Text(_errorMsg!, style: const TextStyle(color: Colors.redAccent, fontSize: 11)),
+                Text(_errorMsg!, style: const TextStyle(color: const Color(0xFFDC2626), fontSize: 11)),
               ],
             ],
           ),
@@ -2076,7 +2076,7 @@ class _SyncMediaDialogState extends State<_SyncMediaDialog> {
   }
 }
 
-void _paintLabel(Canvas canvas, String text, Offset at, {Color color = Colors.white70, double size = 10, double maxWidth = 900}) {
+void _paintLabel(Canvas canvas, String text, Offset at, {Color color = const Color(0xFF475569), double size = 10, double maxWidth = 900}) {
   final tp = TextPainter(
     text: TextSpan(text: text, style: TextStyle(color: color, fontSize: size)),
     textDirection: TextDirection.ltr,
@@ -2126,7 +2126,7 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
       maxPeak = math.max(maxPeak, math.max(minBins[i].abs(), maxBins[i].abs()));
     }
     final wavePaint = Paint()
-      ..color = Colors.lightBlueAccent.withValues(alpha: 0.45)
+      ..color = const Color(0xFF3B6EA5).withValues(alpha: 0.45)
       ..strokeWidth = 1.0;
     for (var i = 0; showWaveform && i < n; i++) {
       final frac = i / (n - 1);
@@ -2159,7 +2159,7 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
       canvas.drawPath(
         path,
         Paint()
-          ..color = Colors.amberAccent
+          ..color = const Color(0xFFD97706)
           ..strokeWidth = 1.4
           ..style = PaintingStyle.stroke,
       );
@@ -2170,7 +2170,7 @@ class AudioWaveformEnvelopePainter extends CustomPainter {
       Offset(cx, 0),
       Offset(cx, size.height),
       Paint()
-        ..color = Colors.redAccent
+        ..color = const Color(0xFFDC2626)
         ..strokeWidth = 1.8,
     );
   }
@@ -2237,7 +2237,7 @@ class SessionAlignedAudioPainter extends CustomPainter {
         maxPeak = math.max(maxPeak, math.max(minBins[i].abs(), maxBins[i].abs()));
       }
       final wave = Paint()
-        ..color = Colors.lightBlueAccent.withValues(alpha: 0.5)
+        ..color = const Color(0xFF3B6EA5).withValues(alpha: 0.5)
         ..strokeWidth = 1.0;
       for (var i = 0; showWaveform && i < n; i++) {
         final t = segStartSec + i / (n - 1) * segDurationSec;
@@ -2272,7 +2272,7 @@ class SessionAlignedAudioPainter extends CustomPainter {
         canvas.drawPath(
           path,
           Paint()
-            ..color = Colors.amberAccent
+            ..color = const Color(0xFFD97706)
             ..strokeWidth = 1.4
             ..style = PaintingStyle.stroke,
         );
@@ -2288,7 +2288,7 @@ class SessionAlignedAudioPainter extends CustomPainter {
           ..strokeWidth = 1.6,
       );
     }
-    _paintLabel(canvas, label, Offset(left + 6, 3), color: Colors.amberAccent, size: 10, maxWidth: math.max(1, right - left - 12));
+    _paintLabel(canvas, label, Offset(left + 6, 3), color: const Color(0xFFD97706), size: 10, maxWidth: math.max(1, right - left - 12));
     canvas.restore();
   }
 
@@ -2352,11 +2352,11 @@ class TrackingSeriesPainter extends CustomPainter {
       Offset(left, yOf(0)),
       Offset(right, yOf(0)),
       Paint()
-        ..color = Colors.white24
+        ..color = const Color(0xFFCBD5E1)
         ..strokeWidth = 1,
     );
-    const decColor = Colors.cyanAccent;
-    const encColor = Colors.amberAccent;
+    const decColor = const Color(0xFF0284C7);
+    const encColor = const Color(0xFFD97706);
     _dashedHLine(canvas, left, right, yOf(series.decoderNull95),
         Paint()..color = decColor.withValues(alpha: 0.5)..strokeWidth = 1);
     _dashedHLine(canvas, left, right, yOf(series.encodingNull95),

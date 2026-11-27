@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.64</b> ·
+  <b>Current version: 1.2.65</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
   <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
@@ -39,7 +39,7 @@
 
 | Platform | Package | Direct Download |
 | :--- | :--- | :--- |
-| **macOS** | Apple Silicon ZIP (macOS 12+) | [CCSEEGStudio-macos.zip](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-macos.zip) |
+| **macOS** | Universal (Apple Silicon + Intel) ZIP (macOS 12+) | [CCSEEGStudio-macos.zip](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-macos.zip) |
 | **Windows** | 64-bit Installer (Windows 10/11) | [CCSEEGStudio-Installer.exe](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-Installer.exe) |
 | **Linux (Debian / Ubuntu)** | amd64 `.deb` | [CCSEEGStudio-linux-amd64.deb](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-linux-amd64.deb) |
 | **Linux (RHEL / AlmaLinux)** | x86_64 `.rpm` | [CCSEEGStudio-linux-x86_64.rpm](https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest/download/CCSEEGStudio-linux-x86_64.rpm) |
@@ -72,6 +72,18 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 </p>
 
 ---
+
+## ✨ What's New in v1.2.65
+
+- **Light Clinical UI Theme & Workflow Persistence:** Adopted a clean light clinical palette matching **CCS Sleep Studio** across all workspaces, progress bars, waveforms, and statistical plots, with persistent green completion ticks on the Workflow Modules strip when navigating between modules and a refreshed, tightly cropped **CCS EEG Studio** app icon.
+- **Universal macOS (Apple Silicon + Intel) & Windows Fixes:** Packaged `ccs-eeg-engine` as a universal `arm64 + x86_64` macOS binary, increased Windows Rayon worker stacks (`8 MB`), added Windows long-path (`\\?\...`) and short cache naming support to fix Windows source-space extraction crashes, and restored ERP Measurement Window visibility on Windows.
+- **Individual Alpha & Spectral Ratios Feature Extraction:** Added toggleable **Individual Alpha** (`IAF_Hz`, `IndAlpha_PSD`, `IndTheta_PSD`, `Theta/Alpha_FreqSliding_Hz`) with a configurable search range and the 8 **Spectral Ratios** directly in the Feature Extraction panel and CSV exports.
+- **Surround-Aware Interpolation & 5-Step Default Preprocessing:** Added configurable 3D surround-support checks (`min neighbors`, `max angle`, `max azimuthal gap`) to skip unsupported perimeter bad electrodes safely, set Average re-referencing as default (5 active preprocessing steps), and added `Standard (5)` / `Full (ICA+ASR)` preset chips.
+- **Unified Source-Space TopoStats, State Dynamics & Batch Channel Numbers:** Routed source-level feature CSVs through the full statistical TopoStats + State Dynamics pipeline with **3-axis Glass Brains** in place of bottom scalp topoplots, updated waveform controls for `ROIs` / `12 ROIs/page`, and added numeric/positional batch channel matching across mixed channel counts.
+
+## ✨ What's New in v1.2.64
+
+- Standalone native multi-factor Group Statistics (`Linear Mixed Model / GLM` + Type III Wald tests), composable multi-source factor grouping, interactive Stage 4 Grouped Grand Averages, explicit `Contrast scope`, multiple ERP differences (`+ Add difference`), and enhanced statistical plots with jittered box points and Markdown in-app release notes.
 
 ## ✨ What's New in v1.2.61
 
@@ -217,7 +229,7 @@ iscc windows\installer.iss                         # Windows (Inno Setup .exe)
 | Category | App Method | Paper or Original Reference | Studio Convention / Scope |
 | :--- | :--- | :--- | :--- |
 | **Preprocessing** | Bad channel detection (PREP-style) | Bigdely-Shamlo et al. (2015), [doi:10.3389/fninf.2015.00016](https://doi.org/10.3389/fninf.2015.00016) | 2 s windowed robust MAD, HF noise ratio, and windowed spatial correlation on filtered `f64` channels + manual table. |
-| **Preprocessing** | Spherical spline interpolation | Perrin et al. (1989), [doi:10.1016/0013-4694(89)90180-6](https://doi.org/10.1016/0013-4694(89)90180-6) | Legendre spherical spline matrix over 10–05 electrode geometry. |
+| **Preprocessing** | Spherical spline interpolation | Perrin et al. (1989), [doi:10.1016/0013-4694(89)90180-6](https://doi.org/10.1016/0013-4694(89)90180-6) | Surround-aware Legendre spherical spline over 10–05 geometry (skips bad channels lacking angular neighbor support when enabled). |
 | **Preprocessing** | Infomax ICA / `runica` | Bell & Sejnowski (1995), [doi:10.1162/neco.1995.7.6.1129](https://doi.org/10.1162/neco.1995.7.6.1129); [EEGLAB](https://github.com/sccn/eeglab) | Native `runica`/`pop_runica` port; fixed seed; two-stage CCS component selection. |
 | **Preprocessing** | Picard | Ablin, Cardoso & Gramfort (2018), [doi:10.1109/TSP.2018.2844203](https://doi.org/10.1109/TSP.2018.2844203); [code](https://github.com/mind-inria/picard) | Native port of `python-picard` 0.8 (extended & orthogonal). |
 | **Preprocessing** | ICLabel | Pion-Tonachini et al. (2019), [doi:10.1016/j.neuroimage.2019.05.026](https://doi.org/10.1016/j.neuroimage.2019.05.026); [ICLabel](https://github.com/sccn/ICLabel) | Default network; dynamic class thresholds; recognized 10–05 scalp positions. |
@@ -232,6 +244,7 @@ iscc windows\installer.iss                         # Windows (Inno Setup .exe)
 | **Spectral & IAF** | Frequency Sliding (`*_FreqSliding_Hz`) | Cohen (2014), [doi:10.1523/JNEUROSCI.2619-14.2014](https://doi.org/10.1523/JNEUROSCI.2619-14.2014) | Reflection-padded plateau bandpass + Hilbert phase derivative + 10-order (50–400 ms) median filter. |
 | **Spectral & IAF** | FOOOF / `specparam` | Donoghue et al. (2020), [doi:10.1038/s41593-020-00744-x](https://doi.org/10.1038/s41593-020-00744-x) | Native 1–40 Hz aperiodic/periodic Gaussian peak parameterization. |
 | **Spectral & IAF** | IRASA | Wen & Liu (2016), [doi:10.1007/s10548-015-0448-0](https://doi.org/10.1007/s10548-015-0448-0) | Polyphase fractional resampling (`h` factors) separating 1/f fractal and oscillatory spectra. |
+| **Spectral & IAF** | Spectral Ratios & Bandpower | Klimesch (1999); Moreau et al. (2020) | Dedicated Feature Extraction toggle for 8 band ratios (`Ratio_DeltaTheta`, `Ratio_ThetaBeta`, `Ratio_DAR`, `Ratio_TBR`, etc.). |
 | **Temporal & Complexity** | DFA & fE:I | Hardstone et al. (2012), [doi:10.3389/fphys.2012.00450](https://doi.org/10.3389/fphys.2012.00450); Bruining et al. (2020), [doi:10.1038/s41598-020-65500-4](https://doi.org/10.1038/s41598-020-65500-4) | Band-limited Hilbert envelope DFA exponent & excitation–inhibition ratio (`fE:I`). |
 | **Temporal & Complexity** | ACW & Nonlinear Complexity | Golesorkhi et al. (2021), [doi:10.1038/s42003-021-02483-6](https://doi.org/10.1038/s42003-021-02483-6); Higuchi (1988); Richman & Moorman (2000); Bandt & Pompe (2002); Lempel & Ziv (1976) | ACW-50/0, Higuchi FD, Petrosian FD, Sample Entropy, Permutation Entropy, and LZC. |
 | **Connectivity** | iCOH, PLV, ciPLV, PLI, wPLI, MIC/MIM, GC/GC-TR | Nolte et al. (2004); Lachaux et al. (1999); Bruña et al. (2018); Stam et al. (2007); Vinck et al. (2011); Ewald et al. (2012); Winkler et al. (2016) | 4–40 Hz Morlet & multitaper connectivity + time-reversed Granger contrast (`GC − GC-TR`). |

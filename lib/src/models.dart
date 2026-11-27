@@ -6,7 +6,7 @@ import 'erp/stim_epochs.dart';
 
 export 'erp/stim_epochs.dart' show StimEpochSpec;
 
-const gedaiImplementation = 'gedai-v4-reference-broadband-mra9';
+const gedaiImplementation = 'gedai-v5-unique-pit-reference';
 
 class LoadedEeg {
   const LoadedEeg({
@@ -160,6 +160,10 @@ class PreprocessingOptions {
     required this.badchannel,
     required this.gedai,
     required this.interpolate,
+    this.interpolateRequireSurround = true,
+    this.interpolateMinNeighbors = 3,
+    this.interpolateMaxAngleDeg = 60.0,
+    this.interpolateMaxGapDeg = 210.0,
     required this.gedaiEpochSeconds,
     required this.gedaiThreshold,
     this.sourceLocalization = false,
@@ -221,6 +225,14 @@ class PreprocessingOptions {
     badchannel: json['badchannel'] as bool? ?? true,
     gedai: json['gedai'] as bool? ?? false,
     interpolate: json['interpolate'] as bool? ?? true,
+    interpolateRequireSurround:
+        json['interpolate_require_surround'] as bool? ?? true,
+    interpolateMinNeighbors:
+        (json['interpolate_min_neighbors'] as num?)?.toInt() ?? 3,
+    interpolateMaxAngleDeg:
+        (json['interpolate_max_angle_deg'] as num?)?.toDouble() ?? 60.0,
+    interpolateMaxGapDeg:
+        (json['interpolate_max_gap_deg'] as num?)?.toDouble() ?? 210.0,
     gedaiEpochSeconds: (json['gedai_epoch_seconds'] as num?)?.toDouble() ?? 1,
     gedaiThreshold: json['gedai_threshold'] as String? ?? 'auto',
     referenceMode: json['reference_mode'] as String? ?? 'none',
@@ -292,6 +304,10 @@ class PreprocessingOptions {
   final bool badchannel;
   final bool gedai;
   final bool interpolate;
+  final bool interpolateRequireSurround;
+  final int interpolateMinNeighbors;
+  final double interpolateMaxAngleDeg;
+  final double interpolateMaxGapDeg;
   final double gedaiEpochSeconds;
   final String gedaiThreshold;
   final bool sourceLocalization;
@@ -362,6 +378,10 @@ class PreprocessingOptions {
     'gedai': gedai,
     if (gedai) 'gedai_implementation': gedaiImplementation,
     'interpolate': interpolate,
+    'interpolate_require_surround': interpolateRequireSurround,
+    'interpolate_min_neighbors': interpolateMinNeighbors,
+    'interpolate_max_angle_deg': interpolateMaxAngleDeg,
+    'interpolate_max_gap_deg': interpolateMaxGapDeg,
     'gedai_epoch_seconds': gedaiEpochSeconds,
     'gedai_threshold': gedaiThreshold,
     'source_localization': sourceLocalization,
@@ -418,6 +438,10 @@ class ExtractionOptions {
     required this.endSeconds,
     required this.binSeconds,
     required this.psd,
+    this.individualAlpha = true,
+    this.iafMinHz = 7.0,
+    this.iafMaxHz = 14.0,
+    this.spectralRatios = true,
     required this.fooof,
     required this.irasa,
     required this.nonlinear,
@@ -456,6 +480,10 @@ class ExtractionOptions {
   final double endSeconds;
   final double binSeconds;
   final bool psd;
+  final bool individualAlpha;
+  final double iafMinHz;
+  final double iafMaxHz;
+  final bool spectralRatios;
   final bool fooof;
   final bool irasa;
   final bool nonlinear;
@@ -498,6 +526,10 @@ class ExtractionOptions {
     'end_seconds': endSeconds,
     'bin_seconds': binSeconds,
     'psd': psd,
+    'individual_alpha': individualAlpha,
+    'iaf_min_hz': iafMinHz,
+    'iaf_max_hz': iafMaxHz,
+    'spectral_ratios': spectralRatios,
     'psd_method': psdMethod,
     'psd_multitaper_nw': psdMultitaperNw,
     'psd_multitaper_adaptive': psdMultitaperAdaptive,
@@ -553,6 +585,10 @@ class AnalysisConfig {
   bool badChannels = true;
   bool gedai = false;
   bool interpolate = true;
+  bool interpolateRequireSurround = true;
+  int interpolateMinNeighbors = 3;
+  double interpolateMaxAngleDeg = 60.0;
+  double interpolateMaxGapDeg = 210.0;
   bool epochBeforeGedai = false;
   double preprocessingEpochSeconds = 5;
   double gedaiEpochSeconds = 1;
@@ -583,7 +619,7 @@ class AnalysisConfig {
   int bsscaNRemove = 3;
   double iccThreshold = 0.7;
   int wicaLevels = 5;
-  String referenceMode = 'none';
+  String referenceMode = 'average';
   List<String> referenceChannels = [];
   int firTaps = 0;
   double badVarianceRatio = 25, splineRegularization = 1e-5;
@@ -645,6 +681,10 @@ class AnalysisConfig {
 
   // ── Feature families ─────────────────────────────────────────────────────
   bool psd = true;
+  bool individualAlpha = true;
+  double iafMinHz = 7.0;
+  double iafMaxHz = 14.0;
+  bool spectralRatios = true;
   String psdMethod = 'welch';
   double psdMultitaperNw = 3.0;
   bool psdMultitaperAdaptive = true;
@@ -706,7 +746,15 @@ class AnalysisConfig {
       wpli;
 
   bool get anyFeature =>
-      psd || fooof || irasa || nonlinear || dfaFei || acw || anyConnectivity;
+      psd ||
+      individualAlpha ||
+      spectralRatios ||
+      fooof ||
+      irasa ||
+      nonlinear ||
+      dfaFei ||
+      acw ||
+      anyConnectivity;
 
   // ── Channel handling ─────────────────────────────────────────────────────
   /// Channels the user has marked as non-EEG.  These are excluded from bad
@@ -785,6 +833,10 @@ class AnalysisConfig {
       badchannel: badChannels,
       gedai: gedai,
       interpolate: interpolate,
+      interpolateRequireSurround: interpolateRequireSurround,
+      interpolateMinNeighbors: interpolateMinNeighbors,
+      interpolateMaxAngleDeg: interpolateMaxAngleDeg,
+      interpolateMaxGapDeg: interpolateMaxGapDeg,
       gedaiEpochSeconds: gedaiEpochSeconds,
       gedaiThreshold: gedaiThreshold,
       referenceMode: referenceMode,
@@ -837,12 +889,17 @@ class AnalysisConfig {
   ExtractionOptions toExtractionOptions({
     List<String> nonEegChannels = const [],
     bool applyExclusions = true,
+    bool isSourceSpace = false,
   }) => ExtractionOptions(
     mode: mode,
     startSeconds: startSeconds,
     endSeconds: endSeconds,
     binSeconds: binSeconds,
     psd: psd,
+    individualAlpha: individualAlpha,
+    iafMinHz: iafMinHz,
+    iafMaxHz: iafMaxHz,
+    spectralRatios: spectralRatios,
     fooof: fooof,
     irasa: irasa,
     nonlinear: nonlinear,
@@ -883,16 +940,16 @@ class AnalysisConfig {
     psdAverage: psdAverage,
     psdBands: psdBands,
     advancedParameters: featureParameters,
-    referenceMode: featureReferenceMode,
-    referenceChannels: featureReferenceChannels,
+    referenceMode: isSourceSpace ? 'none' : featureReferenceMode,
+    referenceChannels: isSourceSpace ? const [] : featureReferenceChannels,
     coh: coh,
     plv: plv,
     ciplv: ciplv,
     pli: pli,
     wpli: wpli,
-    removeNonEeg: removeNonEeg,
+    removeNonEeg: isSourceSpace ? false : removeNonEeg,
     exclusions: applyExclusions ? exclusions : const [],
-    nonEegChannels: nonEegChannels,
+    nonEegChannels: isSourceSpace ? const [] : nonEegChannels,
   );
 
   Map<String, dynamic> toPreprocessingJson() => {
@@ -906,6 +963,10 @@ class AnalysisConfig {
     'bad_channels': badChannels,
     'manual_bad_channels': manualBadChannels,
     'interpolate': interpolate,
+    'interpolate_require_surround': interpolateRequireSurround,
+    'interpolate_min_neighbors': interpolateMinNeighbors,
+    'interpolate_max_angle_deg': interpolateMaxAngleDeg,
+    'interpolate_max_gap_deg': interpolateMaxGapDeg,
     'gedai': gedai,
     'gedai_epoch_seconds': gedaiEpochSeconds,
     'gedai_threshold': gedaiThreshold,
@@ -976,6 +1037,17 @@ class AnalysisConfig {
     if (json['bad_channels'] is bool)
       badChannels = json['bad_channels'] as bool;
     if (json['interpolate'] is bool) interpolate = json['interpolate'] as bool;
+    if (json['interpolate_require_surround'] is bool)
+      interpolateRequireSurround = json['interpolate_require_surround'] as bool;
+    if (json['interpolate_min_neighbors'] is num)
+      interpolateMinNeighbors =
+          (json['interpolate_min_neighbors'] as num).toInt();
+    if (json['interpolate_max_angle_deg'] is num)
+      interpolateMaxAngleDeg =
+          (json['interpolate_max_angle_deg'] as num).toDouble();
+    if (json['interpolate_max_gap_deg'] is num)
+      interpolateMaxGapDeg =
+          (json['interpolate_max_gap_deg'] as num).toDouble();
     if (json['gedai'] is bool) gedai = json['gedai'] as bool;
     if (json['gedai_epoch_seconds'] is num)
       gedaiEpochSeconds = (json['gedai_epoch_seconds'] as num).toDouble();

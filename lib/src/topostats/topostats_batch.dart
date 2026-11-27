@@ -12,13 +12,14 @@
 // several recordings in a `filename` column are split first.
 
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:pdf/pdf.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/widgets.dart' as pw;
 
-import '../feature_plotter.dart' show generateSourceFeaturePlots;
+import 'glass_brain_paint.dart';
 import 'topostats_engine.dart';
 import 'topostats_figure.dart';
 import 'topostats_runner.dart';
@@ -131,6 +132,7 @@ Future<List<TopoBatchOutput>> generateTopoStatsFigures({
   bool writePng = true,
   void Function(double progress, String message)? onProgress,
 }) async {
+  await GlassBrainAtlas.ensureLoaded();
   final outDir = '$outputDir${Platform.pathSeparator}Figures_TopoStats';
   Directory(outDir).createSync(recursive: true);
 
@@ -152,55 +154,55 @@ Future<List<TopoBatchOutput>> generateTopoStatsFigures({
     try {
       final det = detectChannels(files.first);
       final known = det.where(isStandard1020Channel).toList();
-      s = s.copyWith(channels: known.length >= 3 ? known : det);
+      final chans = known.length >= 3 ? known : det;
+      s = s.copyWith(
+        channels: chans,
+        customAdjacency: isSourceRoiLabels(chans)
+            ? GlassBrainAtlas.cached?.adjacencyFor(chans)
+            : null,
+      );
       if (s.reprChan != null && !s.channels.contains(s.reprChan)) {
-        s = s.copyWith(reprChan: s.channels.contains('Fz') ? 'Fz' : null);
+        s = s.copyWith(
+          reprChan: s.channels.contains('Fz')
+              ? 'Fz'
+              : (s.channels.isNotEmpty ? s.channels.first : null),
+        );
       }
     } catch (_) {}
-    final labels = detectChannels(files.first);
-    if (labels.isNotEmpty &&
-        labels.every((label) => !isStandard1020Channel(label))) {
-      onProgress?.call(
-        gi / groups.length,
-        'Rendering source ROI traces and heatmaps…',
-      );
-      final plots = await generateSourceFeaturePlots(
-        csvPaths: files,
-        outputDir: outDir,
-        epochSeconds: base.epochSize,
-        features: features,
-        onProgress: onProgress,
-      );
-      for (final plot in plots) {
-        var path = plot.path;
-        if (writePdf) {
-          final doc = pw.Document();
-          final bytes = await File(path).readAsBytes();
-          doc.addPage(
-            pw.Page(
-              pageFormat: PdfPageFormat.a3.landscape,
-              build: (_) => pw.Center(
-                child: pw.Image(pw.MemoryImage(bytes), fit: pw.BoxFit.contain),
-              ),
-            ),
-          );
-          final pdfPath = path.replaceFirst(RegExp(r'\.png$'), '.pdf');
-          await File(pdfPath).writeAsBytes(await doc.save());
-          if (!writePng) {
-            await File(path).delete();
-            path = pdfPath;
-          }
-        }
-        saved.add(TopoBatchOutput(path, recId, plot.feature));
-      }
-      gi++;
-      continue;
-    }
     final cols = numericFeatureColumns(files.first);
     var feats = (features ?? kReferenceFeatureList)
         .where(cols.contains)
         .toList();
     if (feats.isEmpty) feats = cols;
+    if (feats.isNotEmpty) {
+      try {
+        final baseIdx = names.indexWhere((n) => n.contains(s.baselineSession));
+        final baseFile = files[baseIdx >= 0 ? baseIdx : 0];
+        final p = parseFeatureCsv(baseFile, [feats.first], s.channels);
+        final ep = p.epochs[feats.first];
+        if (ep != null && ep.isNotEmpty) {
+          var maxMin = 0.0;
+          for (final e in ep) {
+            final tMin = (p.epochEndSeconds[e] ?? e * s.epochSize) / 60.0;
+            if (tMin > maxMin) maxMin = tMin;
+          }
+          if (maxMin > 0 && maxMin < s.baselineTmin + s.baselineDurationMin) {
+            final seg = math.max(
+              1e-3,
+              math.min(
+                s.segmentDurationMin,
+                ep.length >= 2 ? maxMin / 2.0 : maxMin,
+              ),
+            );
+            s = s.copyWith(
+              baselineTmin: 0.0,
+              segmentDurationMin: seg,
+              baselineDurationMin: seg,
+            );
+          }
+        }
+      } catch (_) {}
+    }
     onProgress?.call(
       gi / groups.length,
       '$recId: ${files.length} sessions, ${feats.length} features, baseline ${s.baselineSession}',

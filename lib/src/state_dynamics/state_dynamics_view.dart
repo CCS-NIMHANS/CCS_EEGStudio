@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../extraction_service.dart';
+import '../theme.dart';
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
@@ -1193,10 +1194,10 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
                   decoration: BoxDecoration(
                     color: isSelected
                         ? stColor.withValues(alpha: 0.14)
-                        : Colors.white.withValues(alpha: 0.02),
+                        : CcsTheme.surface,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: isSelected ? stColor : Colors.white12,
+                      color: isSelected ? stColor : CcsTheme.border,
                       width: isSelected ? 2.2 : 1.0,
                     ),
                   ),
@@ -1222,7 +1223,7 @@ class _StateDynamicsViewState extends State<StateDynamicsView> {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
-                                color: isSelected ? Colors.white : Colors.white70,
+                                color: isSelected ? CcsTheme.text : CcsTheme.textSecondary,
                               ),
                             ),
                             if (isSelected) ...[

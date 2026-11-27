@@ -109,8 +109,9 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
     try {
       final identity = sha256
           .convert(utf8.encode(jsonEncode(session.rejected.toList()..sort())))
-          .toString();
-      final dir = Directory('${_reviewFile!.path}.measurements/$identity');
+          .toString()
+          .substring(0, 16);
+      final dir = Directory('${_reviewFile!.parent.path}/.erp_m/$identity');
       await dir.create(recursive: true);
       final path = '${dir.path}/accepted.ccseeg';
       final accepted = session.accepted();
@@ -372,9 +373,9 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                         margin: imageAligned ? EdgeInsets.zero : const EdgeInsets.fromLTRB(12, 2, 12, 6),
                                         padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
                                         decoration: BoxDecoration(
-                                          color: const Color(0xFF0F172A),
+                                          color: const Color(0xFFF0F4F8),
                                           borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(color: Colors.white12),
+                                          border: Border.all(color: const Color(0xFFCBD5E1)),
                                         ),
                                         child: Column(
                                           children: [
@@ -415,12 +416,12 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                                       SizedBox(
                                                         width: 12,
                                                         height: 3,
-                                                        child: ColoredBox(color: Colors.white70),
+                                                        child: ColoredBox(color: Color(0xFF475569)),
                                                       ),
                                                       SizedBox(width: 4),
                                                       Text(
                                                         'Difference (B − A)',
-                                                        style: TextStyle(fontSize: 11, color: Colors.white70),
+                                                        style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
                                                       ),
                                                     ],
                                                   ),
@@ -609,8 +610,8 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(
-        color: Color(0xFF0B1120),
-        border: Border(bottom: BorderSide(color: Colors.white12)),
+        color: Color(0xFFF0F4F8),
+        border: Border(bottom: BorderSide(color: Color(0xFFCBD5E1))),
       ),
       child: Wrap(
         spacing: 8,
@@ -619,7 +620,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         children: [
           const Text(
             'Active Recording:',
-            style: TextStyle(fontSize: 11, color: Colors.white70, fontWeight: FontWeight.w600),
+            style: TextStyle(fontSize: 11, color: Color(0xFF1E293B), fontWeight: FontWeight.w600),
           ),
           for (final rec in recs)
             ChoiceChip(
@@ -631,10 +632,10 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                     : Icons.graphic_eq,
                 size: 14,
                 color: rec.path == input.path
-                    ? Colors.white
+                    ? const Color(0xFF1E293B)
                     : (rec.path.contains('_clean')
-                          ? Colors.greenAccent
-                          : Colors.white70),
+                          ? const Color(0xFF16A34A)
+                          : const Color(0xFF475569)),
               ),
               label: Text(
                 '${rec.path.split(RegExp(r'[/\\]')).last} (${rec.labels.length} ch · ${rec.sampleRate.round()} Hz)',
@@ -700,10 +701,10 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
       return Container(
         margin: const EdgeInsets.only(bottom: 10),
         decoration: BoxDecoration(
-          color: active ? const Color(0xFF172554).withValues(alpha: 0.45) : const Color(0xFF0F172A),
+          color: active ? const Color(0xFF3B6EA5).withValues(alpha: 0.12) : const Color(0xFFFFFFFF),
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: active ? const Color(0xFF3B82F6) : Colors.white12,
+            color: active ? const Color(0xFF3B6EA5) : const Color(0xFFCBD5E1),
             width: active ? 1.4 : 1.0,
           ),
         ),
@@ -725,11 +726,11 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                         shape: BoxShape.circle,
                         color: done
                             ? const Color(0xFF16A34A).withValues(alpha: 0.25)
-                            : (active ? const Color(0xFF2563EB).withValues(alpha: 0.25) : Colors.white10),
+                            : (active ? const Color(0xFF3B6EA5).withValues(alpha: 0.15) : const Color(0xFFE2E8F0)),
                         border: Border.all(
                           color: done
                               ? const Color(0xFF22C55E)
-                              : (active ? const Color(0xFF60A5FA) : Colors.white38),
+                              : (active ? const Color(0xFF3B6EA5) : const Color(0xFF94A3B8)),
                         ),
                       ),
                       child: done
@@ -744,7 +745,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                           Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                           Text(
                             subtitle,
-                            style: const TextStyle(fontSize: 11, color: Colors.white60),
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -766,7 +767,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
               ),
             ),
             if (active && body != null) ...[
-              const Divider(height: 1, color: Colors.white12),
+              const Divider(height: 1, color: Color(0xFFCBD5E1)),
               Padding(padding: const EdgeInsets.all(10), child: body),
             ],
           ],
@@ -787,7 +788,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         const SizedBox(height: 4),
         Text(
           input.path.split(RegExp(r'[/\\]')).last,
-          style: const TextStyle(fontSize: 11, color: Colors.white60),
+          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(
@@ -798,7 +799,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
         Text(input.isEpoched
           ? '${input.epochCount} saved trials detected. Trial boundaries and condition labels are restored automatically.'
           : 'Continuous EEG · ${input.markers.length} events. Create trials below, or open a saved epoch file. Cleaned EEG alone does not contain saved trials.',
-          style: const TextStyle(fontSize: 11, color: Colors.white70)),
+          style: const TextStyle(fontSize: 11, color: Color(0xFF475569))),
         const SizedBox(height: 12),
         stepCard(
           step: 1,
@@ -853,7 +854,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(
                       'Click shaded epochs on the EEG plot to enable/disable ($enabledShadeCount/${shades.length} active).',
-                      style: const TextStyle(fontSize: 11, color: Colors.cyanAccent),
+                      style: const TextStyle(fontSize: 11, color: const Color(0xFF0284C7)),
                     ),
                   ),
               ] else
@@ -884,7 +885,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
               ? null
               : () => _openMeasurements(targetTab: 0, targetStep: 2),
           body: session == null
-              ? const Text('Create epochs in Step 1 to begin reviewing.', style: TextStyle(fontSize: 12, color: Colors.white60))
+              ? const Text('Create epochs in Step 1 to begin reviewing.', style: TextStyle(fontSize: 12, color: Color(0xFF64748B)))
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
@@ -968,33 +969,54 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                 for (final c in session.conditions)
                   Text('$c: n = ${session.counts[c]}', style: const TextStyle(fontSize: 12)),
               const SizedBox(height: 8),
+              const Text(
+                'Measurement window (ms)',
+                style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
               Row(
                 children: [
-                  const Text('Window (ms):', style: TextStyle(fontSize: 11, color: Colors.white70)),
-                  const SizedBox(width: 6),
                   Expanded(
                     child: TextField(
                       controller: _win0Ctrl,
-                      decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6)),
-                      style: const TextStyle(fontSize: 11),
+                      decoration: const InputDecoration(
+                        labelText: 'Start',
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      ),
+                      style: const TextStyle(fontSize: 12),
+                      onSubmitted: (_) {
+                        final a = double.tryParse(_win0Ctrl.text.trim());
+                        final b = double.tryParse(_win1Ctrl.text.trim());
+                        if (a != null && b != null) _updateMeasurementWindow(a, b);
+                      },
                     ),
                   ),
                   const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 4),
-                    child: Text('–', style: TextStyle(fontSize: 11)),
+                    padding: EdgeInsets.symmetric(horizontal: 6),
+                    child: Text('–', style: TextStyle(fontSize: 12)),
                   ),
                   Expanded(
                     child: TextField(
                       controller: _win1Ctrl,
-                      decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6)),
-                      style: const TextStyle(fontSize: 11),
+                      decoration: const InputDecoration(
+                        labelText: 'End',
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      ),
+                      style: const TextStyle(fontSize: 12),
+                      onSubmitted: (_) {
+                        final a = double.tryParse(_win0Ctrl.text.trim());
+                        final b = double.tryParse(_win1Ctrl.text.trim());
+                        if (a != null && b != null) _updateMeasurementWindow(a, b);
+                      },
                     ),
                   ),
-                  const SizedBox(width: 4),
+                  const SizedBox(width: 6),
                   OutlinedButton(
                     style: OutlinedButton.styleFrom(
                       visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     ),
                     onPressed: () {
                       final a = double.tryParse(_win0Ctrl.text.trim());
@@ -1040,7 +1062,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
             'Protocol changed — click Update Epochs to apply.',
             style: TextStyle(color: Colors.orange, fontSize: 12),
           ),
-        Text(_status, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+        Text(_status, style: const TextStyle(fontSize: 12, color: Color(0xFF475569))),
       ],
     );
     return Column(
@@ -1062,17 +1084,17 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                   decoration: const BoxDecoration(
-                                    color: Color(0xFF0F172A),
-                                    border: Border(bottom: BorderSide(color: Colors.white12)),
+                                    color: Color(0xFFF0F4F8),
+                                    border: Border(bottom: BorderSide(color: Color(0xFFCBD5E1))),
                                   ),
                                   child: Row(
                                     children: [
-                                      const Icon(Icons.layers, size: 16, color: Colors.cyanAccent),
+                                      const Icon(Icons.layers, size: 16, color: const Color(0xFF0284C7)),
                                       const SizedBox(width: 8),
                                       Expanded(
                                         child: Text(
                                           'Protocol Epoch Preview: $enabledShadeCount/${shades.length} epochs enabled · Click any shaded epoch on the EEG plot to enable/disable it',
-                                          style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                          style: const TextStyle(fontSize: 12, color: Color(0xFF475569)),
                                           overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
@@ -1321,7 +1343,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                     ],
                                     onChanged: (value) => setState(() => _butterflySource = value),
                                   ),
-                                const Text('Baseline (ms):', style: TextStyle(fontSize: 11, color: Colors.white70)),
+                                const Text('Baseline (ms):', style: TextStyle(fontSize: 11, color: Color(0xFF475569))),
                                 SizedBox(
                                   width: 62,
                                   child: TextField(
@@ -1330,7 +1352,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                     style: const TextStyle(fontSize: 12),
                                   ),
                                 ),
-                                const Text('to', style: TextStyle(fontSize: 11, color: Colors.white70)),
+                                const Text('to', style: TextStyle(fontSize: 11, color: Color(0xFF475569))),
                                 SizedBox(
                                   width: 62,
                                   child: TextField(
@@ -1432,9 +1454,9 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                     margin: const EdgeInsets.fromLTRB(0, 2, 12, 6),
                                     padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFF0F172A),
+                                      color: const Color(0xFFF0F4F8),
                                       borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(color: Colors.white12),
+                                      border: Border.all(color: const Color(0xFFCBD5E1)),
                                     ),
                                     child: Column(
                                       children: [
@@ -1443,7 +1465,7 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                           style: const TextStyle(
                                             fontSize: 11,
                                             fontWeight: FontWeight.bold,
-                                            color: Colors.cyanAccent,
+                                            color: const Color(0xFF0284C7),
                                           ),
                                         ),
                                         const SizedBox(height: 4),
@@ -1477,8 +1499,8 @@ class _InteractiveErpWorkspaceState extends State<InteractiveErpWorkspace> {
                                               style: OutlinedButton.styleFrom(
                                                 visualDensity: VisualDensity.compact,
                                                 foregroundColor: isIncluded
-                                                    ? Colors.orangeAccent
-                                                    : Colors.greenAccent,
+                                                    ? const Color(0xFFD97706)
+                                                    : const Color(0xFF16A34A),
                                               ),
                                               onPressed: () {
                                                 setState(() {
@@ -1583,7 +1605,16 @@ class _AveragePainter extends CustomPainter {
       if (x1 > x0) {
         canvas.drawRect(
           Rect.fromLTRB(x0, box.top, x1, box.bottom),
-          Paint()..color = const Color(0xFFFACC15).withValues(alpha: 0.10),
+          Paint()..color = const Color(0xFFF59E0B).withValues(alpha: 0.18),
+        );
+        final edgePaint = Paint()
+          ..color = const Color(0xFFD97706).withValues(alpha: 0.85)
+          ..strokeWidth = 1.2;
+        canvas.drawLine(Offset(x0, box.top), Offset(x0, box.bottom), edgePaint);
+        canvas.drawLine(Offset(x1, box.top), Offset(x1, box.bottom), edgePaint);
+        text(
+          '${windowStartMs.round()}–${windowEndMs.round()} ms',
+          Offset((x0 + 4).clamp(box.left, math.max(box.left, box.right - 80)), box.top + 3),
         );
       }
     }
@@ -1639,7 +1670,7 @@ class _AveragePainter extends CustomPainter {
       canvas.drawPath(
         diffPath,
         Paint()
-          ..color = Colors.white70
+          ..color = const Color(0xFF475569)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.6,
       );

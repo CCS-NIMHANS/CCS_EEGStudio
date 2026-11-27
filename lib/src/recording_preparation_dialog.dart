@@ -302,9 +302,9 @@ class _PreparationState extends State<RecordingPreparationDialog> {
                     height: 64,
                     width: double.infinity,
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0F172A),
+                      color: const Color(0xFFF8F9FB),
                       borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.white24),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
                     ),
                     child: CustomPaint(
                       painter: _CropOverviewPainter(

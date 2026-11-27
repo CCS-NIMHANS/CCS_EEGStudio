@@ -24,15 +24,16 @@ flowchart LR
 
 | Family | Computed Metrics |
 | :--- | :--- |
-| **Spectral & IAF** | Bandpower & relative power (Welch / Multitaper PSD), **IAF (`IAF_Hz`)**, Klimesch individual theta/alpha power (`IndTheta_PSD`, `IndAlpha_PSD`), **Frequency Sliding** (`Theta/Alpha_FreqSliding_Hz`), **FOOOF**, **IRASA** |
+| **Spectral & IAF** | Bandpower & relative power (Welch / Multitaper PSD), toggleable **Individual Alpha** (`IAF_Hz`, `IndAlpha_PSD`, `IndTheta_PSD`, `Theta/Alpha_FreqSliding_Hz` with configurable `IAF search range`), **Spectral Ratios** (8 band ratios: `Ratio_DeltaTheta`, `Ratio_DeltaAlpha`, `Ratio_ThetaAlpha`, `Ratio_ThetaBeta`, `Ratio_AlphaBeta`, `Ratio_SlowFast`, `Ratio_DAR`, `Ratio_TBR`), **FOOOF**, **IRASA** |
 | **Nonlinear & Complexity** | **DFA**, **fE:I** (functional E/I ratio), Sample/Permutation Entropy, Higuchi FD, Petrosian FD, LZC, **ACW** (autocorrelation window) |
 | **Connectivity** | **COH**, **PLV**, **ciPLV**, **PLI**, **wPLI**, **MIC / MIM**, **Granger Causality (GC / GC-TR)**, graph efficiency & modularity |
 | **Microstates & Syntax** | Modified k-means maps, GEV, duration, occurrence, coverage, transition matrix, **Microstate Syntax** entropy & dedicated per-file/epoch `<stem>_microstate_sequence.csv` |
 
 ---
 
-## State Dynamics Analysis
+## Source-Space TopoStats & State Dynamics Analysis
 
+- **Unified Source & Scalp Pipeline:** Source-level feature CSVs (`bankssts-lh`, `...` DK68 ROIs) run through the identical **TopoStats** and **State Dynamics** statistical pipeline as scalp EEG (time-series ribbon, significance clusters, state strips, multi-scale rasters, PDF report, and click-to-inspect zoom), replacing only the bottom scalp topoplots with **3-axis Glass Brains** (Sagittal, Coronal, Axial).
 - **Integrated Timeline:** State segments and multi-scale boundaries overlay directly on the zoomable feature plot; click any state segment to jump to its profile.
 - **Synced Audio & Envelope Ribbon:** When Video/Audio files are loaded, click **Audio & Envelope** in the Plots & Report toolbar to view the synced audio waveform and speech envelope aligned with the feature time-series cursor.
 - **All-States Feature Mapping Comparison:** Pooled states (`State A`, `State B`, `State C`, …) are displayed side-by-side on one page with shared metric rows, significant-vs-rest dots, and an `ACTIVE` highlight on the currently selected state. Toggle **Compare All States** to switch between side-by-side comparison and single-state zoom.

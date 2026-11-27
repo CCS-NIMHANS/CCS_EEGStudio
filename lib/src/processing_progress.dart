@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 
+import 'theme.dart';
+
 class ProcessingProgress extends StatefulWidget {
   const ProcessingProgress({
     super.key,
@@ -52,58 +54,88 @@ class _ProcessingProgressState extends State<ProcessingProgress> {
     final time =
         '${elapsed ~/ 60}m ${(elapsed % 60).toString().padLeft(2, '0')}s';
     return Material(
-      color: const Color(0xFF142033),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
+      color: CcsTheme.panel,
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: CcsTheme.border)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: CcsTheme.accentBlue,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      widget.stopping
+                          ? 'Stopping at a safe checkpoint…'
+                          : widget.message,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: CcsTheme.text,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    'Elapsed $time',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: CcsTheme.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  TextButton.icon(
+                    onPressed: widget.stopping ? null : widget.onCancel,
+                    style: TextButton.styleFrom(
+                      foregroundColor: CcsTheme.accentRed,
+                    ),
+                    icon: const Icon(Icons.stop_circle_outlined, size: 16),
+                    label: Text(widget.loading ? 'Cancel loading' : 'Stop'),
+                  ),
+                ],
+              ),
+              LinearProgressIndicator(
+                value: widget.progress > 0 ? widget.progress.clamp(0, 1) : null,
+                color: CcsTheme.accentBlue,
+                backgroundColor: CcsTheme.panelAlt,
+              ),
+              if (iteration != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 5),
                   child: Text(
-                    widget.stopping
-                        ? 'Stopping at a safe checkpoint…'
-                        : widget.message,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+                    '${_icaStage.isEmpty ? 'ICA' : _icaStage.split(':').first} · iteration ${iteration[1]} of at most ${iteration[2]} · remaining time depends on convergence',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: CcsTheme.textSecondary,
+                    ),
                   ),
                 ),
-                Text('Elapsed $time', style: const TextStyle(fontSize: 11)),
-                const SizedBox(width: 12),
-                TextButton.icon(
-                  onPressed: widget.stopping ? null : widget.onCancel,
-                  icon: const Icon(Icons.stop_circle_outlined, size: 16),
-                  label: Text(widget.loading ? 'Cancel loading' : 'Stop'),
+              if (iteration == null && widget.progress > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 5),
+                  child: Text(
+                    'Workflow progress: ${(widget.progress * 100).round()}%',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: CcsTheme.textSecondary,
+                    ),
+                  ),
                 ),
-              ],
-            ),
-            LinearProgressIndicator(
-              value: widget.progress > 0 ? widget.progress.clamp(0, 1) : null,
-            ),
-            if (iteration != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 5),
-                child: Text(
-                  '${_icaStage.isEmpty ? 'ICA' : _icaStage.split(':').first} · iteration ${iteration[1]} of at most ${iteration[2]} · remaining time depends on convergence',
-                  style: const TextStyle(fontSize: 11),
-                ),
-              ),
-            if (iteration == null && widget.progress > 0)
-              Padding(
-                padding: const EdgeInsets.only(top: 5),
-                child: Text(
-                  'Workflow progress: ${(widget.progress * 100).round()}%',
-                  style: const TextStyle(fontSize: 11),
-                ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );

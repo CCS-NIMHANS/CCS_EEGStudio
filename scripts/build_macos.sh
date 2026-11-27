@@ -30,10 +30,17 @@ if [[ -z "$CARGO_BIN" ]]; then
   exit 1
 fi
 
-# ── Build Rust engine ──────────────────────────────────────────────────────
-echo "==> Building Rust engine (release)..."
+# ── Build Rust engine (universal arm64 + x86_64) ───────────────────────────
+echo "==> Building Rust engine (release, arm64 + x86_64)..."
 cd "$ROOT/bridge"
-"$CARGO_BIN" build --release
+"$CARGO_BIN" build --release --target aarch64-apple-darwin
+"$CARGO_BIN" build --release --target x86_64-apple-darwin
+mkdir -p "$ROOT/bridge/target/release"
+lipo -create \
+  "$ROOT/bridge/target/aarch64-apple-darwin/release/ccs-eeg-engine" \
+  "$ROOT/bridge/target/x86_64-apple-darwin/release/ccs-eeg-engine" \
+  -output "$ROOT/bridge/target/release/ccs-eeg-engine"
+lipo -info "$ROOT/bridge/target/release/ccs-eeg-engine"
 echo "    Engine: bridge/target/release/ccs-eeg-engine"
 
 # ── Build Flutter macOS app ────────────────────────────────────────────────

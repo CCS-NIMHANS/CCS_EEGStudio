@@ -19,6 +19,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
 
+import 'glass_brain_paint.dart';
 import 'mne_constants.dart';
 import 'mpl_colormaps.dart';
 import 'mpl_text.dart';
@@ -107,9 +108,9 @@ class TopoFigure {
     this.result, {
     this.stateDynamicsResult,
     this.selectedStateLabel,
-  }) {
+  }) : isSourceSpace = isSourceRoiLabels(result.settings.channels) {
     final s = result.settings;
-    interp = TopoInterpolator.forChannels(s.channels);
+    interp = isSourceSpace ? null : TopoInterpolator.forChannels(s.channels);
     _computeLayout();
     _lut = kMplColormaps[s.topoCmap] ?? kMplColormaps['RdBu_r']!;
     _buildTopoCaches();
@@ -118,7 +119,8 @@ class TopoFigure {
   final TopoStatsResult result;
   final StateDynamicsResult? stateDynamicsResult;
   final String? selectedStateLabel;
-  late final TopoInterpolator interp;
+  final bool isSourceSpace;
+  late final TopoInterpolator? interp;
   late final List<int> _lut;
 
   // ---- layout (inches, origin top-left) ---------------------------------
@@ -153,7 +155,9 @@ class TopoFigure {
     }
     final totalUnits = ratios.fold<double>(0, (a, b) => a + b);
     widthIn = math.max(totalUnits * s.targetTopoWidthIn, 6.0);
-    final topoRowIn = s.targetTopoWidthIn + 0.35;
+    final topoRowIn = isSourceSpace
+        ? math.max(s.targetTopoWidthIn + 0.45, s.targetTopoWidthIn * 1.15)
+        : s.targetTopoWidthIn + 0.35;
     final hasDynamics = stateDynamicsResult != null;
     final stateStripIn = hasDynamics ? 0.28 : 0.0;
     final rasterIn = hasDynamics ? 0.34 : 0.0;
@@ -253,7 +257,8 @@ class TopoFigure {
       0.12,
       topoRowBottomIn - topoRowTopIn,
     );
-    topoLim = interp.outlines.axesLimits;
+    topoLim = interp?.outlines.axesLimits ??
+        (x0: -1.0, x1: 1.0, y0: -1.0, y1: 1.0);
   }
 
   /// Aspect-equal ('box', anchor C) Axes rect inside a grid cell.
@@ -272,9 +277,17 @@ class TopoFigure {
       result.settings.topoValue == TopoValue.rawT ? w.rawT : w.tObs;
 
   void _buildTopoCaches() {
-    final res = interp.res;
     zGrids = [];
     _cells = [];
+    if (isSourceSpace || interp == null) {
+      for (final sess in result.sessions) {
+        zGrids.add(List<Float64List?>.filled(sess.windows.length, null));
+        _cells.add(List<_TopoCellCache?>.filled(sess.windows.length, null));
+      }
+      return;
+    }
+    final scalper = interp!;
+    final res = scalper.res;
     for (final sess in result.sessions) {
       final zs = <Float64List?>[];
       final cs = <_TopoCellCache?>[];
@@ -285,12 +298,12 @@ class TopoFigure {
           cs.add(null);
           continue;
         }
-        final z = interp.grid(v);
+        final z = scalper.grid(v);
         zs.add(z);
         // contours=3 -> matplotlib auto levels
         final path = Path();
         for (final lev in contourLevels(z, 3)) {
-          for (final sgm in contourSegments(z, interp.xs, interp.ys, lev)) {
+          for (final sgm in contourSegments(z, scalper.xs, scalper.ys, lev)) {
             path.moveTo(sgm[0], sgm[1]);
             path.lineTo(sgm[2], sgm[3]);
           }
@@ -316,7 +329,7 @@ class TopoFigure {
   /// nodes at pixel centres, with an edge ring so the image reaches the
   /// extent borders (matplotlib clamps at edges).
   ui.Vertices _mesh(Float64List z, int res) {
-    final cr = interp.outlines.clipRadius;
+    final cr = interp!.outlines.clipRadius;
     final dx = 2 * cr / res;
     final n = res + 2;
     final coords = Float64List(n);
@@ -1011,7 +1024,7 @@ class TopoFigure {
     final markerScale = math.max(0.5, s.targetTopoWidthIn / 0.9);
     final mew = s.sigMarkerEdgeWidth * markerScale; // pt
     final ms = s.sigMarkerSize * markerScale; // pt (diameter)
-    final o = interp.outlines;
+    final o = interp?.outlines;
 
     for (var si = 0; si < result.sessions.length; si++) {
       final sess = result.sessions[si];
@@ -1034,7 +1047,43 @@ class TopoFigure {
           final cellPx = px(cells[j]);
           final cache = _cells[si][j];
           Rect? axPx;
-          if (w.isBaseline) {
+          if (isSourceSpace) {
+            axPx = cellPx;
+            final vals = _values(w);
+            if (w.isBaseline) {
+              paintGlassBrainCell(
+                canvas,
+                cellPx,
+                labels: s.channels,
+                values: null,
+                significant: null,
+                vmax: vmax,
+                lut: _lut,
+                pt: pt,
+                baseline: true,
+              );
+            } else if (vals == null || !vals.every((x) => x.isFinite)) {
+              drawMplText(
+                canvas,
+                'n/a',
+                cellPx.center,
+                7 * pt,
+                ha: HAlign.center,
+                va: VAlign.center,
+              );
+            } else {
+              paintGlassBrainCell(
+                canvas,
+                cellPx,
+                labels: s.channels,
+                values: vals,
+                significant: w.significant,
+                vmax: vmax,
+                lut: _lut,
+                pt: pt,
+              );
+            }
+          } else if (w.isBaseline) {
             axPx = px(topoAxesRect(cells[j]));
             _paintHead(
               canvas,
@@ -1108,7 +1157,7 @@ class TopoFigure {
     double ms, {
     bool baseline = false,
   }) {
-    final outlines = interp.outlines;
+    final outlines = interp!.outlines;
     final lim = topoLim;
     final k = ax.width / (lim.x1 - lim.x0);
     canvas.save();
@@ -1146,9 +1195,9 @@ class TopoFigure {
         ..color = _black
         ..style = PaintingStyle.stroke
         ..strokeWidth = mew * pt / k;
-      for (var c = 0; c < sig.length && c < interp.pos.length; c++) {
+      for (var c = 0; c < sig.length && c < interp!.pos.length; c++) {
         if (!sig[c]) continue;
-        final p = interp.pos[c];
+        final p = interp!.pos[c];
         canvas.drawCircle(Offset(p.x, p.y), ms / 2 * pt / k, ring);
       }
     }
@@ -1230,10 +1279,28 @@ class TopoFigure {
     );
   }
 
-  /// One enlarged topomap (with channel names) for the inspector dialog.
+  /// One enlarged topomap (with channel names) or 3-axis glass brain for the inspector dialog.
   void paintSingleTopo(Canvas canvas, Rect area, int si, int j) {
     canvas.drawRect(area, Paint()..color = const Color(0xFFFFFFFF));
     final w = result.sessions[si].windows[j];
+    final s = result.settings;
+    if (isSourceSpace || interp == null) {
+      final box = area.deflate(20);
+      final vals = w.isBaseline ? null : _values(w);
+      paintGlassBrainCell(
+        canvas,
+        box,
+        labels: s.channels,
+        values: vals,
+        significant: w.significant,
+        vmax: vmax,
+        lut: _lut,
+        pt: math.max(1.2, box.width / 220.0),
+        baseline: w.isBaseline,
+      );
+      return;
+    }
+    final ip = interp!;
     final lim = topoLim;
     final aspect = (lim.y1 - lim.y0) / (lim.x1 - lim.x0);
     final box = area.deflate(24);
@@ -1247,7 +1314,6 @@ class TopoFigure {
     }
     // scale point sizes with the enlargement relative to the figure
     final pt = ax.width / (topoAxesRect(topoCells[si][j]).width * 72);
-    final s = result.settings;
     final markerScale = math.max(0.5, s.targetTopoWidthIn / 0.9);
     if (w.isBaseline) {
       _paintHead(canvas, ax, pt, null, null, null, 0, 0, baseline: true);
@@ -1258,14 +1324,14 @@ class TopoFigure {
         pt,
         _cells[si][j],
         w.significant,
-        interp.outlines,
+        ip.outlines,
         s.sigMarkerEdgeWidth * markerScale,
         s.sigMarkerSize * markerScale,
       );
     }
     final k = ax.width / (lim.x1 - lim.x0);
-    for (var c = 0; c < interp.pos.length; c++) {
-      final p = interp.pos[c];
+    for (var c = 0; c < ip.pos.length; c++) {
+      final p = ip.pos[c];
       final o = Offset(
         ax.left + (p.x - lim.x0) * k,
         ax.top + (lim.y1 - p.y) * k,
@@ -1356,6 +1422,14 @@ class TopoFigure {
         j++
       ) {
         if (!cells[j].contains(pIn)) continue;
+        if (isSourceSpace) {
+          final best = hitTestGlassBrainCell(
+            pPx: pIn,
+            cellPx: cells[j],
+            labels: result.settings.channels,
+          );
+          return TopoHit.topo(i, j, best ?? -1);
+        }
         final ax = topoAxesRect(cells[j]);
         final lim = topoLim;
         final k = ax.width / (lim.x1 - lim.x0);
@@ -1363,8 +1437,9 @@ class TopoFigure {
         final dy = lim.y1 - (pIn.dy - ax.top) / k;
         var best = -1;
         var bd = double.infinity;
-        for (var c = 0; c < interp.pos.length; c++) {
-          final p = interp.pos[c];
+        final scalper = interp!;
+        for (var c = 0; c < scalper.pos.length; c++) {
+          final p = scalper.pos[c];
           final d = (p.x - dx) * (p.x - dx) + (p.y - dy) * (p.y - dy);
           if (d < bd) {
             bd = d;
@@ -1373,7 +1448,7 @@ class TopoFigure {
         }
         final inside =
             dx * dx + dy * dy <=
-            interp.outlines.clipRadius * interp.outlines.clipRadius;
+            scalper.outlines.clipRadius * scalper.outlines.clipRadius;
         return TopoHit.topo(i, j, inside ? best : -1);
       }
     }
@@ -1424,22 +1499,40 @@ class TopoFigure {
         Paint()..color = accent.withValues(alpha: 0.12),
       );
       if (hit.channel >= 0) {
-        final axT = px(topoAxesRect(topoCells[hit.session][hit.window]));
-        final lim = topoLim;
-        final k = axT.width / (lim.x1 - lim.x0);
-        final p = interp.pos[hit.channel];
-        final c = Offset(
-          axT.left + (p.x - lim.x0) * k,
-          axT.top + (lim.y1 - p.y) * k,
-        );
-        canvas.drawCircle(
-          c,
-          2.2 * pt,
-          Paint()
-            ..color = accent
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 0.9 * pt,
-        );
+        if (isSourceSpace) {
+          final cellPx = px(topoCells[hit.session][hit.window]);
+          final lbl = result.settings.channels[hit.channel];
+          for (var v = 0; v < 3; v++) {
+            final ptPx = glassBrainChannelPoint(cellPx: cellPx, label: lbl, view: v);
+            if (ptPx != null) {
+              canvas.drawCircle(
+                ptPx,
+                2.5 * pt,
+                Paint()
+                  ..color = accent
+                  ..style = PaintingStyle.stroke
+                  ..strokeWidth = 0.9 * pt,
+              );
+            }
+          }
+        } else {
+          final axT = px(topoAxesRect(topoCells[hit.session][hit.window]));
+          final lim = topoLim;
+          final k = axT.width / (lim.x1 - lim.x0);
+          final p = interp!.pos[hit.channel];
+          final c = Offset(
+            axT.left + (p.x - lim.x0) * k,
+            axT.top + (lim.y1 - p.y) * k,
+          );
+          canvas.drawCircle(
+            c,
+            2.2 * pt,
+            Paint()
+              ..color = accent
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 0.9 * pt,
+          );
+        }
       }
     } else if (hit.isState) {
       if (hit.session >= 0 && hit.session < stateStripAxes.length) {

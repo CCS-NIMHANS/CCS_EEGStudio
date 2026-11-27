@@ -4,6 +4,32 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.65]
+
+### Light Clinical UI Theme, Universal macOS Build, Individual Alpha & Spectral Ratios, Surround-Aware Interpolation, Source TopoStats & Cross-Platform Fixes
+
+- **Light Clinical UI Theme & Full Contrast Polish**
+  - Unified the application theme with **CCS Sleep Studio** (`CcsTheme` light clinical palette: `#F8F9FB` scaffold, `#FFFFFF` cards & waveform canvases, `#F0F4F8` toolbars & headers, `#CBD5E1` borders, `#3B6EA5` steel-blue accent, `#1E293B` text, and `.AppleSystemUIFont` on macOS).
+  - Updated `ProcessingProgress`, waveform toolbars, ERP workbench cards, Microstates, Connectivity, Group Statistics, State Dynamics, and media sync strips for consistent high-contrast readability across all tabs and dialogs.
+  - Updated **WORKFLOW MODULES** status pills (`_isModuleCompleted`) to track persistent stage completion across module switches (`Open Recording`, `Preprocess`, `Epochs`, `Source Space`, `Feature Extraction`, `Plots & Report`, `Group Statistics`) without resetting green checkmarks when navigating.
+- **Universal macOS App (Apple Silicon + Intel) & Safe Startup**
+  - Built `ccs-eeg-engine` as a universal macOS binary (`arm64` + `x86_64` via `lipo`) matching the universal Flutter macOS runner so the app launches reliably on Intel MacBooks as well as Apple Silicon Macs.
+  - Guarded `MediaKit.ensureInitialized()` with safe fallback handling and added a styled `ErrorWidget.builder`.
+- **Individual Alpha Peak Frequency (`IAF_Hz`), Individual Bands & Spectral Ratios**
+  - Added dedicated **Individual Alpha (IAF, Ind. Alpha & Theta)** extraction (`IAF_Hz`, `IndAlpha_PSD`, `IndTheta_PSD`, `Theta_FreqSliding_Hz`, `Alpha_FreqSliding_Hz`) with a configurable `IAF search range (Hz)` (default `7.0–14.0 Hz`) in Feature Extraction settings.
+  - Exposed the **Spectral Ratios** feature family (`Ratio_DeltaTheta`, `Ratio_DeltaAlpha`, `Ratio_ThetaAlpha`, `Ratio_ThetaBeta`, `Ratio_AlphaBeta`, `Ratio_SlowFast`, `Ratio_DAR`, `Ratio_TBR`) directly in the Feature Extraction checkbox list and exported CSVs alongside State Dynamics.
+- **Surround-Aware Spherical Spline Interpolation & 5-Step Default Preprocessing**
+  - Added configurable **surround-support verification** (`Require surround electrode support`, minimum neighbors, max neighbor angle, max azimuthal gap) to bad-channel spherical spline interpolation so perimeter or isolated electrodes without sufficient valid neighbors are safely skipped rather than extrapolated.
+  - Set `Average reference` as the default re-referencing mode so the default pipeline applies **5 steps** (`Bandpass + notch`, `Detect bad channels`, `GEDAI`, `Interpolate`, `Re-reference`), and added `applied · selected` status badges plus `Standard (5)` / `Full (ICA+ASR)` preset chips.
+- **Unified Source-Space TopoStats & State Dynamics Plots + ROI Waveform Labels**
+  - Replaced the standalone source-plot bypass so source-space `.features.csv` exports run through the exact same statistical **TopoStats** + **State Dynamics** pipeline (time-series ribbon, significance markers, state strips, multi-scale rasters, PDF report, and click-to-inspect modal), swapping only the bottom scalp topoplot row for **3-axis Glass Brains** (Sagittal, Coronal, Axial).
+  - Updated the waveform viewer (`EegViewer`) to label source-space data accurately (`ROIs`, `12 ROIs/page`, `Manage ROIs`, and `Interactive Source ROIs Manager`).
+- **Batch Channel Numbers & Windows Source / ERP Reliability Fixes**
+  - Added positional/numeric channel label matching (`byIndex`, e.g. `1`, `Ch1`, `EEG 1`), mixed-channel-count batch scanning, and unified `Batch_features.csv` headers in batch extraction.
+  - Configured an **8 MB Rayon stack size**, Windows long-path (`\\?\...`) handling, shortened source/measurement cache filenames, and source-ROI guards against scalp non-EEG stripping to resolve Windows source-space feature extraction crashes and restore **Measurement window** visibility in ERP Stages 2–3 on Windows.
+- **Updated Application Icon**
+  - Packaged a newly cropped **CCS NIMHANS EEG Studio** application icon across macOS `.icns`/`.png` iconsets, Windows `.ico`, and embedded app assets.
+
 ## [1.2.64]
 
 ### Standalone Group Statistics, Multiple ERP Differences, Contrast Scope & Plot Readability

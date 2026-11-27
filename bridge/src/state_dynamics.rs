@@ -167,6 +167,12 @@ pub fn classify_col(c: &str) -> (String, String, bool) {
     if c == "ACW" {
         return ("ACW".into(), "ACW".into(), false);
     }
+    if let Some(rest) = c.strip_prefix("Ratio_") {
+        return ("Ratio".into(), rest.into(), false);
+    }
+    if matches!(c, "IAF_Hz" | "IndTheta_PSD" | "IndAlpha_PSD" | "Theta_FreqSliding_Hz" | "Alpha_FreqSliding_Hz") {
+        return ("IAF".into(), c.into(), false);
+    }
     if let Some(rest) = c.strip_suffix("_nonlinear") {
         return ("Nonlinear".into(), rest.into(), false);
     }
@@ -677,15 +683,16 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
     }
 
     let rois_def = default_rois();
-    let roi_names: Vec<String> = rois_def.iter().map(|(r, _)| r.to_string()).collect();
+    let mut roi_names: Vec<String> = rois_def.iter().map(|(r, _)| r.to_string()).collect();
 
-    // Map channel names to ROI index
+    // Map channel names to ROI index (dynamically falls back to individual ROIs for source-space CSVs)
     let mut chan_to_roi: HashMap<String, usize> = HashMap::new();
     for (r_idx, (_, chs)) in rois_def.iter().enumerate() {
         for &ch in *chs {
             chan_to_roi.insert(ch.to_uppercase(), r_idx);
         }
     }
+    let mut rois_resolved = false;
 
     // Load feature tables
     let mut raw_windows: Vec<Vec<f64>> = Vec::new();
@@ -742,7 +749,8 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
     let mut rec_data_list = Vec::new();
 
     for (file_idx, file_path) in job.files.iter().enumerate() {
-        let content = fs::read_to_string(file_path)
+        let resolved_csv = crate::preprocessing::long_path(Path::new(file_path));
+        let content = fs::read_to_string(&resolved_csv)
             .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
         let mut lines = content.lines();
         let header_line = lines.next().ok_or("Empty feature file")?;
@@ -798,6 +806,31 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
             });
         }
 
+        if !rois_resolved {
+            let mut seen_upper = HashSet::new();
+            let mut observed = Vec::new();
+            let mut any_scalp_match = false;
+            for ch_rows in rows_by_epoch.values() {
+                for r in ch_rows {
+                    let up = r.chan.to_uppercase();
+                    if chan_to_roi.contains_key(&up) {
+                        any_scalp_match = true;
+                    }
+                    if seen_upper.insert(up) {
+                        observed.push(r.chan.clone());
+                    }
+                }
+            }
+            if !any_scalp_match && !observed.is_empty() {
+                roi_names = observed;
+                chan_to_roi.clear();
+                for (idx, name) in roi_names.iter().enumerate() {
+                    chan_to_roi.insert(name.to_uppercase(), idx);
+                }
+            }
+            rois_resolved = true;
+        }
+
         let n_win = rows_by_epoch.len();
         let key = format!("R{}", file_idx + 1);
         let label = job.labels.get(file_idx).cloned().unwrap_or_else(|| {
@@ -845,15 +878,20 @@ pub fn run(job: &Job) -> Result<StateDynamicsResult, String> {
 
             // Time course band calculation
             let mut psd_vals: Vec<f64> = Vec::new();
-            let mut repr_val = 0.0;
+            let mut repr_val: Option<f64> = None;
+            let mut first_val: Option<f64> = None;
             for r in &ch_rows {
                 if let Some(&v) = r.vals.get(&disp_band_col) {
                     psd_vals.push(v);
+                    if first_val.is_none() {
+                        first_val = Some(v);
+                    }
                     if r.chan.eq_ignore_ascii_case(&job.repr_channel) {
-                        repr_val = v;
+                        repr_val = Some(v);
                     }
                 }
             }
+            let repr_val = repr_val.or(first_val).unwrap_or(0.0);
 
             if !psd_vals.is_empty() {
                 let mean: f64 = psd_vals.iter().sum::<f64>() / psd_vals.len() as f64;

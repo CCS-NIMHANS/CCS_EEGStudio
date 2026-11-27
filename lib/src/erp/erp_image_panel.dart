@@ -249,7 +249,7 @@ class _ErpImagePanelState extends State<ErpImagePanel> {
               ),
               const Text(
                 'Click or drag rows to exclude/include trials',
-                style: TextStyle(fontSize: 11, color: Colors.white70),
+                style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
               ),
               _legendChip('Blue: −µV', const Color(0xFF3B82F6)),
               _legendChip('Red: +µV', const Color(0xFFEF4444)),
@@ -390,7 +390,7 @@ class _ErpImagePanelState extends State<ErpImagePanel> {
                                       controller: _topo0,
                                       style: const TextStyle(
                                         fontSize: 10,
-                                        color: Color(0xFF0F172A),
+                                        color: Color(0xFF1E293B),
                                       ),
                                       decoration: const InputDecoration(
                                         isDense: true,
@@ -421,7 +421,7 @@ class _ErpImagePanelState extends State<ErpImagePanel> {
                                       controller: _topo1,
                                       style: const TextStyle(
                                         fontSize: 10,
-                                        color: Color(0xFF0F172A),
+                                        color: Color(0xFF1E293B),
                                       ),
                                       decoration: const InputDecoration(
                                         isDense: true,
@@ -444,7 +444,7 @@ class _ErpImagePanelState extends State<ErpImagePanel> {
                                       vertical: 3,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFF1E293B),
+                                      color: const Color(0xFF3B6EA5),
                                       borderRadius: BorderRadius.circular(4),
                                     ),
                                     child: const Text(
@@ -518,7 +518,7 @@ class _ErpImagePanelState extends State<ErpImagePanel> {
         ),
       ),
       const SizedBox(width: 4),
-      Text(text, style: const TextStyle(fontSize: 10, color: Colors.white70)),
+      Text(text, style: const TextStyle(fontSize: 10, color: Color(0xFF475569))),
     ],
   );
 }
@@ -724,7 +724,7 @@ class _ErpImagePainter extends CustomPainter {
         Offset(x0, box.top),
         Offset(x0, box.bottom),
         Paint()
-          ..color = Colors.white70
+          ..color = const Color(0xFF475569)
           ..strokeWidth = 1.2,
       );
     }
@@ -732,11 +732,11 @@ class _ErpImagePainter extends CustomPainter {
     canvas.drawRect(
       box,
       Paint()
-        ..color = Colors.white24
+        ..color = const Color(0xFF94A3B8)
         ..style = PaintingStyle.stroke,
     );
 
-    void drawText(String txt, Offset at, {Color color = Colors.white70}) {
+    void drawText(String txt, Offset at, {Color color = const Color(0xFF475569)}) {
       final tp = TextPainter(
         text: TextSpan(
           text: txt,
@@ -777,7 +777,7 @@ class _ErpImagePainter extends CustomPainter {
         Paint()..color = col,
       );
     }
-    canvas.drawRect(cb, Paint()..color = Colors.white24..style = PaintingStyle.stroke);
+    canvas.drawRect(cb, Paint()..color = const Color(0xFF94A3B8)..style = PaintingStyle.stroke);
     drawText('+${maxV.round()}', Offset(cb.right + 3, cb.top - 2));
     drawText('0 µV', Offset(cb.right + 3, cb.center.dy - 5));
     drawText('-${maxV.round()}', Offset(cb.right + 3, cb.bottom - 10));
@@ -806,14 +806,14 @@ class _ErpImagePainter extends CustomPainter {
       canvas.drawRect(
         Rect.fromLTWH(box.left, yRow, box.width, math.max(1.5, rowH)),
         Paint()
-          ..color = Colors.amberAccent
+          ..color = const Color(0xFFD97706)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.0,
       );
       drawText(
         'Trial ${trialIdx + 1} (${session.condition(trialIdx)}) · $ms ms · ${v.toStringAsFixed(1)} µV · $status',
         Offset(box.left + 8, box.top + 4),
-        color: Colors.amberAccent,
+        color: const Color(0xFFD97706),
       );
     }
   }
@@ -1120,7 +1120,7 @@ class _GroupErpImagePanelState extends State<GroupErpImagePanel> {
           padding: EdgeInsets.symmetric(horizontal: 12),
           child: Text(
             'Hover any participant row to inspect voltage; click a row to open that recording in detail view.',
-            style: TextStyle(fontSize: 11, color: Colors.white60),
+            style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
           ),
         ),
         const SizedBox(height: 6),
@@ -1265,7 +1265,7 @@ class _GroupErpImagePainter extends CustomPainter {
       );
     }
     if (winEndMs > winStartMs) {
-      final p = Paint()..color = Colors.amberAccent.withValues(alpha: 0.75)..strokeWidth = 1.2;
+      final p = Paint()..color = const Color(0xFFD97706).withValues(alpha: 0.75)..strokeWidth = 1.2;
       canvas.drawLine(Offset(xAt(winStartMs), box.top), Offset(xAt(winStartMs), box.bottom), p);
       canvas.drawLine(Offset(xAt(winEndMs), box.top), Offset(xAt(winEndMs), box.bottom), p);
     }
@@ -1273,11 +1273,11 @@ class _GroupErpImagePainter extends CustomPainter {
     canvas.drawRect(
       box,
       Paint()
-        ..color = Colors.white24
+        ..color = const Color(0xFF94A3B8)
         ..style = PaintingStyle.stroke,
     );
 
-    void drawTxt(String s, Offset at, {Color color = Colors.white70}) {
+    void drawTxt(String s, Offset at, {Color color = const Color(0xFF475569)}) {
       final tp = TextPainter(
         text: TextSpan(
           text: s,
@@ -1329,7 +1329,7 @@ class _GroupErpImagePainter extends CustomPainter {
       drawTxt(
         '${row.subject} (${row.group}) · ${timesMs[c].round()} ms · ${row.wave[c].toStringAsFixed(2)} µV  [Click to inspect]',
         Offset(box.left + 8, box.top + 4),
-        color: Colors.amberAccent,
+        color: const Color(0xFFD97706),
       );
     }
   }

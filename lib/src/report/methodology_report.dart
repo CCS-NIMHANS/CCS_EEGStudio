@@ -44,7 +44,7 @@ class MethodologyReport {
       ..writeln('## Preprocessing Parameters')
       ..writeln('- **Resample:** ${config.downsample ? "${config.downsampleFreq} Hz" : "Disabled"}')
       ..writeln('- **Bandpass / Notch Filter:** ${config.filter ? "${config.lowHz}–${config.highHz} Hz (${config.filterType.toUpperCase()}), Notch ${config.notchHz} Hz" : "Disabled"}')
-      ..writeln('- **Bad Channel Detection:** Auto=${config.badChannels}, Manual=[${config.manualBadChannels.join(", ")}], Interpolate=${config.interpolate}')
+      ..writeln('- **Bad Channel Detection:** Auto=${config.badChannels}, Manual=[${config.manualBadChannels.join(", ")}], Interpolate=${config.interpolate} (surround=${config.interpolateRequireSurround})')
       ..writeln('- **ICA / ICLabel:** ${config.icaMethod} (Eye thresh=${config.icaBlinkThreshold}/${config.icaBlinkThresholdFloor}, Other=${config.icaOtherThreshold}/${config.icaOtherThresholdFloor})')
       ..writeln('- **Muscle Cleaning:** ${config.muscleMethod}')
       ..writeln('- **ASR:** ${config.asrMode} (cutoff=${config.asrCutoff}, variant=${config.asrVariant})')
@@ -54,7 +54,8 @@ class MethodologyReport {
       ..writeln()
       ..writeln('## Feature Extraction Parameters')
       ..writeln('- **Epoch / Bin Window:** ${config.epochSeconds} s (overlap ${config.epochOverlapSeconds} s)')
-      ..writeln('- **PSD / IAF / Frequency Sliding:** ${config.psd ? "${config.psdMethod}, window=${config.psdWindowSeconds} s, IAF + IndAlpha/IndTheta + Frequency Sliding" : "Disabled"}')
+      ..writeln('- **PSD / Ratios:** PSD=${config.psd ? "${config.psdMethod}, window=${config.psdWindowSeconds} s" : "Disabled"}, Spectral Ratios=${config.spectralRatios ? "Enabled (8 ratios)" : "Disabled"}')
+      ..writeln('- **Individual Alpha (IAF) / Frequency Sliding:** ${config.individualAlpha ? "Enabled (${config.iafMinHz}–${config.iafMaxHz} Hz search, IndAlpha/IndTheta + Frequency Sliding)" : "Disabled"}')
       ..writeln('- **FOOOF:** ${config.fooof ? "Enabled" : "Disabled"} · **IRASA:** ${config.irasa ? "Enabled" : "Disabled"}')
       ..writeln('- **Nonlinear / DFA / fE:I / ACW:** Nonlinear=${config.nonlinear}, DFA/fE:I=${config.dfaFei}, ACW=${config.acw}')
       ..writeln('- **Connectivity:** COH=${config.coh}, PLV=${config.plv}, ciPLV=${config.ciplv}, PLI=${config.pli}, wPLI=${config.wpli}, MIC=${config.mic}, MIM=${config.mim}, GC=${config.gc}');

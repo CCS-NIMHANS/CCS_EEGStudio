@@ -164,7 +164,7 @@ Future<void> showRecordingDetails(BuildContext context, EegRecording r) =>
                   const Divider(),
                   const Text(
                     'Warnings',
-                    style: TextStyle(color: Colors.orangeAccent),
+                    style: TextStyle(color: Color(0xFFD97706)),
                   ),
                   for (final warning in recordingWarnings(r))
                     Padding(

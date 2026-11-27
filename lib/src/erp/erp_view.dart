@@ -33,11 +33,11 @@ import 'erp_figure.dart';
 import 'stim_epochs.dart' show markerShortName, markerListContains;
 import '../topostats/mne_constants.dart' show kStandard1020Topo;
 
-const _bg = Color(0xFF0F172A);
-const _card = Color(0xFF1E293B);
-const _muted = Color(0xFF94A3B8);
-const _border = Color(0x1FFFFFFF);
-const _accent = Color(0xFF3B82F6);
+const _bg = Color(0xFFF8F9FB);
+const _card = Color(0xFFFFFFFF);
+const _muted = Color(0xFF64748B);
+const _border = Color(0xFFCBD5E1);
+const _accent = Color(0xFF3B6EA5);
 const _blueC = Color(0xFF1F77B4);
 const _redC = Color(0xFFD62728);
 
@@ -587,7 +587,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
     keyboardType: number
         ? const TextInputType.numberWithOptions(signed: true, decimal: true)
         : null,
-    style: const TextStyle(color: Colors.white, fontSize: 12),
+    style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12),
     decoration: InputDecoration(
       labelText: label,
       suffixText: suffix,
@@ -632,7 +632,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 11,
-                        color: f.isEpoched ? Colors.white : _muted,
+                        color: f.isEpoched ? const Color(0xFF1E293B) : _muted,
                       ),
                     ),
                     subtitle: Text(
@@ -728,7 +728,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
                     labelText: 'Fill from template',
                     isDense: true,
                   ),
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12),
                   items: [
                     for (var i = 0; i < _templates.length; i++)
                       DropdownMenuItem(
@@ -793,7 +793,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
                     labelText: 'Electrode',
                     isDense: true,
                   ),
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12),
                   items: [
                     for (final c in chans)
                       DropdownMenuItem(value: c, child: Text(c)),
@@ -813,7 +813,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
                       : (v) => setState(() => _useFileTimes = v ?? true),
                   title: const Text(
                     'Use the epoch times stored in the files',
-                    style: TextStyle(fontSize: 11, color: Colors.white),
+                    style: TextStyle(fontSize: 11, color: Color(0xFF1E293B)),
                   ),
                   subtitle: const Text(
                     'Otherwise (or for files without them) use tmin/tmax below',
@@ -883,7 +883,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
                       : (v) => setState(() => _smooth = v ?? true),
                   title: const Text(
                     'Savitzky–Golay smoothing of plotted mean/SEM (31, 3)',
-                    style: TextStyle(fontSize: 11, color: Colors.white),
+                    style: TextStyle(fontSize: 11, color: Color(0xFF1E293B)),
                   ),
                 ),
                 const Text(
@@ -941,7 +941,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         border: Border(left: BorderSide(color: color, width: 3)),
-        color: Colors.white.withValues(alpha: 0.02),
+        color: const Color(0xFFF8F9FB),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -954,7 +954,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
                 '$n epochs',
                 style: TextStyle(
                   fontSize: 11,
-                  color: n == 0 ? Colors.orangeAccent : _muted,
+                  color: n == 0 ? const Color(0xFFD97706) : _muted,
                 ),
               ),
             ],
@@ -1018,7 +1018,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
               const Text(
                 'ERP Analysis',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: Color(0xFF1E293B),
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -1063,12 +1063,12 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
             padding: const EdgeInsets.all(6),
             child: Text(
               _warnings.join('\n'),
-              style: const TextStyle(color: Color(0xFFFCD34D), fontSize: 11),
+              style: const TextStyle(color: Color(0xFFB45309), fontSize: 11),
             ),
           ),
         TabBar(
           controller: _tabs,
-          labelColor: Colors.white,
+          labelColor: const Color(0xFF3B6EA5),
           unselectedLabelColor: _muted,
           tabs: const [
             Tab(text: 'Waveforms'),
@@ -1229,7 +1229,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
       fontSize: 11,
       fontWeight: FontWeight.bold,
     );
-    const cs = TextStyle(color: Colors.white, fontSize: 11);
+    const cs = TextStyle(color: Color(0xFF1E293B), fontSize: 11);
     final names = shortSessionNames([for (final r in an.results) r.fileLabel]);
     return ListView(
       padding: const EdgeInsets.all(12),
@@ -1287,7 +1287,7 @@ class _ErpAnalysisViewState extends State<ErpAnalysisView>
                           style: cs.copyWith(
                             color: r.pWindow < s.alpha
                                 ? const Color(0xFF4ADE80)
-                                : Colors.white,
+                                : const Color(0xFF1E293B),
                           ),
                         ),
                       ),
@@ -1461,7 +1461,7 @@ class _ErpTopoPainter extends CustomPainter {
         text: TextSpan(
           text: titles[mapIndex],
           style: const TextStyle(
-            color: Colors.white,
+            color: Color(0xFF1E293B),
             fontWeight: FontWeight.w600,
             fontSize: 12,
           ),

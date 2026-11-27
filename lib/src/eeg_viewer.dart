@@ -10,6 +10,14 @@ import 'epoch_service.dart';
 import 'models.dart';
 import 'event_navigation.dart';
 import 'erp/event_group_editor.dart';
+import 'theme.dart';
+import 'topostats/topo_interp.dart' show isStandard1020Channel;
+
+bool _isSourceRecording(EegRecording eeg) =>
+    eeg.labels.isNotEmpty &&
+    (eeg.labels.any((l) => l.endsWith('-lh') || l.endsWith('-rh')) ||
+        (eeg.path.toLowerCase().contains('source') &&
+            eeg.labels.every((l) => !isStandard1020Channel(l))));
 
 enum TimeAxisMode { elapsedSeconds, hhMmSs, clockTime, epoch }
 
@@ -436,8 +444,8 @@ class _EegViewerState extends State<EegViewer> {
       label: Text(label, style: const TextStyle(fontSize: 11)),
       style: TextButton.styleFrom(
         foregroundColor: selected
-            ? const Color(0xFF93C5FD)
-            : const Color(0xFF94A3B8),
+            ? CcsTheme.accentBlue
+            : const Color(0xFF64748B),
         minimumSize: const Size(0, 30),
         padding: const EdgeInsets.symmetric(horizontal: 7),
         visualDensity: VisualDensity.compact,
@@ -544,11 +552,11 @@ class _EegViewerState extends State<EegViewer> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.graphic_eq, size: 48, color: Color(0xFF334155)),
+          Icon(Icons.graphic_eq, size: 48, color: CcsTheme.border),
           SizedBox(height: 12),
           Text(
             'Load an EDF, SET, or CCSEEG file to preview signals',
-            style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+            style: TextStyle(color: CcsTheme.textMuted, fontSize: 13),
             textAlign: TextAlign.center,
           ),
         ],
@@ -571,7 +579,7 @@ class _EegViewerState extends State<EegViewer> {
               Text(
                 recordingViewerName(eeg),
                 style: const TextStyle(
-                  color: Colors.white,
+                  color: CcsTheme.text,
                   fontWeight: FontWeight.w600,
                   fontSize: 13,
                 ),
@@ -580,10 +588,13 @@ class _EegViewerState extends State<EegViewer> {
               const SizedBox(height: 3),
               Row(
                 children: [
-                  _badge('${eeg.labels.length} ch', const Color(0xFF3B82F6)),
+                  _badge(
+                    '${eeg.labels.length} ${_isSourceRecording(eeg) ? 'ROIs' : 'ch'}',
+                    CcsTheme.accentBlue,
+                  ),
                   const SizedBox(width: 4),
                   if (eeg.interpolatedChannels.isNotEmpty)
-                    Text('${eeg.interpolatedChannels.length} repaired', style: const TextStyle(color: Colors.tealAccent, fontSize: 11)),
+                    Text('${eeg.interpolatedChannels.length} repaired', style: const TextStyle(color: Color(0xFF0F766E), fontSize: 11)),
                   if (widget.badChannels.any(eeg.labels.contains)) ...[
                     Tooltip(
                       message: _hideBad
@@ -656,14 +667,14 @@ class _EegViewerState extends State<EegViewer> {
           icon: Icon(
             _waveformFocus ? Icons.unfold_more : Icons.unfold_less,
             size: 18,
-            color: const Color(0xFF93C5FD),
+            color: CcsTheme.accentBlue,
           ),
           onPressed: () => setState(() => _waveformFocus = !_waveformFocus),
         ),
         if (_comparisonRecording != null)
           IconButton(
             tooltip: _compare ? 'Close side-by-side comparison' : 'Compare recordings side by side',
-            icon: Icon(Icons.vertical_split, color: _compare ? Colors.lightBlueAccent : null),
+            icon: Icon(Icons.vertical_split, color: _compare ? CcsTheme.accentBlue : CcsTheme.textMuted),
             onPressed: () => setState(() { _compare = !_compare; if (_compare) _autoscale = false; }),
           ),
         // Pipeline stage / recording switcher
@@ -686,9 +697,9 @@ class _EegViewerState extends State<EegViewer> {
       constraints: BoxConstraints(maxWidth: maxWidth),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF0F172A),
+          color: CcsTheme.panel,
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: const Color(0xFF334155)),
+          border: Border.all(color: CcsTheme.border),
         ),
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -750,9 +761,9 @@ class _EegViewerState extends State<EegViewer> {
   Widget _buildRawProcessedToggle() {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
+        color: CcsTheme.panel,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFF334155)),
+        border: Border.all(color: CcsTheme.border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -870,9 +881,9 @@ class _EegViewerState extends State<EegViewer> {
         Container(
           height: 32,
           decoration: BoxDecoration(
-            color: const Color(0xFF1E293B),
+            color: CcsTheme.surface,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFF334155)),
+            border: Border.all(color: CcsTheme.border),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -880,7 +891,7 @@ class _EegViewerState extends State<EegViewer> {
               IconButton(
                 tooltip: 'Decrease amplitude',
                 onPressed: () => _adjustGain(1 / 1.25),
-                icon: const Icon(Icons.remove, size: 16, color: Colors.white70),
+                icon: const Icon(Icons.remove, size: 16, color: CcsTheme.textSecondary),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
               ),
@@ -895,7 +906,7 @@ class _EegViewerState extends State<EegViewer> {
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: Colors.white,
+                        color: CcsTheme.text,
                       ),
                     ),
                   ),
@@ -904,7 +915,7 @@ class _EegViewerState extends State<EegViewer> {
               IconButton(
                 tooltip: 'Increase amplitude',
                 onPressed: () => _adjustGain(1.25),
-                icon: const Icon(Icons.add, size: 16, color: Colors.white70),
+                icon: const Icon(Icons.add, size: 16, color: CcsTheme.textSecondary),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
               ),
@@ -955,7 +966,10 @@ class _EegViewerState extends State<EegViewer> {
           _dropdown<int>(
             value: _pageSize,
             items: const [0, 12, 24, 32],
-            label: (v) => v == 0 ? 'All Chs' : '$v Chs/page',
+            label: (v) {
+              final unit = _isSourceRecording(eeg) ? 'ROIs' : 'Chs';
+              return v == 0 ? 'All $unit' : '$v $unit/page';
+            },
             onChanged: (v) => setState(() {
               _pageSize = v ?? 0;
               _currentPage = 0;
@@ -967,7 +981,7 @@ class _EegViewerState extends State<EegViewer> {
               icon: const Icon(
                 Icons.chevron_left,
                 size: 18,
-                color: Colors.white70,
+                color: CcsTheme.textSecondary,
               ),
               onPressed: _currentPage > 0
                   ? () => setState(() => _currentPage--)
@@ -977,14 +991,14 @@ class _EegViewerState extends State<EegViewer> {
             ),
             Text(
               'Page ${_currentPage + 1}',
-              style: const TextStyle(fontSize: 12, color: Colors.white),
+              style: const TextStyle(fontSize: 12, color: CcsTheme.text),
             ),
             IconButton(
               tooltip: 'Next page',
               icon: const Icon(
                 Icons.chevron_right,
                 size: 18,
-                color: Colors.white70,
+                color: CcsTheme.textSecondary,
               ),
               onPressed: () {
                 final totalVisible = _visible.where((v) => v).length;
@@ -1011,14 +1025,14 @@ class _EegViewerState extends State<EegViewer> {
           avatar: const Icon(
             Icons.checklist,
             size: 14,
-            color: Color(0xFF38BDF8),
+            color: CcsTheme.accentCyan,
           ),
           label: Text(
-            'Manage Channels (${widget.selection.selectedChannels.isEmpty ? eeg.labels.length : widget.selection.selectedChannels.length}/${eeg.labels.length})',
-            style: const TextStyle(fontSize: 12, color: Colors.white),
+            'Manage ${_isSourceRecording(eeg) ? 'ROIs' : 'Channels'} (${widget.selection.selectedChannels.isEmpty ? eeg.labels.length : widget.selection.selectedChannels.length}/${eeg.labels.length})',
+            style: const TextStyle(fontSize: 12, color: CcsTheme.text),
           ),
-          backgroundColor: const Color(0xFF1E293B),
-          side: const BorderSide(color: Color(0xFF334155)),
+          backgroundColor: CcsTheme.surface,
+          side: const BorderSide(color: CcsTheme.border),
           onPressed: () => _showChannelsDialog(context, eeg),
         ),
         if (eeg.markers.isNotEmpty) ...[
@@ -1026,18 +1040,18 @@ class _EegViewerState extends State<EegViewer> {
             avatar: const Icon(
               Icons.bookmark,
               size: 14,
-              color: Color(0xFFF59E0B),
+              color: CcsTheme.accentAmber,
             ),
             label: Text(
               'Markers (${eeg.markers.length})',
-              style: const TextStyle(fontSize: 12, color: Colors.white),
+              style: const TextStyle(fontSize: 12, color: CcsTheme.text),
             ),
-            backgroundColor: const Color(0xFF1E293B),
-            side: const BorderSide(color: Color(0xFF334155)),
+            backgroundColor: CcsTheme.surface,
+            side: const BorderSide(color: CcsTheme.border),
             onPressed: () => _showMarkersDialog(context, eeg),
           ),
           ActionChip(
-            avatar: const Icon(Icons.cut, size: 14, color: Color(0xFF10B981)),
+            avatar: const Icon(Icons.cut, size: 14, color: Colors.white),
             label: const Text(
               'Epoch Events',
               style: TextStyle(
@@ -1046,8 +1060,8 @@ class _EegViewerState extends State<EegViewer> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-            backgroundColor: const Color(0xFF065F46),
-            side: const BorderSide(color: Color(0xFF10B981)),
+            backgroundColor: CcsTheme.accentGreen,
+            side: const BorderSide(color: CcsTheme.accentGreen),
             onPressed: () => _showEpochGeneratorDialog(context, eeg),
           ),
         ],
@@ -1074,18 +1088,20 @@ class _EegViewerState extends State<EegViewer> {
               .toList();
 
           return AlertDialog(
-            backgroundColor: const Color(0xFF0F172A),
+            backgroundColor: CcsTheme.surface,
             title: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'Interactive Channels Manager',
-                  style: TextStyle(color: Colors.white, fontSize: 16),
+                Text(
+                  _isSourceRecording(eeg)
+                      ? 'Interactive Source ROIs Manager'
+                      : 'Interactive Channels Manager',
+                  style: const TextStyle(color: CcsTheme.text, fontSize: 16),
                 ),
                 Text(
                   '${workingSet.length} of ${eeg.labels.length} active',
                   style: const TextStyle(
-                    color: Color(0xFF38BDF8),
+                    color: CcsTheme.accentBlue,
                     fontSize: 13,
                   ),
                 ),
@@ -1097,23 +1113,23 @@ class _EegViewerState extends State<EegViewer> {
               child: Column(
                 children: [
                   TextField(
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    style: const TextStyle(color: CcsTheme.text, fontSize: 13),
                     decoration: InputDecoration(
                       hintText: 'Search channel labels (e.g. Fz, Cz, EOG)...',
                       hintStyle: const TextStyle(
-                        color: Color(0xFF64748B),
+                        color: CcsTheme.textMuted,
                         fontSize: 13,
                       ),
                       prefixIcon: const Icon(
                         Icons.search,
-                        color: Color(0xFF64748B),
+                        color: CcsTheme.textMuted,
                         size: 18,
                       ),
                       filled: true,
-                      fillColor: const Color(0xFF1E293B),
+                      fillColor: CcsTheme.panel,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide.none,
+                        borderSide: const BorderSide(color: CcsTheme.border),
                       ),
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -1130,27 +1146,27 @@ class _EegViewerState extends State<EegViewer> {
                       ActionChip(
                         label: const Text(
                           'Select All',
-                          style: TextStyle(fontSize: 12, color: Colors.white),
+                          style: TextStyle(fontSize: 12, color: CcsTheme.text),
                         ),
-                        backgroundColor: const Color(0xFF1E293B),
+                        backgroundColor: CcsTheme.panel,
                         onPressed: () =>
                             setDialogState(() => workingSet.addAll(eeg.labels)),
                       ),
                       ActionChip(
                         label: const Text(
                           'Deselect All',
-                          style: TextStyle(fontSize: 12, color: Colors.white),
+                          style: TextStyle(fontSize: 12, color: CcsTheme.text),
                         ),
-                        backgroundColor: const Color(0xFF1E293B),
+                        backgroundColor: CcsTheme.panel,
                         onPressed: () =>
                             setDialogState(() => workingSet.clear()),
                       ),
                       ActionChip(
                         label: const Text(
                           'Remove Non-EEG / Ref',
-                          style: TextStyle(fontSize: 12, color: Colors.white),
+                          style: TextStyle(fontSize: 12, color: CcsTheme.text),
                         ),
-                        backgroundColor: const Color(0xFF1E293B),
+                        backgroundColor: CcsTheme.panel,
                         onPressed: () => setDialogState(() {
                           const nonEeg = {
                             'ecg',
@@ -1175,9 +1191,9 @@ class _EegViewerState extends State<EegViewer> {
                       ActionChip(
                         label: const Text(
                           'Invert Selection',
-                          style: TextStyle(fontSize: 12, color: Colors.white),
+                          style: TextStyle(fontSize: 12, color: CcsTheme.text),
                         ),
-                        backgroundColor: const Color(0xFF1E293B),
+                        backgroundColor: CcsTheme.panel,
                         onPressed: () => setDialogState(() {
                           final inv = eeg.labels
                               .where((l) => !workingSet.contains(l))
@@ -1189,7 +1205,7 @@ class _EegViewerState extends State<EegViewer> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  const Divider(color: Color(0xFF334155)),
+                  const Divider(color: CcsTheme.border),
                   Expanded(
                     child: SingleChildScrollView(
                       child: Wrap(
@@ -1203,20 +1219,18 @@ class _EegViewerState extends State<EegViewer> {
                               style: TextStyle(
                                 fontSize: 12,
                                 color: selected
-                                    ? Colors.white
-                                    : const Color(0xFF94A3B8),
+                                    ? CcsTheme.accentBlue
+                                    : CcsTheme.textSecondary,
                               ),
                             ),
                             selected: selected,
-                            selectedColor: const Color(
-                              0xFF0284C7,
-                            ).withOpacity(0.4),
-                            checkmarkColor: const Color(0xFF38BDF8),
-                            backgroundColor: const Color(0xFF1E293B),
+                            selectedColor: CcsTheme.accentBlue.withValues(alpha: 0.14),
+                            checkmarkColor: CcsTheme.accentBlue,
+                            backgroundColor: CcsTheme.panel,
                             side: BorderSide(
                               color: selected
-                                  ? const Color(0xFF38BDF8)
-                                  : const Color(0xFF334155),
+                                  ? CcsTheme.accentBlue
+                                  : CcsTheme.border,
                             ),
                             onSelected: (val) => setDialogState(() {
                               if (val)
@@ -1237,12 +1251,12 @@ class _EegViewerState extends State<EegViewer> {
                 onPressed: () => Navigator.of(ctx).pop(),
                 child: const Text(
                   'Cancel',
-                  style: TextStyle(color: Color(0xFF94A3B8)),
+                  style: TextStyle(color: CcsTheme.textMuted),
                 ),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF0284C7),
+                  backgroundColor: CcsTheme.accentBlue,
                 ),
                 onPressed: () {
                   Navigator.of(ctx).pop();
@@ -1279,16 +1293,16 @@ class _EegViewerState extends State<EegViewer> {
     required ValueChanged<T?> onChanged,
   }) => DecoratedBox(
     decoration: BoxDecoration(
-      color: const Color(0xFF0F172A),
+      color: CcsTheme.surface,
       borderRadius: BorderRadius.circular(6),
-      border: Border.all(color: const Color(0xFF334155)),
+      border: Border.all(color: CcsTheme.border),
     ),
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10),
       child: DropdownButton<T>(
         value: value,
-        dropdownColor: const Color(0xFF1E293B),
-        style: const TextStyle(color: Colors.white, fontSize: 12),
+        dropdownColor: CcsTheme.surface,
+        style: const TextStyle(color: CcsTheme.text, fontSize: 12),
         underline: const SizedBox(),
         isDense: true,
         items: items
@@ -1320,14 +1334,14 @@ class _EegViewerState extends State<EegViewer> {
       height: 34,
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
+        color: CcsTheme.panel,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: const Color(0xFF334155)),
+        border: Border.all(color: CcsTheme.border),
       ),
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.chevron_left, size: 18, color: Colors.white),
+            icon: const Icon(Icons.chevron_left, size: 18, color: CcsTheme.text),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
             onPressed: idx > 0
@@ -1337,22 +1351,22 @@ class _EegViewerState extends State<EegViewer> {
           Text(
             'Epoch ${idx + 1} / ${eeg.epochCount}',
             style: const TextStyle(
-              color: Colors.white,
+              color: CcsTheme.text,
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(width: 8),
-          _badge(lbl, const Color(0xFFA855F7)),
+          _badge(lbl, CcsTheme.accentPurple),
           const SizedBox(width: 8),
           Expanded(
             child: SliderTheme(
               data: SliderTheme.of(context).copyWith(
                 trackHeight: 3,
                 thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                activeTrackColor: const Color(0xFFA855F7),
-                inactiveTrackColor: const Color(0xFF334155),
-                thumbColor: const Color(0xFFA855F7),
+                activeTrackColor: CcsTheme.accentPurple,
+                inactiveTrackColor: CcsTheme.border,
+                thumbColor: CcsTheme.accentPurple,
               ),
               child: Slider(
                 value: idx.toDouble(),
@@ -1371,7 +1385,7 @@ class _EegViewerState extends State<EegViewer> {
             icon: const Icon(
               Icons.chevron_right,
               size: 18,
-              color: Colors.white,
+              color: CcsTheme.text,
             ),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
@@ -1734,9 +1748,9 @@ class _EegViewerState extends State<EegViewer> {
   // ── Helpers ─────────────────────────────────────────────────────────────
 
   BoxDecoration get _panelDecoration => BoxDecoration(
-    color: const Color(0xFF1E293B),
+    color: CcsTheme.panel,
     borderRadius: BorderRadius.circular(12),
-    border: Border.all(color: const Color(0xFF334155)),
+    border: Border.all(color: CcsTheme.border),
   );
 
   Widget _badge(String label, Color color) => Container(
@@ -1783,10 +1797,10 @@ class _EegViewerState extends State<EegViewer> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           return AlertDialog(
-            backgroundColor: const Color(0xFF0F172A),
+            backgroundColor: CcsTheme.surface,
             title: Row(
               children: [
-                const Icon(Icons.bookmark, color: Color(0xFFF59E0B)),
+                const Icon(Icons.bookmark, color: CcsTheme.accentAmber),
                 const SizedBox(width: 8),
                 Text('Markers & Annotations (${eeg.markers.length})'),
               ],
@@ -1801,7 +1815,7 @@ class _EegViewerState extends State<EegViewer> {
                     'Marker Types & Visibility',
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
-                      color: Colors.white70,
+                      color: CcsTheme.textSecondary,
                       fontSize: 13,
                     ),
                   ),
@@ -1837,7 +1851,7 @@ class _EegViewerState extends State<EegViewer> {
                       );
                     }).toList(),
                   ),
-                  const Divider(height: 24, color: Color(0xFF334155)),
+                  const Divider(height: 24, color: CcsTheme.border),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1845,7 +1859,7 @@ class _EegViewerState extends State<EegViewer> {
                         'Event Timeline (Click to Jump)',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
-                          color: Colors.white70,
+                          color: CcsTheme.textSecondary,
                           fontSize: 13,
                         ),
                       ),
@@ -1863,14 +1877,14 @@ class _EegViewerState extends State<EegViewer> {
                   Expanded(
                     child: Container(
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1E293B),
+                        color: CcsTheme.panel,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFF334155)),
+                        border: Border.all(color: CcsTheme.border),
                       ),
                       child: ListView.separated(
                         itemCount: eeg.markers.length,
                         separatorBuilder: (_, __) =>
-                            const Divider(height: 1, color: Color(0xFF334155)),
+                            const Divider(height: 1, color: CcsTheme.border),
                         itemBuilder: (ctx, i) {
                           final m = eeg.markers[i];
                           final label = m.label;
@@ -1893,8 +1907,8 @@ class _EegViewerState extends State<EegViewer> {
                               style: TextStyle(
                                 fontWeight: FontWeight.w600,
                                 color: isVisible
-                                    ? Colors.white
-                                    : Colors.white38,
+                                    ? CcsTheme.text
+                                    : CcsTheme.textMuted,
                               ),
                             ),
                             subtitle: Text(
@@ -1902,13 +1916,13 @@ class _EegViewerState extends State<EegViewer> {
                               '${m.durationSeconds > 0 ? ' | Dur: ${m.durationSeconds.toStringAsFixed(3)} s' : ''}',
                               style: const TextStyle(
                                 fontSize: 11,
-                                color: Colors.white54,
+                                color: CcsTheme.textMuted,
                               ),
                             ),
                             trailing: const Icon(
                               Icons.arrow_forward_ios,
                               size: 12,
-                              color: Colors.white30,
+                              color: CcsTheme.textMuted,
                             ),
                             onTap: () {
                               if (eeg.isEpoched &&
@@ -1981,10 +1995,10 @@ class _EegViewerState extends State<EegViewer> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           return AlertDialog(
-            backgroundColor: const Color(0xFF0F172A),
+            backgroundColor: CcsTheme.surface,
             title: const Row(
               children: [
-                Icon(Icons.cut, color: Color(0xFF10B981)),
+                Icon(Icons.cut, color: CcsTheme.accentGreen),
                 SizedBox(width: 8),
                 Text('Generate Event-Based Epochs'),
               ],
@@ -2000,7 +2014,7 @@ class _EegViewerState extends State<EegViewer> {
                       'Select Target Event IDs / Markers:',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: Colors.white70,
+                        color: CcsTheme.textSecondary,
                         fontSize: 13,
                       ),
                     ),
@@ -2009,9 +2023,9 @@ class _EegViewerState extends State<EegViewer> {
                       constraints: const BoxConstraints(maxHeight: 140),
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1E293B),
+                        color: CcsTheme.panel,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFF334155)),
+                        border: Border.all(color: CcsTheme.border),
                       ),
                       child: SingleChildScrollView(
                         child: Wrap(
@@ -2060,7 +2074,7 @@ class _EegViewerState extends State<EegViewer> {
                       'Epoch Time Window (Seconds relative to event):',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: Colors.white70,
+                        color: CcsTheme.textSecondary,
                         fontSize: 13,
                       ),
                     ),
@@ -2107,7 +2121,7 @@ class _EegViewerState extends State<EegViewer> {
                       ),
                       subtitle: const Text(
                         'Subtract channel mean during baseline window',
-                        style: TextStyle(fontSize: 11, color: Colors.white54),
+                        style: TextStyle(fontSize: 11, color: CcsTheme.textMuted),
                       ),
                       value: applyBaseline,
                       dense: true,
@@ -2883,17 +2897,18 @@ double _waveformLabelGutter(EegRecording eeg, double width) => math.min(
 );
 
 String recordingViewerName(EegRecording rec) {
-  final file = rec.path.split('/').last;
-  if (!RegExp(r'^(combination|source)-[a-f0-9]+\.ccseeg$').hasMatch(file))
+  final file = rec.path.split(RegExp(r'[/\\]')).last;
+  if (!RegExp(r'^(combination|source|src)-[a-f0-9]+\.ccseeg$').hasMatch(file))
     return file;
   var provenance = rec.provenance;
   var source = file;
   for (var i = 0; i < 8; i++) {
     final path = provenance['source_path'];
-    if (path is String) source = path.split('/').last;
+    if (path is String) source = path.split(RegExp(r'[/\\]')).last;
     final parent = provenance['parent_provenance'];
     if (parent is! Map) break;
     provenance = Map<String, dynamic>.from(parent);
   }
-  return '$source · ${file.startsWith('source-') ? 'source ROIs' : 'interactive preview'}';
+  final isSource = file.startsWith('source-') || file.startsWith('src-');
+  return '$source · ${isSource ? 'source ROIs' : 'interactive preview'}';
 }

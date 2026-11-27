@@ -8,8 +8,8 @@ import '../feature_plotter.dart' show Montage;
 import 'connectivity_data.dart';
 import 'connectivity_painters.dart';
 
-const _panel = Color(0xFF1E293B);
-const _muted = Color(0xFF94A3B8);
+const _panel = Color(0xFFF0F4F8);
+const _muted = Color(0xFF64748B);
 
 class ConnectivityView extends StatefulWidget {
   const ConnectivityView({super.key, required this.csvPaths});

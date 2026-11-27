@@ -11,6 +11,8 @@ fn default_psd_method() -> String { "welch".into() }
 fn default_multitaper_nw() -> f64 { 3.0 }
 fn default_psd_window() -> f64 { 1.0 }
 fn default_psd_average() -> String { "median".into() }
+fn default_iaf_min_hz() -> f64 { 7.0 }
+fn default_iaf_max_hz() -> f64 { 14.0 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PsdBand { pub label:String, pub low:f64, pub high:f64 }
 #[derive(Debug,Serialize,Deserialize,Clone)]
@@ -52,6 +54,14 @@ pub struct Options {
     pub end_seconds: f64,
     pub bin_seconds: f64,
     pub psd: bool,
+    #[serde(default)]
+    pub individual_alpha: bool,
+    #[serde(default = "default_iaf_min_hz")]
+    pub iaf_min_hz: f64,
+    #[serde(default = "default_iaf_max_hz")]
+    pub iaf_max_hz: f64,
+    #[serde(default)]
+    pub spectral_ratios: bool,
     pub fooof: bool,
     pub irasa: bool,
     pub nonlinear: bool,
@@ -113,6 +123,10 @@ impl Options {
             end_seconds: 1.0,
             bin_seconds: 1.0,
             psd: false,
+            individual_alpha: false,
+            iaf_min_hz: 7.0,
+            iaf_max_hz: 14.0,
+            spectral_ratios: false,
             fooof: false,
             irasa: false,
             nonlinear: false,

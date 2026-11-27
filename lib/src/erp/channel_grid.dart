@@ -228,7 +228,7 @@ class _ErpChannelGridState extends State<ErpChannelGrid> {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
-        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+        side: const BorderSide(color: Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -237,7 +237,7 @@ class _ErpChannelGridState extends State<ErpChannelGrid> {
           children: [
             Row(
               children: [
-                const Icon(Icons.grid_view_rounded, size: 16, color: Colors.cyanAccent),
+                const Icon(Icons.grid_view_rounded, size: 16, color: Color(0xFF0284C7)),
                 const SizedBox(width: 8),
                 Text(
                   'Multi-Channel Waveform Grid (${selected.length}/${labels.length} channels)',
@@ -284,7 +284,7 @@ class _ErpChannelGridState extends State<ErpChannelGrid> {
               children: [
                 const Text(
                   'Presets:',
-                  style: TextStyle(fontSize: 11, color: Colors.white60),
+                  style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                 ),
                 if (roi.isNotEmpty)
                   ActionChip(
@@ -535,7 +535,7 @@ class _ErpChannelGridState extends State<ErpChannelGrid> {
                 padding: EdgeInsets.symmetric(vertical: 8),
                 child: Text(
                   'Select one or more electrode chips above to compare individual channel waveforms.',
-                  style: TextStyle(fontSize: 11, color: Colors.white60),
+                  style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                 ),
               ),
           ],

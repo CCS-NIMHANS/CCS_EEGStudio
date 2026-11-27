@@ -870,9 +870,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF0F172A),
+                        color: const Color(0xFFF8F9FB),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.white12),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -886,7 +886,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                               children: [
                                 TextSpan(
                                   text: sampleName.substring(0, safeStart),
-                                  style: const TextStyle(color: Colors.white54),
+                                  style: const TextStyle(color: Color(0xFF64748B)),
                                 ),
                                 TextSpan(
                                   text: sampleName.substring(safeStart, safeEnd),
@@ -898,7 +898,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                                 ),
                                 TextSpan(
                                   text: sampleName.substring(safeEnd),
-                                  style: const TextStyle(color: Colors.white54),
+                                  style: const TextStyle(color: Color(0xFF64748B)),
                                 ),
                               ],
                             ),
@@ -1014,7 +1014,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   Expanded(
                     child: Container(
                       decoration: BoxDecoration(
-                        border: Border.all(color: Colors.white12),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: ListView.builder(
@@ -1042,8 +1042,8 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                                     fontSize: 11.5,
                                     fontWeight: FontWeight.bold,
                                     color: val.isEmpty
-                                        ? Colors.redAccent
-                                        : Colors.greenAccent,
+                                        ? const Color(0xFFDC2626)
+                                        : const Color(0xFF16A34A),
                                   ),
                                 ),
                               ],
@@ -1764,26 +1764,26 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget build(BuildContext context) {
     return Theme(
       data: ThemeData.dark(useMaterial3: true).copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0B1120),
+        scaffoldBackgroundColor: const Color(0xFFF8F9FB),
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF38BDF8),
           brightness: Brightness.dark,
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: const Color(0xFF0F172A),
+          fillColor: const Color(0xFFFFFFFF),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFF334155)),
+            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFF334155)),
+            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
           ),
         ),
       ),
       child: Container(
-        color: const Color(0xFF0B1120),
+        color: const Color(0xFFF0F4F8),
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -1950,10 +1950,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     }
 
     return Card(
-      color: const Color(0xFF111827),
+      color: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Color(0xFF334155)),
+        side: const BorderSide(color: Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1984,7 +1984,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     ),
                     Text(
                       'Source: ${sources[f] ?? "Measurement table · $f"}',
-                      style: const TextStyle(fontSize: 12, color: Colors.white70),
+                      style: const TextStyle(fontSize: 12, color: Color(0xFF475569)),
                     ),
                   ],
                 ),
@@ -2076,10 +2076,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget _buildHeaderCard() {
     return Card(
       elevation: 0,
-      color: const Color(0xFF111827),
+      color: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: const Color(0xFF334155)),
+        side: BorderSide(color: const Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -2114,7 +2114,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   const SizedBox(height: 2),
                   Text(
                     '1. Check recordings, participants and group labels. 2. Choose your comparison and measurements, then run. 3. Read results and open saved reports.',
-                    style: TextStyle(fontSize: 12, color: Colors.white70),
+                    style: TextStyle(fontSize: 12, color: Color(0xFF475569)),
                   ),
                 ],
               ),
@@ -2128,10 +2128,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget _buildDataSourceCard() {
     return Card(
       elevation: 0,
-      color: const Color(0xFF111827),
+      color: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: const Color(0xFF334155)),
+        side: BorderSide(color: const Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -2229,7 +2229,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                           height: 16,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Colors.white,
+                            color: Color(0xFF1E293B),
                           ),
                         )
                       : const Icon(Icons.sync, size: 18),
@@ -2254,7 +2254,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             const SizedBox(height: 4),
             const Text(
               'Combine any number of factor sources without overwriting each other: crop factors from filenames (e.g. Session), extract from folder hierarchy, or attach one or more Excel/CSV sheets (e.g. Groups.xlsx).',
-              style: TextStyle(fontSize: 11.5, color: Colors.white70),
+              style: TextStyle(fontSize: 11.5, color: Color(0xFF475569)),
             ),
             const SizedBox(height: 10),
             Wrap(
@@ -2375,7 +2375,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 _statusMessage,
                 style: TextStyle(
                   fontSize: 12,
-                  color: Colors.white70,
+                  color: Color(0xFF475569),
                   fontStyle: FontStyle.italic,
                 ),
               ),
@@ -2393,10 +2393,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: const Color(0xFF111827),
+      color: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: const Color(0xFF334155)),
+        side: BorderSide(color: const Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -2465,7 +2465,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               decoration: BoxDecoration(
                 border: Border.all(color: const Color(0xFF334155)),
                 borderRadius: BorderRadius.circular(8),
-                color: const Color(0xFF0F172A),
+                color: const Color(0xFFF8F9FB),
               ),
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(8),
@@ -2590,10 +2590,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: const Color(0xFF111827),
+      color: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: const Color(0xFF334155)),
+        side: BorderSide(color: const Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -2610,7 +2610,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     style: TextStyle(
                       fontSize: 14.5,
                       fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                      color: Color(0xFF1E293B),
                     ),
                   ),
                 ),
@@ -2635,7 +2635,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               _fittedFactorial
                   ? 'Uses Linear Mixed Model (with subject random intercepts for repeated measures) or General Linear Model across the selected factors.'
                   : 'Runs permutation testing (${_permCountCtrl.text} permutations) across the selected factors.',
-              style: const TextStyle(fontSize: 11.5, color: Colors.white70),
+              style: const TextStyle(fontSize: 11.5, color: Color(0xFF475569)),
             ),
             const SizedBox(height: 10),
             const Text(
@@ -2669,7 +2669,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
             for (final f in _dartFactors)
               Text(
                 '$f ← ${(_dartInspection?['column_sources'] as Map? ?? {})[f] ?? "measurement table"}',
-                style: const TextStyle(fontSize: 11.5, color: Colors.white70),
+                style: const TextStyle(fontSize: 11.5, color: Color(0xFF475569)),
               ),
             if (_dartFactors.length >= 2) ...[
               const SizedBox(height: 10),
@@ -2729,7 +2729,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                             : 'Model still tests all factors & interactions, while pairwise contrasts & FDR/Bonferroni focus only on ${_plotConfig.factorLabel(effectiveContrastFocus)} (overall and within each level of other factors).',
                         style: const TextStyle(
                           fontSize: 11.5,
-                          color: Colors.white70,
+                          color: Color(0xFF475569),
                         ),
                       ),
                     ],
@@ -3090,7 +3090,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                                         'Active differences:',
                                         style: TextStyle(
                                           fontSize: 11,
-                                          color: Colors.white70,
+                                          color: Color(0xFF475569),
                                         ),
                                       ),
                                       for (final p in pairs)
@@ -3142,7 +3142,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                                       'Keep Condition selected above to compare differences in one model & plot, or uncheck it to fit separate models per difference.',
                                       style: TextStyle(
                                         fontSize: 11,
-                                        color: Colors.white60,
+                                        color: Color(0xFF64748B),
                                       ),
                                     ),
                                   ),
@@ -3416,7 +3416,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: const Color(0xFF111827),
+      color: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: Colors.teal.shade300),
@@ -3440,7 +3440,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                      color: Color(0xFF1E293B),
                     ),
                   ),
                 ),
@@ -3629,10 +3629,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Widget _buildActionRunCard() {
     return Card(
       elevation: 0,
-      color: const Color(0xFF111827),
+      color: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: const Color(0xFF334155)),
+        side: BorderSide(color: const Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -3656,7 +3656,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                             height: 18,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: Colors.white,
+                              color: Color(0xFF1E293B),
                             ),
                           )
                         : const Icon(Icons.auto_graph),
@@ -3682,7 +3682,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 child: LinearProgressIndicator(
                   value: _analysisProgress > 0 ? _analysisProgress : null,
                   minHeight: 8,
-                  backgroundColor: const Color(0xFF1E293B),
+                  backgroundColor: const Color(0xFFF0F4F8),
                   valueColor: const AlwaysStoppedAnimation<Color>(
                     Color(0xFF1F4E79),
                   ),
@@ -3724,7 +3724,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
+                  color: const Color(0xFFF0F4F8),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: ListView.builder(
@@ -3760,10 +3760,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
 
     return Card(
       elevation: 0,
-      color: const Color(0xFF111827),
+      color: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: const Color(0xFF334155)),
+        side: BorderSide(color: const Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -3800,7 +3800,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                       ),
                       Text(
                         'Saved to: $outputDir',
-                        style: TextStyle(fontSize: 11, color: Colors.white60),
+                        style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ],
@@ -3921,7 +3921,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFF334155)),
+        border: Border.all(color: const Color(0xFFCBD5E1)),
       ),
       padding: const EdgeInsets.all(12),
       child: Column(
@@ -4248,7 +4248,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: isSig ? Colors.green.shade50 : const Color(0xFF0F172A),
+        color: isSig ? Colors.green.shade50 : const Color(0xFFF8F9FB),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: isSig ? Colors.green.shade400 : const Color(0xFF334155),
@@ -4259,7 +4259,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         style: TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.bold,
-          color: isSig ? Colors.green.shade800 : Colors.white60,
+          color: isSig ? Colors.green.shade800 : const Color(0xFF64748B),
         ),
       ),
     );

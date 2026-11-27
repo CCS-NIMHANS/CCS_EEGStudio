@@ -36,6 +36,14 @@ pub struct PreprocessOptions {
     pub gedai: bool,
     #[serde(default = "default_true")]
     pub interpolate: bool,
+    #[serde(default = "default_true")]
+    pub interpolate_require_surround: bool,
+    #[serde(default = "default_interp_min_neighbors")]
+    pub interpolate_min_neighbors: usize,
+    #[serde(default = "default_interp_max_angle")]
+    pub interpolate_max_angle_deg: f64,
+    #[serde(default = "default_interp_max_gap")]
+    pub interpolate_max_gap_deg: f64,
     #[serde(default = "default_epoch")]
     pub gedai_epoch_seconds: f64,
     #[serde(default = "default_threshold")]
@@ -258,6 +266,8 @@ pub struct PreprocessSummary {
     pub samples: usize,
     pub bad_channels: Vec<String>,
     pub interpolated_channels: Vec<String>,
+    #[serde(default)]
+    pub skipped_interpolation_channels: Vec<String>,
     pub sensai_score: Option<f64>,
     pub thresholds: Vec<f64>,
     pub warnings: Vec<String>,
@@ -302,6 +312,9 @@ pub fn run(
     if !options.source_snr.is_finite() || options.source_snr<=0.0 { return Err("Source SNR must be positive".into()); }
     if !options.notch_width_hz.is_finite() || options.notch_width_hz<=0.0 || !options.notch_transition_hz.is_finite() || options.notch_transition_hz<=0.0 { return Err("Notch widths must be positive".into()); }
     if !options.bad_variance_ratio.is_finite() || options.bad_variance_ratio<2.0 || options.spline_stiffness<2 || options.spline_stiffness>8 || !options.spline_regularization.is_finite() || options.spline_regularization<=0.0 {return Err("Invalid bad-channel or interpolation parameters".into());}
+    if options.interpolate_min_neighbors < 1 || !options.interpolate_max_angle_deg.is_finite() || options.interpolate_max_angle_deg <= 0.0 || options.interpolate_max_angle_deg > 180.0 || !options.interpolate_max_gap_deg.is_finite() || options.interpolate_max_gap_deg <= 0.0 || options.interpolate_max_gap_deg > 360.0 {
+        return Err("Invalid interpolation surround-support parameters".into());
+    }
     if !["", "none", "runica", "picard"].contains(&options.ica_method.as_str()) { return Err("ICA method must be none, runica or picard".into()); }
     if !["", "off", "correct", "reject"].contains(&options.asr_mode.as_str()) { return Err("ASR mode must be off, correct or reject".into()); }
     if !["", "standard", "riemannian", "adaptive", "juggler_dbscan", "juggler_gev", "easr", "vmd", "emd"].contains(&options.asr_variant.as_str()) { return Err("ASR variant must be standard, riemannian, adaptive, juggler_dbscan, juggler_gev, easr, vmd or emd".into()); }
@@ -546,7 +559,7 @@ pub fn run(
     let mut gedai_reference = "";
     let mut thresholds = Vec::new();
     if options.gedai && rec.channels.len() >= 4 {
-        let extra = cache.apply("gedai", serde_json::json!({"settings":params(&["gedai_epoch_seconds","gedai_threshold","epoch_before_gedai","epoch_length_seconds","stim_epochs"]),"bad_channels":&bad_channels,"implementation":"gedai-v4-reference-broadband-mra9"}), &mut f64_channels, rec, &mut warnings, |f64_channels, rec, warnings| {
+        let extra = cache.apply("gedai", serde_json::json!({"settings":params(&["gedai_epoch_seconds","gedai_threshold","epoch_before_gedai","epoch_length_seconds","stim_epochs"]),"bad_channels":&bad_channels,"implementation":"gedai-v5-unique-pit-reference"}), &mut f64_channels, rec, &mut warnings, |f64_channels, rec, warnings| {
             let mut sensai_score = None;
             let mut gedai_reference = "";
             let mut thresholds = Vec::new();
@@ -636,12 +649,36 @@ pub fn run(
         thresholds = serde_json::from_value(extra["thresholds"].clone()).map_err(err)?;
     }
     let mut interpolated_channels = Vec::new();
+    let mut skipped_interpolation_channels = Vec::new();
     if options.interpolate && !bad_channels.is_empty() {
-        let repaired = cache.apply("interpolate", serde_json::json!({"settings": params(&["spline_stiffness","spline_regularization"]), "bad_channels": &bad_channels, "implementation": "interpolation-status-v2"}), &mut f64_channels, rec, &mut warnings, |data, rec, _| {
-            let repaired = interpolate_bad_channels(data, &rec.labels, &bad_channels,options.spline_stiffness,options.spline_regularization);
-            Ok(serde_json::json!(repaired))
+        let repaired = cache.apply("interpolate", serde_json::json!({
+            "settings": params(&[
+                "spline_stiffness",
+                "spline_regularization",
+                "interpolate_require_surround",
+                "interpolate_min_neighbors",
+                "interpolate_max_angle_deg",
+                "interpolate_max_gap_deg"
+            ]),
+            "bad_channels": &bad_channels,
+            "implementation": "interpolation-surround-v3"
+        }), &mut f64_channels, rec, &mut warnings, |data, rec, w| {
+            let (repaired, skipped, notes) = interpolate_bad_channels_configured(
+                data,
+                &rec.labels,
+                &bad_channels,
+                options.spline_stiffness,
+                options.spline_regularization,
+                options.interpolate_require_surround,
+                options.interpolate_min_neighbors,
+                options.interpolate_max_angle_deg,
+                options.interpolate_max_gap_deg,
+            );
+            w.extend(notes);
+            Ok(serde_json::json!({"repaired": repaired, "skipped": skipped}))
         })?;
-        interpolated_channels = serde_json::from_value(repaired).unwrap_or_default();
+        interpolated_channels = serde_json::from_value(repaired["repaired"].clone()).unwrap_or_default();
+        skipped_interpolation_channels = serde_json::from_value(repaired["skipped"].clone()).unwrap_or_default();
     }
     if !options.reference_mode.is_empty() && options.reference_mode != "none" {
         cache.apply("reference", params(&["reference_mode","reference_channels"]), &mut f64_channels, rec, &mut warnings, |data, rec, _| {
@@ -687,6 +724,7 @@ pub fn run(
         samples: rec.channels.first().map(Vec::len).unwrap_or(0),
         bad_channels,
         interpolated_channels,
+        skipped_interpolation_channels,
         sensai_score,
         thresholds,
         warnings,
@@ -696,9 +734,38 @@ pub fn run(
     })
 }
 
+#[cfg(windows)]
+pub fn long_path(path: &Path) -> std::path::PathBuf {
+    let s = path.to_string_lossy();
+    if s.starts_with(r"\\?\") {
+        return path.to_path_buf();
+    }
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let abs_str = abs.to_string_lossy().replace('/', "\\");
+    if abs_str.len() >= 240 && !abs_str.starts_with(r"\\?\") {
+        if let Some(unc) = abs_str.strip_prefix(r"\\") {
+            return std::path::PathBuf::from(format!(r"\\?\UNC\{unc}"));
+        }
+        return std::path::PathBuf::from(format!(r"\\?\{abs_str}"));
+    }
+    abs
+}
+
+#[cfg(not(windows))]
+pub fn long_path(path: &Path) -> std::path::PathBuf {
+    path.to_path_buf()
+}
+
 pub fn load_portable(path: &Path) -> Result<Recording, String> {
+    let resolved = long_path(path);
     let parsed: PortableRecording =
-        serde_json::from_slice(&fs::read(path).map_err(err)?).map_err(err)?;
+        serde_json::from_slice(&fs::read(&resolved).map_err(err)?).map_err(err)?;
     if parsed.format != "ccseeg-v1" {
         return Err("unsupported portable EEG file".into());
     }
@@ -732,7 +799,8 @@ fn save_portable_with(path: &str, rec: &Recording, epoch_meta: Option<EpochMeta>
         labels: &rec.labels, channels: &rec.channels,
         source_epoch_samples: rec.source_epoch_samples, epoch_labels: &rec.epoch_labels,
     };
-    let file = fs::File::create(path).map_err(err)?;
+    let resolved = long_path(Path::new(path));
+    let file = fs::File::create(&resolved).map_err(err)?;
     let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
     serde_json::to_writer(&mut writer, &portable).map_err(err)?;
     writer.write_all(b"\n").map_err(err)?;
@@ -1235,7 +1303,99 @@ fn pearson_f32_f64(left: &[f32], right: &[f64]) -> f64 {
     numerator / (left_var * right_var).sqrt().max(f64::MIN_POSITIVE)
 }
 
+fn normalize_unit(v: [f64; 3]) -> Option<[f64; 3]> {
+    let norm = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if norm <= 1e-12 || !norm.is_finite() {
+        None
+    } else {
+        Some([v[0] / norm, v[1] / norm, v[2] / norm])
+    }
+}
+
+fn lookup_1005_pos(label: &str) -> Option<[f64; 3]> {
+    use crate::eeg::montage::STANDARD_1005_POS;
+    let upper = label.trim().to_uppercase();
+    if let Some(pos) = STANDARD_1005_POS.get(upper.as_str()) {
+        return Some(*pos);
+    }
+    let mut cleaned = upper.strip_prefix("EEG ").unwrap_or(&upper).trim().to_string();
+    if let Some(i) = cleaned.find(|c: char| c == '-' || c == ' ') {
+        cleaned.truncate(i);
+    }
+    STANDARD_1005_POS.get(cleaned.as_str()).copied()
+}
+
+fn check_surround_support(
+    bad_pos: [f64; 3],
+    good_coords: &[[f64; 3]],
+    min_neighbors: usize,
+    max_angle_deg: f64,
+    max_gap_deg: f64,
+) -> (bool, usize, f64) {
+    let Some(n) = normalize_unit(bad_pos) else {
+        return (false, 0, 360.0);
+    };
+    let ref_vec = if n[2].abs() < 0.9 { [0.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0] };
+    // u = normalize(cross(ref_vec, n))
+    let u_raw = [
+        ref_vec[1] * n[2] - ref_vec[2] * n[1],
+        ref_vec[2] * n[0] - ref_vec[0] * n[2],
+        ref_vec[0] * n[1] - ref_vec[1] * n[0],
+    ];
+    let Some(u) = normalize_unit(u_raw) else {
+        return (false, 0, 360.0);
+    };
+    let v = [
+        n[1] * u[2] - n[2] * u[1],
+        n[2] * u[0] - n[0] * u[2],
+        n[0] * u[1] - n[1] * u[0],
+    ];
+
+    let mut azimuths = Vec::new();
+    for g in good_coords {
+        let Some(gp) = normalize_unit(*g) else { continue };
+        let dot = (n[0] * gp[0] + n[1] * gp[1] + n[2] * gp[2]).clamp(-1.0, 1.0);
+        let angle = dot.acos().to_degrees();
+        if angle <= max_angle_deg && angle > 1e-3 {
+            let diff = [gp[0] - n[0], gp[1] - n[1], gp[2] - n[2]];
+            let x = diff[0] * u[0] + diff[1] * u[1] + diff[2] * u[2];
+            let y = diff[0] * v[0] + diff[1] * v[1] + diff[2] * v[2];
+            let mut az = y.atan2(x).to_degrees();
+            if az < 0.0 {
+                az += 360.0;
+            }
+            azimuths.push(az);
+        }
+    }
+    let count = azimuths.len();
+    if count < min_neighbors {
+        return (false, count, 360.0);
+    }
+    azimuths.sort_by(f64::total_cmp);
+    let mut largest_gap = 0.0_f64;
+    for w in azimuths.windows(2) {
+        largest_gap = largest_gap.max(w[1] - w[0]);
+    }
+    largest_gap = largest_gap.max(azimuths[0] + 360.0 - azimuths[count - 1]);
+    (largest_gap <= max_gap_deg, count, largest_gap)
+}
+
+#[allow(dead_code)]
 fn interpolate_bad_channels(channels: &mut [Vec<f64>], labels: &[String], bad: &[String],stiffness:i32,regularization:f64) -> Vec<String> {
+    interpolate_bad_channels_configured(channels, labels, bad, stiffness, regularization, false, 3, 60.0, 210.0).0
+}
+
+fn interpolate_bad_channels_configured(
+    channels: &mut [Vec<f64>],
+    labels: &[String],
+    bad: &[String],
+    stiffness: i32,
+    regularization: f64,
+    require_surround: bool,
+    min_neighbors: usize,
+    max_angle_deg: f64,
+    max_gap_deg: f64,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
     let bad_idx: Vec<usize> = labels
         .iter()
         .enumerate()
@@ -1243,46 +1403,77 @@ fn interpolate_bad_channels(channels: &mut [Vec<f64>], labels: &[String], bad: &
         .map(|(i, _)| i)
         .collect();
     if bad_idx.is_empty() || bad_idx.len() >= channels.len() {
-        return Vec::new();
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let good_idx: Vec<usize> = (0..channels.len())
         .filter(|i| !bad_idx.contains(i))
         .collect();
 
-    // Build DMatrix for good and bad coords
-    use crate::eeg::montage::STANDARD_1005_POS;
     use nalgebra::DMatrix;
 
     let mut good_coords = Vec::new();
     let mut actual_good_idx = Vec::new();
     for &i in &good_idx {
-        if let Some(pos) = STANDARD_1005_POS.get(labels[i].to_uppercase().as_str()) {
+        if let Some(pos) = lookup_1005_pos(&labels[i]) {
             actual_good_idx.push(i);
-            good_coords.push(*pos);
+            good_coords.push(pos);
         }
     }
 
     let mut bad_coords = Vec::new();
     let mut actual_bad_idx = Vec::new();
+    let mut skipped = Vec::new();
+    let mut notes = Vec::new();
+
     for &i in &bad_idx {
-        if let Some(pos) = STANDARD_1005_POS.get(labels[i].to_uppercase().as_str()) {
+        if let Some(pos) = lookup_1005_pos(&labels[i]) {
+            if require_surround {
+                let (ok, n_nbrs, gap) = check_surround_support(
+                    pos,
+                    &good_coords,
+                    min_neighbors,
+                    max_angle_deg,
+                    max_gap_deg,
+                );
+                if !ok {
+                    skipped.push(labels[i].clone());
+                    notes.push(format!(
+                        "Skipped interpolation for {}: insufficient surround support ({} neighbors within {}°, max gap {:.0}° > {:.0}°)",
+                        labels[i], n_nbrs, max_angle_deg.round(), gap, max_gap_deg
+                    ));
+                    continue;
+                }
+            }
             actual_bad_idx.push(i);
-            bad_coords.push(*pos);
+            bad_coords.push(pos);
+        } else if require_surround {
+            skipped.push(labels[i].clone());
+            notes.push(format!(
+                "Skipped interpolation for {}: no 3D electrode coordinates for surround check",
+                labels[i]
+            ));
         }
     }
 
-    if actual_good_idx.is_empty() || actual_bad_idx.is_empty() {
-        // Fallback to mean if no coordinates
-        for &bad_i in &bad_idx {
-            for s in 0..channels[0].len() {
-                let mut sum = 0.0;
-                for &g in &good_idx {
-                    sum += channels[g][s];
+    if actual_bad_idx.is_empty() {
+        if !require_surround && (actual_good_idx.is_empty() || bad_coords.is_empty()) {
+            // Legacy fallback to mean when surround check is disabled and no coordinates exist
+            for &bad_i in &bad_idx {
+                for s in 0..channels[0].len() {
+                    let mut sum = 0.0;
+                    for &g in &good_idx {
+                        sum += channels[g][s];
+                    }
+                    channels[bad_i][s] = sum / good_idx.len() as f64;
                 }
-                channels[bad_i][s] = sum / good_idx.len() as f64;
             }
+            return (bad_idx.iter().map(|&i| labels[i].clone()).collect(), skipped, notes);
         }
-        return bad_idx.iter().map(|&i| labels[i].clone()).collect();
+        return (Vec::new(), skipped, notes);
+    }
+
+    if actual_good_idx.is_empty() {
+        return (Vec::new(), bad_idx.iter().map(|&i| labels[i].clone()).collect(), notes);
     }
 
     let pos_good = DMatrix::from_fn(actual_good_idx.len(), 3, |r, c| good_coords[r][c]);
@@ -1301,7 +1492,7 @@ fn interpolate_bad_channels(channels: &mut [Vec<f64>], labels: &[String], bad: &
             channels[b_global][s] = interp_val;
         }
     }
-    actual_bad_idx.iter().map(|&i| labels[i].clone()).collect()
+    (actual_bad_idx.iter().map(|&i| labels[i].clone()).collect(), skipped, notes)
 }
 
 #[allow(dead_code)]
@@ -1393,7 +1584,7 @@ fn gedai(
         score,
         thresholds,
         quality: serde_json::json!({
-            "implementation":"gedai-v4-reference-broadband-mra9",
+            "implementation":"gedai-v5-unique-pit-reference",
             "broadband_mode":"auto-", "mra_levels":9,
             "internal_reference":"full_rank_pseudo_average", "output_reference":"input_reference_restored_before_requested_reference",
             "alpha_band_hz":[8,13], "alpha_comparison_reference":"common_average_for_input_and_output",
@@ -1553,6 +1744,17 @@ fn gevd_epochs(
     Ok(gevd_all)
 }
 
+/// Match clean_EEG.m: unique(log eigenvalues), then ecdf values indexed by
+/// unique's ia (1:n), i.e. probabilities 0..(n-1)/n. Keep the first PIT > .95.
+fn gedai_pit_threshold(log_vals: &mut Vec<f64>, threshold: f64) -> f64 {
+    log_vals.sort_by(f64::total_cmp);
+    log_vals.dedup_by(|a,b| *a == *b);
+    let n = log_vals.len();
+    if n == 0 { return f64::INFINITY; }
+    let index = ((n as f64 * 0.95).floor() as usize + 1).min(n-1);
+    (((105.0-threshold)/100.0)*log_vals[index]-100.0).exp()
+}
+
 fn clean_eeg(
     epochs: &[DMatrix<f64>],
     threshold: f64,
@@ -1566,14 +1768,7 @@ fn clean_eeg(
         .filter(|v| v.abs() > 0.0)
         .map(|v| v.abs().ln() + 100.0)
         .collect();
-    log_vals.sort_by(|a, b| a.total_cmp(b));
-    let threshold_exp = if log_vals.is_empty() {
-        f64::INFINITY
-    } else {
-        let idx = ((log_vals.len() as f64) * 0.95).floor() as usize;
-        let t1 = (105.0 - threshold) / 100.0;
-        (t1 * log_vals[idx.min(log_vals.len() - 1)] - 100.0).exp()
-    };
+    let threshold_exp = gedai_pit_threshold(&mut log_vals, threshold);
     let weights = cosine_weights(epoch_len);
     let mut clean = vec![vec![0.0; epochs.len() * epoch_len]; n];
     let mut artifacts = vec![vec![0.0; epochs.len() * epoch_len]; n];
@@ -1985,6 +2180,9 @@ fn mean(x: &[f64]) -> f64 {
 fn default_bad_variance_ratio()->f64 {25.0}
 fn default_spline_stiffness()->i32 {4}
 fn default_spline_regularization()->f64 {1e-5}
+fn default_interp_min_neighbors() -> usize { 3 }
+fn default_interp_max_angle() -> f64 { 60.0 }
+fn default_interp_max_gap() -> f64 { 210.0 }
 fn default_filter_type()->String {"fir".into()}
 fn default_iir_order()->usize {4}
 fn default_notch_width() -> f64 { 1.0 }
@@ -2056,6 +2254,90 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 mod tests {
     use super::*;
 
+
+    #[test]
+    #[ignore = "requires explicit external GEDAI audit fixture"]
+    fn gedai_full_pipeline_audit_fixture() {
+        let input = std::env::var("CCS_GEDAI_AUDIT_INPUT").unwrap();
+        let output = std::env::var("CCS_GEDAI_AUDIT_OUTPUT").unwrap();
+        let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
+        let mut rows = Vec::new();
+        for case in cases.as_array().unwrap() {
+            let data: Vec<Vec<f64>> = serde_json::from_value(case["data"].clone()).unwrap();
+            let labels: Vec<String> = serde_json::from_value(case["labels"].clone()).unwrap();
+            for mode in ["auto", "auto-"] {
+                let mut copy = data.clone();
+                let result = gedai(&mut copy, case["rate"].as_f64().unwrap(), &labels, 1., mode).unwrap();
+                let mut internal = data.clone();
+                for t in 0..internal[0].len() {
+                    let avg = internal.iter().map(|c| c[t]).sum::<f64>()/(internal.len()+1) as f64;
+                    for c in &mut internal { c[t]-=avg; }
+                }
+                let rate=case["rate"].as_f64().unwrap();
+                let reference=leadfield_cov(&labels).unwrap();
+                let (broad,_,_,_)=gedai_per_band(&internal,rate,1.,&reference,"auto-",true).unwrap();
+                let before=alpha_power_common_average(&data,rate);
+                let ratio=|signal: &[Vec<f64>]| { let after=alpha_power_common_average(signal,rate); let mut r:Vec<f64>=before.iter().zip(after).filter(|(a,_)| **a>1e-12).map(|(a,b)| b/a).collect();r.sort_by(f64::total_cmp);r[r.len()/2] };
+                let mut trace=vec![ratio(&broad)];
+                let bands=modwt_mra_all(&broad,9);
+                let mut accumulating=broad.clone();
+                for band in bands.iter().take(bands.len()-(600./rate).ceil() as usize) {
+                    let (clean,_,_,_)=gedai_per_band(band,rate,1.,&reference,mode,true).unwrap();
+                    for c in 0..accumulating.len() {for t in 0..accumulating[c].len() {accumulating[c][t]+=clean[c][t]-band[c][t];}}
+                    trace.push(ratio(&accumulating));
+                }
+                rows.push(serde_json::json!({"name":case["name"],"mode":mode,"clean":result.clean,"quality":result.quality,"thresholds":result.thresholds,"alpha_retention_after_broadband_then_each_band":trace}));
+            }
+        }
+        std::fs::write(output,serde_json::to_vec(&rows).unwrap()).unwrap();
+    }
+    #[test]
+    fn gedai_preserves_known_leadfield_signal_and_removes_orthogonal_burst() {
+        let labels:Vec<String>="Fp1 Fz F3 F7 FT9 FC5 FC1 C3 T7 TP9 CP5 CP1 Pz P3 P7 O1 Oz O2 P4 P8 TP10 CP6 CP2 Cz C4 T8 FT10 FC6 FC2 F4 F8 Fp2".split_whitespace().map(str::to_string).collect();
+        let reference=leadfield_cov(&labels).unwrap();
+        let eig=SymmetricEigen::new(reference);
+        let mut order:Vec<usize>=(0..labels.len()).collect();
+        order.sort_by(|a,b|eig.eigenvalues[*b].total_cmp(&eig.eigenvalues[*a]));
+        let rate=250.;let samples=5000;let mut seed=41u64;
+        let mut truth=vec![vec![0.;samples];labels.len()];
+        for c in 0..labels.len() {for t in 0..samples {
+            for k in 0..3 { truth[c][t]+=eig.eigenvectors[(c,order[k])]*[8.,6.,4.][k]*(2.*std::f64::consts::PI*[10.,11.,9.][k]*t as f64/rate).sin(); }
+            seed=seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            truth[c][t]+=0.03*((seed>>32) as f64/u32::MAX as f64-0.5);
+        }}
+        for burst in [false,true] {
+            let mut observed=truth.clone();
+            if burst { for c in 0..labels.len() {for t in 0..samples {
+                observed[c][t]+=eig.eigenvectors[(c,order[labels.len()-1])]*150.*(-((t as f64/rate-8.5)/0.12).powi(2)).exp();
+            }}}
+            let result=gedai(&mut observed,rate,&labels,1.,"auto").unwrap();
+            let error=result.clean.iter().flatten().zip(truth.iter().flatten()).map(|(a,b)|(a-b).powi(2)).sum::<f64>();
+            let energy=truth.iter().flatten().map(|v|v*v).sum::<f64>();
+            assert!((error/energy).sqrt()<0.05,"known-signal reconstruction error (burst={burst}): {}",(error/energy).sqrt());
+            let retention=result.quality["median_alpha_power_ratio_common_average"].as_f64().unwrap();
+            if !burst {assert!((0.95..1.05).contains(&retention),"clean alpha retention: {retention}");}
+        }
+    }
+
+    #[test]
+    fn gedai_pit_matches_matlab_unique_ecdf_indexing() {
+        let mut values: Vec<f64> = (100..200).flat_map(|v| vec![v as f64;3]).collect();
+        let actual = gedai_pit_threshold(&mut values,5.0);
+        assert!((actual.ln()-96.).abs()<1e-12);
+        assert_eq!(values.len(),100);
+        assert!(gedai_pit_threshold(&mut vec![],5.).is_infinite());
+    }
+
+    #[test]
+    fn sensai_uses_dominant_not_smallest_principal_components() {
+        let covariance = DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![9.,8.,7.,3.,2.,1.]));
+        let dominant = DMatrix::from_fn(6,3,|r,c| if r==c {1.} else {0.});
+        let minor = DMatrix::from_fn(6,3,|r,c| if r==c+3 {1.} else {0.});
+        assert!((subspace_similarity(&covariance,&dominant,3)-1.).abs()<1e-10);
+        assert!(subspace_similarity(&covariance,&minor,3)<1e-10);
+    }
+
+
     #[test]
     fn failed_gedai_does_not_change_the_recording_reference() {
         let mut input=vec![vec![12.0;100],vec![15.0;100],vec![-3.0;100],vec![8.0;100]];
@@ -2084,7 +2366,9 @@ mod tests {
         for t in 0..len {for c in 0..3 {data[c][t]=(10.0-c as f64)*(2.0*PI*(10+c) as f64*t as f64/rate).sin();}
             if (1000..1100).contains(&t) {data[7][t]=200.0*(2.0*PI*5.0*t as f64/rate).sin();}}
         let reference=DMatrix::from_diagonal(&nalgebra::DVector::from_vec(vec![5.0,3.0,1.0,0.01,0.01,0.01,0.01,0.01]));
-        let (clean,_,_,_)=gedai_per_band(&data,rate,1.0,&reference,"0",false).unwrap();
+        let (clean,_,_,_)=// Fixed threshold 6 should remove this extreme orthogonal burst. At
+        // threshold 0 the literal unique-ECDF cutoff may exceed every eigenvalue.
+        gedai_per_band(&data,rate,1.0,&reference,"6",false).unwrap();
         let before=data[7][1000..1100].iter().map(|x|x*x).sum::<f64>();
         let after=clean[7][1000..1100].iter().map(|x|x*x).sum::<f64>();
         assert!(after<before*0.1,"strong focal artifact must still be removed");
@@ -2427,6 +2711,46 @@ mod tests {
         let result = gedai(&mut ch, rate, &labels, 1.0, "auto").unwrap();
         assert_eq!(result.clean.len(), 4);
         assert!(result.score.is_finite());
+    }
+
+    #[test]
+    fn surround_aware_interpolation_skips_unsupported_electrodes() {
+        // Central Cz surrounded by Fz, C3, C4, Pz has full 360° surround support;
+        // Edge Fp1 with only Fz/C3/C4/Pz has large angular gap & >60° neighbors.
+        let labels = vec![
+            "Fp1".into(), "Fz".into(), "C3".into(), "Cz".into(), "C4".into(), "Pz".into(),
+        ];
+        let mut ch = vec![
+            vec![999.0; 20],
+            vec![1.0; 20],
+            vec![2.0; 20],
+            vec![888.0; 20],
+            vec![4.0; 20],
+            vec![5.0; 20],
+        ];
+        let bad = vec!["Fp1".into(), "Cz".into()];
+        let (repaired, skipped, _notes) = interpolate_bad_channels_configured(
+            &mut ch, &labels, &bad, 4, 1e-5, true, 3, 60.0, 210.0,
+        );
+        assert!(repaired.contains(&"Cz".to_string()), "Cz should be interpolated: {repaired:?}");
+        assert!(skipped.contains(&"Fp1".to_string()), "Fp1 should be skipped when surround required: {skipped:?}");
+        assert!((ch[0][0] - 999.0).abs() < 1e-9, "Fp1 should remain untouched");
+
+        // When surround requirement is disabled, Fp1 is interpolated too.
+        let mut ch2 = vec![
+            vec![999.0; 20],
+            vec![1.0; 20],
+            vec![2.0; 20],
+            vec![888.0; 20],
+            vec![4.0; 20],
+            vec![5.0; 20],
+        ];
+        let (repaired2, skipped2, _) = interpolate_bad_channels_configured(
+            &mut ch2, &labels, &bad, 4, 1e-5, false, 3, 60.0, 210.0,
+        );
+        assert!(repaired2.contains(&"Fp1".to_string()));
+        assert!(skipped2.is_empty());
+        assert!((ch2[0][0] - 999.0).abs() > 1.0);
     }
 }
 

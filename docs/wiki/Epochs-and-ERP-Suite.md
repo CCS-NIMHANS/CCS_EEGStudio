@@ -12,7 +12,7 @@ flowchart LR
   S2 --> S3["Step 3: Measurements, Plots & Save<br/>Summary tables, publication figures,<br/>.ccserp, .csv & PDF export"]
 ```
 
-Everything in **Step 2** shares **one accepted-trial set**, **one active electrode** (selectable from dropdown or 2D scalp topoplot), and **one measurement window** (`Start–End ms`).
+Everything in **Step 2** shares **one accepted-trial set**, **one active electrode** (selectable from dropdown or 2D scalp topoplot), and **one always-visible measurement window** (`Start–End ms`) with cross-platform Windows/macOS layout and short cache path handling.
 
 ---
 

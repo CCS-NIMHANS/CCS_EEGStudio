@@ -535,9 +535,9 @@ fi
                 width: double.infinity,
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
+                  color: const Color(0xFFF8F9FB),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.white12),
+                  border: Border.all(color: const Color(0xFFCBD5E1)),
                 ),
                 child: Scrollbar(
                   thumbVisibility: true,
@@ -606,7 +606,7 @@ class FormattedReleaseNotes extends StatelessWidget {
   static const _defaultBodyStyle = TextStyle(
     fontSize: 12.5,
     height: 1.45,
-    color: Color(0xFFE2E8F0),
+    color: Color(0xFF1E293B),
   );
 
   @override
@@ -625,9 +625,9 @@ class FormattedReleaseNotes extends StatelessWidget {
           margin: const EdgeInsets.symmetric(vertical: 6),
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E293B),
+            color: const Color(0xFFF0F4F8),
             borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: Colors.white12),
+            border: Border.all(color: const Color(0xFFCBD5E1)),
           ),
           child: Text(
             codeLines.join('\n'),
@@ -635,7 +635,7 @@ class FormattedReleaseNotes extends StatelessWidget {
               fontFamily: 'monospace',
               fontSize: 11.5,
               height: 1.4,
-              color: Color(0xFF7DD3FC),
+              color: Color(0xFF1E3A8A),
             ),
           ),
         ),
@@ -670,7 +670,7 @@ class FormattedReleaseNotes extends StatelessWidget {
       }
       lastWasBlank = false;
       if (trimmed == '---' || trimmed == '***' || trimmed == '___') {
-        children.add(const Divider(height: 16, color: Colors.white12));
+        children.add(const Divider(height: 16, color: Color(0xFFCBD5E1)));
         continue;
       }
       if (trimmed.startsWith('#### ')) {
@@ -683,7 +683,7 @@ class FormattedReleaseNotes extends StatelessWidget {
                 fontSize: 12.5,
                 height: 1.35,
                 fontWeight: FontWeight.w700,
-                color: Color(0xFFCBD5E1),
+                color: Color(0xFF334155),
               ),
             ),
           ),
@@ -700,7 +700,7 @@ class FormattedReleaseNotes extends StatelessWidget {
                 fontSize: 13.5,
                 height: 1.35,
                 fontWeight: FontWeight.w700,
-                color: Color(0xFF93C5FD),
+                color: Color(0xFF3B6EA5),
               ),
             ),
           ),
@@ -717,7 +717,7 @@ class FormattedReleaseNotes extends StatelessWidget {
                 fontSize: 14.5,
                 height: 1.35,
                 fontWeight: FontWeight.w700,
-                color: Colors.white,
+                color: Color(0xFF0F172A),
               ),
             ),
           ),
@@ -734,7 +734,7 @@ class FormattedReleaseNotes extends StatelessWidget {
                 fontSize: 16,
                 height: 1.35,
                 fontWeight: FontWeight.bold,
-                color: Colors.white,
+                color: Color(0xFF0F172A),
               ),
             ),
           ),
@@ -749,7 +749,7 @@ class FormattedReleaseNotes extends StatelessWidget {
             padding: const EdgeInsets.only(left: 10, top: 3, bottom: 3),
             decoration: const BoxDecoration(
               border: Border(
-                left: BorderSide(color: Color(0xFF38BDF8), width: 2.5),
+                left: BorderSide(color: Color(0xFF3B6EA5), width: 2.5),
               ),
             ),
             child: _richInline(
@@ -758,7 +758,7 @@ class FormattedReleaseNotes extends StatelessWidget {
                 fontSize: 12,
                 height: 1.45,
                 fontStyle: FontStyle.italic,
-                color: Color(0xFF94A3B8),
+                color: Color(0xFF475569),
               ),
             ),
           ),
@@ -787,8 +787,8 @@ class FormattedReleaseNotes extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 12.5,
                       color: leadingSpaces >= 2
-                          ? const Color(0xFF93C5FD)
-                          : const Color(0xFF60A5FA),
+                          ? const Color(0xFF3B6EA5)
+                          : const Color(0xFF1E88E5),
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -837,9 +837,9 @@ class FormattedReleaseNotes extends StatelessWidget {
         final linkMatch = linkPattern.firstMatch(token);
         if (linkMatch != null) {
           final linkStyle = baseStyle.copyWith(
-            color: const Color(0xFF38BDF8),
+            color: const Color(0xFF0284C7),
             decoration: TextDecoration.underline,
-            decorationColor: const Color(0xFF38BDF8),
+            decorationColor: const Color(0xFF0284C7),
           );
           spans.addAll(_inlineSpans(linkMatch.group(1)!, linkStyle));
         } else {
@@ -849,7 +849,7 @@ class FormattedReleaseNotes extends StatelessWidget {
         final boldStyle = baseStyle.copyWith(
           fontWeight: FontWeight.w700,
           color: baseStyle.color == _defaultBodyStyle.color
-              ? Colors.white
+              ? const Color(0xFF0F172A)
               : baseStyle.color,
         );
         spans.addAll(
@@ -862,8 +862,8 @@ class FormattedReleaseNotes extends StatelessWidget {
             style: TextStyle(
               fontFamily: 'monospace',
               fontSize: ((baseStyle.fontSize ?? 12.5) - 1.0).clamp(9.5, 16.0),
-              backgroundColor: const Color(0xFF1E293B),
-              color: const Color(0xFF7DD3FC),
+              backgroundColor: const Color(0xFFE2E8F0),
+              color: const Color(0xFF1E3A8A),
             ),
           ),
         );

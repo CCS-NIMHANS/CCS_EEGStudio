@@ -247,7 +247,7 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
                   'Folder: ${widget.rootDirectory}',
                   style: Theme.of(
                     context,
-                  ).textTheme.bodySmall?.copyWith(color: Colors.white70),
+                  ).textTheme.bodySmall?.copyWith(color: const Color(0xFF475569)),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -350,7 +350,7 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
-                  border: Border.all(color: Colors.white12),
+                  border: Border.all(color: const Color(0xFFCBD5E1)),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: filtered.isEmpty
@@ -395,7 +395,7 @@ class _BatchFileSelectionDialogState extends State<BatchFileSelectionDialog> {
                                       rel,
                                       style: const TextStyle(
                                         fontSize: 10.5,
-                                        color: Colors.white54,
+                                        color: Color(0xFF64748B),
                                       ),
                                       overflow: TextOverflow.ellipsis,
                                     ),

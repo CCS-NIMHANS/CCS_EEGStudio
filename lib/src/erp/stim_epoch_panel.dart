@@ -153,7 +153,7 @@ class _StimEpochPanelState extends State<StimEpochPanel> {
           signed: true,
           decimal: true,
         ),
-        style: const TextStyle(color: Colors.white, fontSize: 12),
+        style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12),
         decoration: InputDecoration(
           labelText: label,
           suffixText: suffix,
@@ -193,7 +193,7 @@ class _StimEpochPanelState extends State<StimEpochPanel> {
                 : null,
             title: const Text(
               'Event-based trials (ERP)',
-              style: TextStyle(fontSize: 12, color: Colors.white),
+              style: TextStyle(fontSize: 12, color: Color(0xFF1E293B)),
             ),
             subtitle: const Text(
               'Choose events and labels first. Each event becomes one trial after filtering; GEDAI uses these same trials.',
@@ -256,7 +256,7 @@ class _StimEpochPanelState extends State<StimEpochPanel> {
                         enabled: widget.enabled,
                         onChanged: (_) => _sync(),
                         style: const TextStyle(
-                          color: Colors.white,
+                          color: Color(0xFF1E293B),
                           fontSize: 12,
                         ),
                         decoration: const InputDecoration(
@@ -308,7 +308,7 @@ class _StimEpochPanelState extends State<StimEpochPanel> {
                     controller: _markers,
                     enabled: widget.enabled,
                     onChanged: (_) => _sync(),
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                    style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12),
                     decoration: const InputDecoration(
                       labelText: 'Epoch on markers (comma separated)',
                       helperText:
@@ -367,7 +367,7 @@ class _StimEpochPanelState extends State<StimEpochPanel> {
                       controller: _pattern,
                       enabled: widget.enabled,
                       onChanged: (_) => _sync(),
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                      style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12),
                       decoration: const InputDecoration(
                         labelText: 'or regular expression (optional)',
                         helperText: r'e.g. \bS\s*5[12]\b',
@@ -410,7 +410,7 @@ class _StimEpochPanelState extends State<StimEpochPanel> {
                       : null,
                   title: const Text(
                     'Baseline correction',
-                    style: TextStyle(fontSize: 12, color: Colors.white),
+                    style: TextStyle(fontSize: 12, color: Color(0xFF1E293B)),
                   ),
                 ),
                 if (c.stimBaseline)
@@ -438,7 +438,7 @@ class _StimEpochPanelState extends State<StimEpochPanel> {
                             enabled: widget.enabled,
                             onChanged: (_) => _sync(),
                             style: const TextStyle(
-                              color: Colors.white,
+                              color: Color(0xFF1E293B),
                               fontSize: 12,
                             ),
                             decoration: const InputDecoration(
@@ -467,7 +467,7 @@ class _StimEpochPanelState extends State<StimEpochPanel> {
                   style: TextStyle(
                     fontSize: 10,
                     color: matched != null && matched < 2
-                        ? Colors.orangeAccent
+                        ? const Color(0xFFD97706)
                         : _textMuted,
                   ),
                 ),

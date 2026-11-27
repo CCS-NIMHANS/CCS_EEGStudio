@@ -8,6 +8,7 @@ import 'eeg_viewer.dart';
 import 'topostats/topo_interp.dart';
 import 'topostats/topo_paint.dart';
 import 'topostats/mpl_colormaps.dart';
+import 'theme.dart';
 
 /// Summarize a point or a half-open time window without crossing trial boundaries.
 List<double> spatialValues(
@@ -394,7 +395,7 @@ class _SourceReviewWorkspaceState extends State<SourceReviewWorkspace> {
                 key: const ValueKey('source-spatial-side-panel'),
                 width: 320,
                 child: Material(
-                  color: const Color(0xFF0A1628),
+                  color: CcsTheme.panel,
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(10, 6, 10, 12),
                     children: [
@@ -554,7 +555,7 @@ class _SourceReviewWorkspaceState extends State<SourceReviewWorkspace> {
                   ),
                 ),
               ),
-              const VerticalDivider(width: 1, color: Color(0x1FFFFFFF)),
+              const VerticalDivider(width: 1, color: CcsTheme.border),
             ],
             Expanded(
               key: const ValueKey('source-full-height-waveform'),
@@ -604,7 +605,7 @@ class _AmplitudeLegend extends StatelessWidget {
           if (!rms)
             const Text(
               '0',
-              style: TextStyle(fontSize: 10, color: Colors.white70),
+              style: TextStyle(fontSize: 10, color: CcsTheme.textSecondary),
             ),
           Text(
             '${limit.toStringAsPrecision(3)} $unit',
@@ -680,7 +681,7 @@ class _ScalpPainter extends CustomPainter {
       canvas,
       '${rms ? '0' : (-limit).toStringAsPrecision(3)} … ${limit.toStringAsPrecision(3)} $unit',
       Offset(10, size.height - 20),
-      Colors.white70,
+      CcsTheme.textSecondary,
       11,
     );
   }
@@ -727,7 +728,7 @@ class _GlassBrainState extends State<_GlassBrain> {
           children: [
             Text(
               'Threshold: ${(_thresholdFrac * 100).round()}%',
-              style: const TextStyle(fontSize: 10, color: Colors.white70),
+              style: const TextStyle(fontSize: 10, color: CcsTheme.textSecondary),
             ),
             Expanded(
               child: SliderTheme(
@@ -856,14 +857,14 @@ class _BrainPainter extends CustomPainter {
       canvas,
       (atlas['views'] as List)[view] as String,
       const Offset(8, 0),
-      Colors.white,
+      CcsTheme.text,
       12,
     );
     line(
       (atlas['shells'] as List)[view] as List,
       Paint()
         ..style = PaintingStyle.stroke
-        ..color = Colors.white54
+        ..color = CcsTheme.textSecondary
         ..strokeWidth = 1.2,
     );
     for (final r in (atlas['regions'] as List).cast<Map>()) {
@@ -876,8 +877,8 @@ class _BrainPainter extends CustomPainter {
           points as List,
           Paint()
             ..style = PaintingStyle.stroke
-            ..color = Colors.white.withValues(alpha: isExplicit ? 0.38 : 0.09)
-            ..strokeWidth = isExplicit ? 1.2 : 0.5,
+            ..color = CcsTheme.text.withValues(alpha: isExplicit ? 0.45 : 0.14)
+            ..strokeWidth = isExplicit ? 1.2 : 0.6,
         );
       }
       if (selected) {
@@ -896,16 +897,16 @@ class _BrainPainter extends CustomPainter {
       canvas,
       view == 0 ? 'A ← → P' : 'L ← → R',
       Offset(8, size.height - 30),
-      Colors.white54,
+      CcsTheme.textMuted,
       10,
     );
     if (view == 2)
-      _text(canvas, 'A ↑', const Offset(8, 17), Colors.white54, 10);
+      _text(canvas, 'A ↑', const Offset(8, 17), CcsTheme.textMuted, 10);
     _text(
       canvas,
       '± ${limit.toStringAsPrecision(3)}',
       Offset(8, size.height - 16),
-      Colors.white54,
+      CcsTheme.textMuted,
       10,
     );
   }

@@ -19,14 +19,14 @@ import 'package:flutter/material.dart';
 import 'feature_plotter.dart';
 
 // ── Design tokens (match app.dart) ────────────────────────────────────────
-const _bg = Color(0xFF0F172A);
-const _card = Color(0xFF1E293B);
-const _border = Color(0x1FFFFFFF);
-const _blue = Color(0xFF3B82F6);
-const _green = Color(0xFF22C55E);
-const _amber = Color(0xFFF59E0B);
-const _purple = Color(0xFF7C3AED);
-const _muted = Color(0xFF94A3B8);
+const _bg = Color(0xFFF8F9FB);
+const _card = Color(0xFFFFFFFF);
+const _border = Color(0xFFCBD5E1);
+const _blue = Color(0xFF3B6EA5);
+const _green = Color(0xFF16A34A);
+const _amber = Color(0xFFD97706);
+const _purple = Color(0xFF6D28D9);
+const _muted = Color(0xFF64748B);
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -208,8 +208,8 @@ class _PlotDialogState extends State<PlotDialog> {
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF060D1A),
-        foregroundColor: Colors.white,
+        backgroundColor: const Color(0xFFF0F4F8),
+        foregroundColor: const Color(0xFF1E293B),
         elevation: 0,
         title: const Row(
           children: [
@@ -246,7 +246,7 @@ class _PlotDialogState extends State<PlotDialog> {
         SizedBox(
           width: 300,
           child: Container(
-            color: const Color(0xFF0A1628),
+            color: const Color(0xFFF0F4F8),
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -334,7 +334,7 @@ class _PlotDialogState extends State<PlotDialog> {
               // Feature selector header.
               Container(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                color: const Color(0xFF0A1628),
+                color: const Color(0xFFF0F4F8),
                 child: Row(
                   children: [
                     const Icon(Icons.analytics, size: 14, color: _purple),
@@ -410,7 +410,7 @@ class _PlotDialogState extends State<PlotDialog> {
                             title: Text(
                               feat,
                               style: const TextStyle(
-                                color: Colors.white,
+                                color: Color(0xFF1E293B),
                                 fontSize: 12,
                               ),
                             ),
@@ -425,7 +425,7 @@ class _PlotDialogState extends State<PlotDialog> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: const BoxDecoration(
-                  color: Color(0xFF060D1A),
+                  color: Color(0xFFF0F4F8),
                   border: Border(top: BorderSide(color: _border)),
                 ),
                 child: Column(
@@ -437,7 +437,7 @@ class _PlotDialogState extends State<PlotDialog> {
                         _statusMsg,
                         style: TextStyle(
                           color: _statusMsg.startsWith('✗')
-                              ? Colors.redAccent
+                              ? const Color(0xFFDC2626)
                               : _statusMsg.startsWith('✓')
                               ? _green
                               : _muted,
@@ -449,7 +449,7 @@ class _PlotDialogState extends State<PlotDialog> {
                         borderRadius: BorderRadius.circular(4),
                         child: LinearProgressIndicator(
                           value: _running ? _progress : null,
-                          backgroundColor: const Color(0xFF1E293B),
+                          backgroundColor: const Color(0xFFF0F4F8),
                           color: _green,
                           minHeight: 4,
                         ),
@@ -471,7 +471,7 @@ class _PlotDialogState extends State<PlotDialog> {
                                 height: 14,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
-                                  color: Colors.white,
+                                  color: Color(0xFF1E293B),
                                 ),
                               )
                             : const Icon(Icons.play_arrow, size: 16),
@@ -487,7 +487,7 @@ class _PlotDialogState extends State<PlotDialog> {
                         style: FilledButton.styleFrom(
                           backgroundColor:
                               (_csvPaths.isEmpty || _selectedFeatures.isEmpty)
-                              ? const Color(0xFF1E293B)
+                              ? const Color(0xFFF0F4F8)
                               : _green,
                           foregroundColor: Colors.black,
                           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -512,7 +512,7 @@ class _PlotDialogState extends State<PlotDialog> {
         // Header bar.
         Container(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-          color: const Color(0xFF0A1628),
+          color: const Color(0xFFF0F4F8),
           child: Row(
             children: [
               const Icon(Icons.check_circle, color: _green, size: 15),
@@ -592,7 +592,7 @@ class _PlotDialogState extends State<PlotDialog> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  color: Colors.white,
+                                  color: Color(0xFF1E293B),
                                   fontSize: 11,
                                 ),
                               ),
@@ -639,7 +639,7 @@ class _PlotDialogState extends State<PlotDialog> {
   }) => TextField(
     controller: ctrl,
     enabled: !_running,
-    style: const TextStyle(color: Colors.white, fontSize: 12),
+    style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12),
     decoration: InputDecoration(
       labelText: label,
       hintText: hint,
@@ -708,7 +708,7 @@ class _PlotDialogState extends State<PlotDialog> {
             name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white, fontSize: 11),
+            style: const TextStyle(color: Color(0xFF1E293B), fontSize: 11),
           ),
         ),
         IconButton(
@@ -732,7 +732,7 @@ class _PlotDialogState extends State<PlotDialog> {
     contentPadding: EdgeInsets.zero,
     title: Text(
       label,
-      style: const TextStyle(color: Colors.white, fontSize: 12),
+      style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12),
     ),
     value: value,
     groupValue: groupValue,

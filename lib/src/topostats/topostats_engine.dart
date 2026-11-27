@@ -25,9 +25,40 @@ import 'dart:typed_data';
 
 import 'etfce.dart';
 import 'mne_constants.dart';
-import 'topo_interp.dart' show buildChannelAdjacency;
+import 'topo_interp.dart' show buildChannelAdjacency, isStandard1020Channel;
 
 export 'etfce.dart' show TfceFormula;
+
+/// Whether [labels] represent source-space ROIs rather than scalp electrodes.
+bool isSourceRoiLabels(List<String> labels) =>
+    labels.isNotEmpty &&
+    (labels.any((l) => l.endsWith('-lh') || l.endsWith('-rh')) ||
+        labels.every((l) => !isStandard1020Channel(l)));
+
+List<List<int>> _fallbackSourceAdjacency(List<String> labels) {
+  final n = labels.length;
+  if (n <= 1) return List.generate(n, (_) => <int>[]);
+  final adj = List.generate(n, (_) => <int>{});
+  for (var i = 0; i < n; i++) {
+    final hemiI = labels[i].endsWith('-lh')
+        ? 'lh'
+        : (labels[i].endsWith('-rh') ? 'rh' : '');
+    var added = 0;
+    for (var d = 1; d < n && added < 4; d++) {
+      for (final j in [(i + d) % n, (i - d + n) % n]) {
+        if (j == i) continue;
+        final hemiJ = labels[j].endsWith('-lh')
+            ? 'lh'
+            : (labels[j].endsWith('-rh') ? 'rh' : '');
+        if (hemiI.isNotEmpty && hemiJ.isNotEmpty && hemiI != hemiJ) continue;
+        adj[i].add(j);
+        adj[j].add(i);
+        added++;
+      }
+    }
+  }
+  return [for (final s in adj) s.toList()..sort()];
+}
 
 /// The feature list of the reference script (plotted in this order by
 /// "export all").
@@ -114,6 +145,7 @@ class TopoStatsSettings {
     this.sessionColors = const {},
     this.eventMarkerOpacity = 0.30,
     this.showEventLabels = true,
+    this.customAdjacency,
   });
 
   final String recId;
@@ -145,6 +177,7 @@ class TopoStatsSettings {
   final Map<String, int> sessionColors;
   final double eventMarkerOpacity;
   final bool showEventLabels;
+  final List<List<int>>? customAdjacency;
 
   TopoStatsSettings copyWith({
     String? recId,
@@ -174,6 +207,7 @@ class TopoStatsSettings {
     Map<String, int>? sessionColors,
     double? eventMarkerOpacity,
     bool? showEventLabels,
+    Object? customAdjacency = _keep,
   }) {
     return TopoStatsSettings(
       recId: recId ?? this.recId,
@@ -209,6 +243,9 @@ class TopoStatsSettings {
       sessionColors: sessionColors ?? this.sessionColors,
       eventMarkerOpacity: eventMarkerOpacity ?? this.eventMarkerOpacity,
       showEventLabels: showEventLabels ?? this.showEventLabels,
+      customAdjacency: identical(customAdjacency, _keep)
+          ? this.customAdjacency
+          : customAdjacency as List<List<int>>?,
     );
   }
 
@@ -869,7 +906,12 @@ TopoStatsResult computeTopoStats({
     );
   }
 
-  final graph = ChannelGraph(buildChannelAdjacency(chans));
+  final graph = ChannelGraph(
+    s.customAdjacency ??
+        (isSourceRoiLabels(chans)
+            ? _fallbackSourceAdjacency(chans)
+            : buildChannelAdjacency(chans)),
+  );
 
   // ---- per-session line data + matrices --------------------------------
   final sessT = <Float64List>[];

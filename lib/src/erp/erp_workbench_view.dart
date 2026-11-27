@@ -533,26 +533,26 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E293B),
+          color: const Color(0xFFFFFFFF),
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: Colors.cyan.withValues(alpha: 0.3)),
         ),
         child: Row(
           children: [
-            const Icon(Icons.groups, size: 18, color: Colors.cyanAccent),
+            const Icon(Icons.groups, size: 18, color: const Color(0xFF0284C7)),
             const SizedBox(width: 8),
             const Text(
               'Grand Average',
               style: TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 13,
-                color: Colors.cyanAccent,
+                color: const Color(0xFF0284C7),
               ),
             ),
             const SizedBox(width: 12),
             Text(
               '${d['n_files'] ?? current.length} recording(s) across ${d['n_subjects'] ?? current.length} subject(s)',
-              style: const TextStyle(fontSize: 12, color: Colors.white70),
+              style: const TextStyle(fontSize: 12, color: Color(0xFF475569)),
             ),
             if (current.isNotEmpty) ...[
               const SizedBox(width: 12),
@@ -581,9 +581,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFF131D2E),
+        color: const Color(0xFFF0F4F8),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.5)),
+        border: Border.all(color: const Color(0xFF0284C7).withValues(alpha: 0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -601,7 +601,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    color: Colors.cyanAccent,
+                    color: const Color(0xFF0284C7),
                   ),
                 ),
               ),
@@ -617,7 +617,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    color: Colors.amberAccent,
+                    color: const Color(0xFFD97706),
                   ),
                 ),
               ),
@@ -633,7 +633,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    color: Colors.lightBlueAccent,
+                    color: const Color(0xFF3B6EA5),
                   ),
                 ),
               ),
@@ -659,7 +659,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   message: info['path'] ?? '',
                   child: Text(
                     '${info['fileName']}  ·  ${activeFile['n_a'] ?? 0} trials (${erpMap(d['profile'])['a_name'] ?? 'A'}), ${activeFile['n_b'] ?? 0} trials (${erpMap(d['profile'])['b_name'] ?? 'B'})',
-                    style: const TextStyle(fontSize: 11, color: Colors.white70),
+                    style: const TextStyle(fontSize: 11, color: Color(0xFF475569)),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -2482,7 +2482,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.bold,
-            color: Colors.cyanAccent,
+            color: const Color(0xFF0284C7),
           ),
         ),
         const SizedBox(height: 6),
@@ -2536,13 +2536,13 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    color: Colors.cyanAccent,
+                    color: const Color(0xFF0284C7),
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   '${_profile!['a_name']}: ${(_profile!['a_codes'] as List).take(6).join(', ')}${(_profile!['a_codes'] as List).length > 6 ? '…' : ''}   vs   ${_profile!['b_name']}: ${(_profile!['b_codes'] as List).take(6).join(', ')}${(_profile!['b_codes'] as List).length > 6 ? '…' : ''}',
-                  style: const TextStyle(fontSize: 10, color: Colors.white70),
+                  style: const TextStyle(fontSize: 10, color: Color(0xFF475569)),
                 ),
               ],
             ),
@@ -2747,7 +2747,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
 
     return Card(
       margin: const EdgeInsets.only(top: 10),
-      color: const Color(0xFF0F172A),
+      color: const Color(0xFFF0F4F8),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -2758,7 +2758,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               runSpacing: 6,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                const Icon(Icons.compare_arrows, size: 16, color: Colors.amberAccent),
+                const Icon(Icons.compare_arrows, size: 16, color: const Color(0xFFD97706)),
                 Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                 SegmentedButton<String>(
                   segments: const [
@@ -2874,7 +2874,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
-        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+        side: BorderSide(color: const Color(0xFFCBD5E1)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -2886,7 +2886,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 const Icon(
                   Icons.blur_circular,
                   size: 16,
-                  color: Colors.cyanAccent,
+                  color: const Color(0xFF0284C7),
                 ),
                 const SizedBox(width: 8),
                 Text(
@@ -3061,7 +3061,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
-                      color: Colors.cyanAccent,
+                      color: const Color(0xFF0284C7),
                     ),
                   ),
                   TextButton(
@@ -3092,7 +3092,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         style: const TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.bold,
-                          color: Colors.cyanAccent,
+                          color: const Color(0xFF0284C7),
                         ),
                       ),
                       TextButton(
@@ -3106,7 +3106,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           'Clear all ERP files',
                           style: TextStyle(
                             fontSize: 11,
-                            color: Colors.redAccent,
+                            color: const Color(0xFFDC2626),
                           ),
                         ),
                       ),
@@ -3129,7 +3129,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               color: isSel ? Colors.cyan.withValues(alpha: 0.15) : Colors.transparent,
                               borderRadius: BorderRadius.circular(4),
                               border: Border.all(
-                                color: isSel ? Colors.cyanAccent : Colors.white10,
+                                color: isSel ? const Color(0xFF0284C7) : const Color(0xFFE2E8F0),
                                 width: isSel ? 1 : 0.5,
                               ),
                             ),
@@ -3138,7 +3138,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                 Icon(
                                   isSel ? Icons.radio_button_checked : Icons.radio_button_off,
                                   size: 14,
-                                  color: isSel ? Colors.cyanAccent : Colors.grey,
+                                  color: isSel ? const Color(0xFF0284C7) : Colors.grey,
                                 ),
                                 const SizedBox(width: 6),
                                 Expanded(
@@ -3150,7 +3150,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                         style: TextStyle(
                                           fontSize: 11,
                                           fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
-                                          color: isSel ? Colors.white : Colors.white70,
+                                          color: isSel ? const Color(0xFF0F172A) : const Color(0xFF475569),
                                         ),
                                         overflow: TextOverflow.ellipsis,
                                       ),
@@ -3619,7 +3619,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 if (_timingIssue != null)
                   Text(
                     _timingIssue!,
-                    style: const TextStyle(color: Colors.orangeAccent),
+                    style: const TextStyle(color: const Color(0xFFD97706)),
                   ),
                 _field(_output, 'Output folder'),
                 OutlinedButton.icon(
@@ -3683,7 +3683,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           _timingIssue!,
                           style: const TextStyle(
                             fontSize: 11,
-                            color: Colors.orangeAccent,
+                            color: const Color(0xFFD97706),
                           ),
                         ),
                       Row(
@@ -4008,7 +4008,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             : 'Load existing ERP results or a measurement table; earlier stages are not required.',
     };
     return Container(
-      color: const Color(0xFF060D1A),
+      color: const Color(0xFFF0F4F8),
       child: Column(
         children: [
           Padding(
@@ -4050,7 +4050,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   _status,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF475569)),
                 ),
               ),
             ),
@@ -4069,7 +4069,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           child: ListTile(
                             key: ValueKey('erp-stage-$i'),
                             selected: step == i,
-                            selectedTileColor: const Color(0xFF1E3A5F),
+                            selectedTileColor: const Color(0xFFDBEAFE),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(8),
                             ),
@@ -4224,8 +4224,8 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     VoidCallback? onNext,
     String nextLabel = 'Continue',
   }) {
-    const cardColor = Color(0xFF0F1D32);
-    const borderColor = Color(0xFF1E293B);
+    const cardColor = Color(0xFFFFFFFF);
+    const borderColor = Color(0xFFCBD5E1);
     const textMuted = Color(0xFF94A3B8);
 
     return Material(
@@ -4270,7 +4270,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         decoration: BoxDecoration(
                           color: stageEnabled
                               ? color.withValues(alpha: 0.18)
-                              : Colors.white.withValues(alpha: 0.06),
+                              : const Color(0xFFF0F4F8),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
                             color: stageEnabled
@@ -4336,7 +4336,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       style: FilledButton.styleFrom(
                         backgroundColor: color,
                         foregroundColor: Colors.white,
-                        disabledBackgroundColor: const Color(0xFF1E293B),
+                        disabledBackgroundColor: const Color(0xFFE2E8F0),
                         padding: const EdgeInsets.symmetric(vertical: 10),
                       ),
                     ),
@@ -4363,7 +4363,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       return widget.stage1Builder!(onNext: onNext, onRun: _runErpStage1Only);
     }
     const accentPurple = Color(0xFF8B5CF6);
-    const borderColor = Color(0xFF1E293B);
+    const borderColor = Color(0xFFCBD5E1);
     const textMuted = Color(0xFF94A3B8);
 
     return _erpBatchCardShell(
@@ -4475,7 +4475,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         Container(
           height: 110,
           decoration: BoxDecoration(
-            color: const Color(0xFF0A1628),
+            color: const Color(0xFFF0F4F8),
             borderRadius: BorderRadius.circular(6),
             border: Border.all(color: borderColor),
           ),
@@ -4731,22 +4731,25 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           _check('Open group comparison after measuring', _stage4AutoOpenStats, (v) => _stage4AutoOpenStats = v),
         ]),
 
-        if (_profile != null)
-          _card('Time windows & ROI', [
-            _field(
-              _roi,
-              _profile!['lateralized'] == true
-                  ? 'Left ROI, right ROI'
-                  : 'Electrodes / ROI',
+        _card('Time windows & ROI', [
+          _field(
+            _roi,
+            _profile?['lateralized'] == true
+                ? 'Left ROI, right ROI'
+                : 'Electrodes / ROI',
+          ),
+          if (!_isPrepared)
+            _pair('Epoch', _epoch0, _epoch1)
+          else
+            Text(
+              'Saved trial window: ${_epoch0.text} to ${_epoch1.text} ms (preserved)',
             ),
-            if (!_isPrepared)
-              _pair('Epoch', _epoch0, _epoch1)
-            else
-              Text(
-                'Saved trial window: ${_epoch0.text} to ${_epoch1.text} ms (preserved)',
-              ),
-            _pair('Baseline', _base0, _base1),
-            _pair('Measurement window', _window0, _window1),
+          const SizedBox(height: 6),
+          _pair('Baseline', _base0, _base1),
+          const SizedBox(height: 6),
+          _pair('Measurement window', _window0, _window1),
+          const SizedBox(height: 6),
+          if (_profile != null)
             DropdownButtonFormField<double>(
               initialValue: (_profile!['polarity'] as num).toDouble(),
               decoration: const InputDecoration(
@@ -4760,14 +4763,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   ? null
                   : (v) => setState(() => _profile!['polarity'] = v!),
             ),
-            const SizedBox(height: 10),
-            if (_components.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          if (_components.isNotEmpty) ...[
               Text(
                 'Defined ERP Components (${_components.length}):',
                 style: const TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
-                  color: Colors.cyanAccent,
+                  color: const Color(0xFF0284C7),
                 ),
               ),
               const SizedBox(height: 4),
@@ -4801,6 +4804,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 ),
               ),
             ),
+            if (_profile == null && _scanFiles.isEmpty) ...[
+              const SizedBox(height: 8),
+              _pair('Measurement window', _window0, _window1),
+            ],
             if (_waveformCache != null && _result != null) ...[
               const SizedBox(height: 6),
               SizedBox(
@@ -5308,7 +5315,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
           return AlertDialog(
             title: Row(
               children: [
-                const Icon(Icons.person_search, size: 20, color: Colors.cyanAccent),
+                const Icon(Icons.person_search, size: 20, color: const Color(0xFF0284C7)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -5321,7 +5328,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     setState(() => _file = null);
                     Navigator.pop(ctx);
                   },
-                  icon: const Icon(Icons.star, size: 15, color: Colors.amberAccent),
+                  icon: const Icon(Icons.star, size: 15, color: const Color(0xFFD97706)),
                   label: const Text('Grand Average'),
                 ),
               ],
@@ -5347,7 +5354,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   ListTile(
                     dense: true,
                     selected: _file == null,
-                    leading: const Icon(Icons.groups, color: Colors.cyanAccent),
+                    leading: const Icon(Icons.groups, color: const Color(0xFF0284C7)),
                     title: Text(
                       '★ Grand Average (${d['n_subjects'] ?? current.length} subj · ${current.length} files)',
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
@@ -5714,7 +5721,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     padding: const EdgeInsets.only(left: 24, bottom: 2),
                     child: Text(
                       '• ${ec.name.isNotEmpty ? ec.name : "Condition"} (0 epochs)',
-                      style: const TextStyle(fontSize: 11, color: Colors.white70),
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF475569)),
                     ),
                   ),
                 const SizedBox(height: 6),
@@ -5748,7 +5755,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         padding: const EdgeInsets.only(top: 4),
                         child: Text(
                           'Available in recording: ${_savedGroups.map((g) => "$g (×${_savedGroupTrialCount(g)})").join(", ")}',
-                          style: const TextStyle(fontSize: 10, color: Colors.white60),
+                          style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
                         ),
                       ),
                   ],
@@ -5772,7 +5779,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             padding: EdgeInsets.only(top: 4),
             child: Text(
               'Add at least one condition with epochs to run analysis.',
-              style: TextStyle(color: Colors.orangeAccent, fontSize: 11),
+              style: TextStyle(color: const Color(0xFFD97706), fontSize: 11),
             ),
           ),
       ],
@@ -6304,9 +6311,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFF131D2E),
+            color: const Color(0xFFF0F4F8),
             border: Border(
-              bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+              bottom: BorderSide(color: const Color(0xFFE2E8F0)),
             ),
           ),
           child: Wrap(
@@ -6410,7 +6417,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   icon: Icon(
                     _file == null ? Icons.star : Icons.person_search,
                     size: 15,
-                    color: _file == null ? Colors.amberAccent : Colors.cyanAccent,
+                    color: _file == null ? const Color(0xFFD97706) : const Color(0xFF0284C7),
                   ),
                   label: Text(
                     _file == null
@@ -6432,7 +6439,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 ActionChip(
                   visualDensity: VisualDensity.compact,
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  avatar: const Icon(Icons.groups, size: 14, color: Colors.cyanAccent),
+                  avatar: const Icon(Icons.groups, size: 14, color: const Color(0xFF0284C7)),
                   label: const Text('Back to Grand Avg', style: TextStyle(fontSize: 11)),
                   onPressed: () => setState(() => _file = null),
                 ),
@@ -6480,9 +6487,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.05),
+                  color: const Color(0xFFF8F9FB),
                   borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.white12),
+                  border: Border.all(color: const Color(0xFFCBD5E1)),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -6634,7 +6641,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   ),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: Colors.white24),
+                    border: Border.all(color: const Color(0xFFCBD5E1)),
                   ),
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
@@ -6693,7 +6700,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   ),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: Colors.white24),
+                    border: Border.all(color: const Color(0xFFCBD5E1)),
                   ),
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
@@ -6741,9 +6748,9 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         vertical: 6,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1E293B),
+                        color: const Color(0xFFFFFFFF),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.white10),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
                       ),
                       child: Wrap(
                         spacing: 8,
@@ -6753,14 +6760,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           const Icon(
                             Icons.sensors,
                             size: 15,
-                            color: Colors.cyanAccent,
+                            color: const Color(0xFF0284C7),
                           ),
                           const Text(
                             'Primary Plot Channel:',
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
-                              color: Colors.cyanAccent,
+                              color: const Color(0xFF0284C7),
                             ),
                           ),
                           ChoiceChip(
@@ -7255,7 +7262,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     if (_withinStats != null) ...[
                       Card(
                         margin: const EdgeInsets.only(top: 8),
-                        color: const Color(0xFF0F172A),
+                        color: const Color(0xFFF0F4F8),
                         child: Padding(
                           padding: const EdgeInsets.all(10),
                           child: Wrap(
@@ -7263,7 +7270,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                             runSpacing: 6,
                             crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              const Icon(Icons.check_circle, size: 16, color: Colors.greenAccent),
+                              const Icon(Icons.check_circle, size: 16, color: const Color(0xFF16A34A)),
                               Text(
                                 'Within-Subject Stats (${_withinStats!['contrast_label']} · ${_withinStats!['channel_label']}):',
                                 style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
@@ -7275,7 +7282,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                     '${((cl['start_sec'] as num) * 1000).round()}–${((cl['end_sec'] as num) * 1000).round()} ms (p=${(cl['p_value'] as num).toStringAsFixed(3)})',
                                     style: TextStyle(
                                       fontSize: 10,
-                                      color: (cl['p_value'] as num) <= 0.05 ? Colors.greenAccent : Colors.white70,
+                                      color: (cl['p_value'] as num) <= 0.05 ? const Color(0xFF16A34A) : const Color(0xFF475569),
                                     ),
                                   ),
                                 ),
@@ -7291,7 +7298,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                     sigCh.isEmpty
                                         ? 'eTFCE window: no channel p ≤ 0.05'
                                         : 'eTFCE sig channels: ${sigCh.join(', ')}',
-                                    style: const TextStyle(fontSize: 11, color: Colors.cyanAccent),
+                                    style: const TextStyle(fontSize: 11, color: const Color(0xFF0284C7)),
                                   );
                                 },
                               ),
@@ -7360,7 +7367,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                         width: 210,
                                         padding: const EdgeInsets.all(6),
                                         decoration: BoxDecoration(
-                                          color: const Color(0xFF0F172A),
+                                          color: const Color(0xFFF0F4F8),
                                           borderRadius: BorderRadius.circular(8),
                                         ),
                                         child: Column(
@@ -7370,7 +7377,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                               style: const TextStyle(
                                                 fontSize: 11,
                                                 fontWeight: FontWeight.bold,
-                                                color: Colors.cyanAccent,
+                                                color: const Color(0xFF0284C7),
                                               ),
                                             ),
                                             const SizedBox(height: 4),
@@ -7542,7 +7549,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                 : (targetPath != null
                                       ? 'Single-trial ERPimage is loaded on demand to save memory.'
                                       : 'ERPimage requires an active epoched recording.'),
-                            style: const TextStyle(color: Colors.white70),
+                            style: const TextStyle(color: Color(0xFF475569)),
                           ),
                           const SizedBox(height: 10),
                           if (_lazyRecBusy)
@@ -7608,7 +7615,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           children: [
                             Text(
                               'Accepted Epochs: ${activeRec.epochCount} trials · Channel: ${activeRec.labels[chIdx]}',
-                              style: const TextStyle(fontSize: 12, color: Colors.white70),
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF475569)),
                             ),
                             if (current.length > 1)
                               OutlinedButton.icon(
@@ -7725,7 +7732,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Card(
-                      color: const Color(0xFF132238),
+                      color: const Color(0xFFF0F4F8),
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Column(
@@ -7736,7 +7743,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                               runSpacing: 6,
                               crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                const Icon(Icons.compare_arrows, color: Colors.cyanAccent, size: 18),
+                                const Icon(Icons.compare_arrows, color: const Color(0xFF0284C7), size: 18),
                                 const Text(
                                   'rERP & ML Decoding Compared to Conventional ERP',
                                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
@@ -7753,7 +7760,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                             const Text(
                               '• rERP (Regression ERP) estimates the µV effect of each condition after accounting for covariates & overlapping events—compare it directly on the same µV scale against Conventional ERP.\n'
                               '• ML Decoding (Shrinkage LDA) measures how reliably all channels together distinguish Condition B from A at each timepoint (AUC 0.50 = chance, > 0.60 = strong separation).',
-                              style: TextStyle(fontSize: 11, color: Colors.white70),
+                              style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
                             ),
                           ],
                         ),
@@ -7765,10 +7772,10 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         margin: const EdgeInsets.only(bottom: 8),
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF0F292E),
+                          color: const Color(0xFFF0FDFA),
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(
-                            color: Colors.tealAccent.withValues(alpha: 0.35),
+                            color: const Color(0xFF0F766E).withValues(alpha: 0.35),
                           ),
                         ),
                         child: Wrap(
@@ -7779,14 +7786,14 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                             const Icon(
                               Icons.groups,
                               size: 16,
-                              color: Colors.tealAccent,
+                              color: const Color(0xFF0F766E),
                             ),
                             Text(
                               'Group Aggregation: rERP (${groupModelSummary.nRegSubj} subj) · Deconv (${groupModelSummary.nDeconvSubj} subj) · ML Decoding (${groupModelSummary.nDecodeSubj} subj)',
                               style: const TextStyle(
                                 fontSize: 11.5,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.tealAccent,
+                                color: const Color(0xFF0F766E),
                               ),
                             ),
                             if (groupModelSummary.decodeMeanAuc != null)
@@ -7796,7 +7803,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                                 '${groupModelSummary.decodePValue != null ? " (sign-flip vs 0.50: p=${groupModelSummary.decodePValue!.toStringAsFixed(4)})" : ""}',
                                 style: const TextStyle(
                                   fontSize: 11.5,
-                                  color: Colors.white,
+                                  color: const Color(0xFF1E293B),
                                 ),
                               ),
                           ],
@@ -7805,7 +7812,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                     _models(modelFile),
                     const Divider(height: 24),
                     Card(
-                      color: const Color(0xFF1E293B),
+                      color: const Color(0xFFFFFFFF),
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Wrap(
@@ -7813,7 +7820,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           runSpacing: 8,
                           crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
-                            const Icon(Icons.psychology, color: Colors.cyanAccent, size: 18),
+                            const Icon(Icons.psychology, color: const Color(0xFF0284C7), size: 18),
                             const Text(
                               'ML-Based ERP Decoding (Shrinkage LDA)',
                               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
@@ -7955,7 +7962,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         padding: EdgeInsets.all(16),
                         child: Text(
                           'Click "Run ML Decoding" above to train a cross-validated Shrinkage LDA classifier across all channels at every time point.',
-                          style: TextStyle(color: Colors.white70),
+                          style: TextStyle(color: Color(0xFF475569)),
                         ),
                       ),
                   ],
@@ -8178,7 +8185,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Card(
-          color: const Color(0xFF1E293B),
+          color: const Color(0xFFFFFFFF),
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -8186,7 +8193,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               children: [
                 const Row(
                   children: [
-                    Icon(Icons.auto_graph, color: Colors.amberAccent, size: 18),
+                    Icon(Icons.auto_graph, color: const Color(0xFFD97706), size: 18),
                     SizedBox(width: 8),
                     Text(
                       'Guided rERP & Overlap-Corrected ERP Builder',
@@ -8197,7 +8204,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 const SizedBox(height: 6),
                 const Text(
                   'Regression ERP (rERP) estimates condition & covariate betas across all channels. Overlap correction (Unfold-style FIR/LSQR) deconvolves adjacent overlapping stimulus/response events. Compare the rERP beta directly against the Conventional Average ERP below.',
-                  style: TextStyle(fontSize: 11, color: Colors.white70),
+                  style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
                 ),
                 const SizedBox(height: 10),
                 Wrap(
@@ -8238,7 +8245,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
         const SizedBox(height: 8),
         Text(
           'Participant ${file['subject'] ?? ''}; all channel/time coefficients are in JSON.',
-          style: const TextStyle(fontSize: 11, color: Colors.white70),
+          style: const TextStyle(fontSize: 11, color: Color(0xFF475569)),
         ),
         for (final key in ['regression', 'deconvolution'])
           if (file[key] is Map) ...[
@@ -8250,12 +8257,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             Text('${erpMap(file[key])['method']}', style: const TextStyle(fontSize: 12)),
             Text(
               'Predictors: ${(erpMap(file[key])['predictors'] as List).join(' | ')}',
-              style: const TextStyle(fontSize: 12, color: Colors.white70),
+              style: const TextStyle(fontSize: 12, color: Color(0xFF475569)),
             ),
             if (key == 'deconvolution')
               Text(
                 'Events per category: ${erpMap(file[key])['event_counts']}. Solver converged for ${(erpMap(file[key])['solver'] as List).where((s) => erpMap(s)['converged'] == true).length}/${(erpMap(file[key])['solver'] as List).length} channels.',
-                style: const TextStyle(fontSize: 12, color: Colors.white70),
+                style: const TextStyle(fontSize: 12, color: Color(0xFF475569)),
               ),
             const SizedBox(height: 8),
             Builder(
@@ -8324,7 +8331,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         ),
                         const Text(
                           'Blue: rERP Beta · Red: Conventional ERP (B − A)',
-                          style: TextStyle(fontSize: 11, color: Colors.cyanAccent),
+                          style: TextStyle(fontSize: 11, color: const Color(0xFF0284C7)),
                         ),
                       ],
                     ),
@@ -8429,7 +8436,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
             padding: EdgeInsets.all(12),
             child: Text(
               'Select Regression ERP or Overlap Correction above and click "Run rERP & Compare" to inspect waveforms.',
-              style: TextStyle(color: Colors.white70),
+              style: TextStyle(color: Color(0xFF475569)),
             ),
           ),
       ],

@@ -25,7 +25,8 @@ flowchart TD
 | ![Main Workspace](../../screenshots/main.png) | ![Channel Selection](../../screenshots/channel_selection.png) |
 
 - **Fast Rust XDF Import:** `.xdf` files load via the native Rust engine (`inspect_xdf`) and automatically snap minor LSL clock drift (within `0.5%`) to the exact nominal rate (e.g. `250.0 Hz`).
-- **Unlocated Channel Guard:** Channels lacking 10–20/10–05 scalp coordinates (such as motion channels `X`, `Y`, `Z` or auxiliary channels) are flagged immediately with a one-click removal button so spatial filters (GEDAI, ICA, interpolation) never run on non-scalp channels.
+- **Source-Space ROI Viewer Labels:** When viewing reconstructed DK68 source recordings (`src-...`), the waveform viewer displays ROI counts (`68 ROIs`), `ROIs/page` pagination presets (including `12 ROIs/page`), and `Manage ROIs`.
+- **Unlocated Channel Guard:** Channels lacking 10–20/10–05 scalp coordinates (such as motion channels `X`, `Y`, `Z` or auxiliary channels) are flagged immediately with a one-click removal button so spatial filters (GEDAI, ICA, interpolation) never run on non-scalp channels (while keeping `-lh`/`-rh` source ROIs intact).
 
 ---
 
@@ -42,9 +43,10 @@ flowchart TD
 | **Muscle / Motion** | CCA / wavelet muscle artifact reduction | Optional burst & EMG cleaning |
 | **ASR** | Artifact Subspace Reconstruction | Continuous-data burst repair |
 | **GEDAI** | Spatial-reference leadfield artifact cleaning | Uses built-in 10–05 leadfield when channels are mapped |
-| **Interpolate & Re-reference** | Spherical spline + Average / Linked-ear / Custom ref | Finalises clean analysis copy to persistent cache |
+| **Interpolate (Surround-Aware)** | Spherical spline repair with 3D surround-support check | Configurable `min neighbors`, `max angle`, `max gap`; safely skips unsupported edge channels |
+| **Re-reference** | Average (default) / Linked-ear / Custom ref | Default `Standard (5)` preset applies Filter, Bad Ch, GEDAI, Interpolate, Reference; also offers `Full (ICA+ASR)` |
 
-> **Tip:** Click **Finalise & use this signal** to lock the exact displayed waveform for downstream **Source Space**, **Feature Extraction**, or **Epochs & ERP** without re-running cleaning. Recording parameter logs (`preprocessing_parameters.json`, `analysis_parameters_log.md`) are automatically saved alongside finalized outputs.
+> **Tip:** Click **Apply selected & finalise…** to lock the exact displayed waveform for downstream **Source Space**, **Feature Extraction**, or **Epochs & ERP** without re-running cleaning. The **Workflow Modules** strip retains green completion checkmarks across module switches, and parameter logs (`preprocessing_parameters.json`, `analysis_parameters_log.md`) are saved automatically alongside finalized outputs.
 
 ---
 

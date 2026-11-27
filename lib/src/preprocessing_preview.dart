@@ -155,7 +155,8 @@ class PreprocessingPreview {
     }
     final fingerprint = sha256
         .convert(utf8.encode(jsonEncode(_identityCanonical(digestParts))))
-        .toString();
+        .toString()
+        .substring(0, 16);
     final taskHome = Platform.isWindows
         ? (Platform.environment['LOCALAPPDATA'] ??
               Platform.environment['APPDATA'] ??
@@ -648,7 +649,14 @@ Map<String, Map<String, dynamic>> configuredPreviewSteps(
       ]),
     if (options['gedai'] == true)
       'gedai': keys(['gedai', 'gedai_threshold', 'gedai_epoch_seconds']),
-    if (options['interpolate'] == true) 'interpolate': {'interpolate': true},
+    if (options['interpolate'] == true)
+      'interpolate': keys([
+        'interpolate',
+        'interpolate_require_surround',
+        'interpolate_min_neighbors',
+        'interpolate_max_angle_deg',
+        'interpolate_max_gap_deg',
+      ]),
     if (options['reference_mode'] != null &&
         options['reference_mode'] != 'none')
       'reference': keys(['reference_mode', 'reference_channels']),

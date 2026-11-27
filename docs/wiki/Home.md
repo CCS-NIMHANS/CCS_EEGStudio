@@ -1,6 +1,8 @@
 # CCS EEG Studio Wiki
 
-A visual, step-by-step guide to **CCS EEG Studio** — native-speed EEG preprocessing, feature extraction, state dynamics, microstates, ERP/ERSP/rERP/ML analysis, and batch reporting without Python or MATLAB dependencies.
+A visual, step-by-step guide to **CCS EEG Studio** (`v1.2.65`, light clinical desktop theme matching **CCS Sleep Studio**) — native-speed EEG preprocessing, feature extraction, state dynamics, microstates, ERP/ERSP/rERP/ML analysis, and batch reporting without Python or MATLAB dependencies.
+
+- **Universal macOS & Windows Reliability:** Built natively for both **Apple Silicon (`arm64`) and Intel (`x86_64`) Macs**, with Windows 8 MB worker stacks, long-path handling, and persistent green workflow-module completion ticks across tab transitions.
 
 ---
 

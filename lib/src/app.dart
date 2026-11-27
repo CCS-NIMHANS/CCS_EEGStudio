@@ -35,9 +35,11 @@ import 'media/media_sync_service.dart';
 import 'media/synced_media_panel.dart';
 import 'report/methodology_report.dart';
 import 'models.dart';
+import 'theme.dart';
 import 'topostats/topostats_batch.dart';
 import 'report/feature_report.dart';
-import 'topostats/topostats_engine.dart' show TopoStatsSettings;
+import 'topostats/topostats_engine.dart'
+    show TopoStatsSettings, splitFeatureCsvLine;
 import 'recording_loader.dart';
 import 'recording_storage.dart';
 import 'recording_preparation_dialog.dart';
@@ -56,16 +58,19 @@ import 'topostats_analysis.dart';
 import 'microstate_analysis.dart';
 import 'update_checker.dart';
 
-// ── Design tokens (ScoringNidra palette) ──────────────────────────────────
-const _bgColor = Color(0xFF0F172A);
-const _cardColor = Color(0xFF1E293B);
-const _accentBlue = Color(0xFF3B82F6);
-const _accentGreen = Color(0xFF22C55E);
-const _accentAmber = Color(0xFFF59E0B);
-const _accentPurple = Color(0xFF7C3AED);
-const _accentPink = Color(0xFFA855F7);
-const _textMuted = Color(0xFF94A3B8);
-const _borderColor = Color(0x1FFFFFFF);
+// ── Design tokens (CCS Studio Light Clinical palette) ──────────────────────
+const _bgColor = CcsTheme.bg;
+const _cardColor = CcsTheme.surface;
+const _panelColor = CcsTheme.panel;
+const _accentBlue = CcsTheme.accentBlue;
+const _accentGreen = CcsTheme.accentGreen;
+const _accentAmber = CcsTheme.accentAmber;
+const _accentPurple = CcsTheme.accentPurple;
+const _accentPink = CcsTheme.accentPink;
+const _textColor = CcsTheme.text;
+const _textSecondary = CcsTheme.textSecondary;
+const _textMuted = CcsTheme.textMuted;
+const _borderColor = CcsTheme.border;
 
 const _rawExtensions = [
   'edf',
@@ -207,9 +212,9 @@ Color _moduleColor(_Module m) => switch (m) {
   _Module.sourceSpace => _accentBlue,
   _Module.featureExtraction => _accentGreen,
   _Module.plotsReport => _accentAmber,
-  _Module.erpAnalysis => const Color(0xFFEC4899),
-  _Module.topoStats => const Color(0xFF06B6D4),
-  _Module.microstates => const Color(0xFF06B6D4),
+  _Module.erpAnalysis => const Color(0xFFDB2777),
+  _Module.topoStats => CcsTheme.accentCyan,
+  _Module.microstates => CcsTheme.accentCyan,
 };
 
 bool _isRunningUnderWidgetTest() =>
@@ -232,37 +237,7 @@ class CcsEegApp extends StatelessWidget {
     final app = MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'CCS EEG Studio',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: _accentBlue,
-          brightness: Brightness.dark,
-        ),
-        scaffoldBackgroundColor: _bgColor,
-        cardColor: _cardColor,
-        useMaterial3: true,
-        inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(borderSide: BorderSide(color: _borderColor)),
-          enabledBorder: OutlineInputBorder(
-            borderSide: BorderSide(color: _borderColor),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderSide: BorderSide(color: _accentBlue),
-          ),
-          labelStyle: TextStyle(color: _textMuted),
-          isDense: true,
-          filled: true,
-          fillColor: _bgColor,
-        ),
-        checkboxTheme: CheckboxThemeData(
-          fillColor: WidgetStateProperty.resolveWith(
-            (s) => s.contains(WidgetState.selected)
-                ? _accentBlue
-                : Colors.transparent,
-          ),
-          side: const BorderSide(color: _textMuted),
-          checkColor: WidgetStateProperty.all(Colors.white),
-        ),
-      ),
+      theme: buildCcsLightTheme(),
       builder: (context, child) => CallbackShortcuts(
         bindings: shortcuts,
         child: Focus(
@@ -972,7 +947,7 @@ class _FeatureHomeState extends State<FeatureHome>
             color: _batchMaximized
                 ? (batchEnabled ? _accentGreen : _textMuted)
                 : (changed || pendingToggle)
-                ? Colors.amberAccent
+                ? _accentAmber
                 : applied
                 ? _accentGreen
                 : null,
@@ -1677,14 +1652,14 @@ class _FeatureHomeState extends State<FeatureHome>
                   'BrainVision .vhdr headers store internal DataFile= and MarkerFile= filenames. '
                   'When files are renamed on disk without updating inside the header, other tools fail to open them. '
                   'CCS EEG Studio auto-resolved these files in memory; optionally repair the header files below so they match:',
-                  style: TextStyle(fontSize: 12.5, color: Colors.white70),
+                  style: TextStyle(fontSize: 12.5, color: _textSecondary),
                 ),
                 const SizedBox(height: 12),
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxHeight: 280),
                   child: Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0F172A),
+                      color: _bgColor,
                       borderRadius: BorderRadius.circular(6),
                       border: Border.all(color: _borderColor),
                     ),
@@ -1942,7 +1917,7 @@ class _FeatureHomeState extends State<FeatureHome>
       builder: (ctx) => AlertDialog(
         title: const Row(
           children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
+            Icon(Icons.warning_amber_rounded, color: _accentAmber),
             SizedBox(width: 8),
             Expanded(child: Text('Non-EEG / Unlocated Channels Detected')),
           ],
@@ -2239,7 +2214,7 @@ class _FeatureHomeState extends State<FeatureHome>
             ),
           )
           .toString();
-      path = '${_previewSession!.cachePath}/source-$key.ccseeg';
+      path = '${_previewSession!.cachePath}/src-${key.substring(0, 16)}.ccseeg';
     } else {
       path = await saveRecordingDialog(
         context,
@@ -2368,11 +2343,16 @@ class _FeatureHomeState extends State<FeatureHome>
       _logVisible = true;
     });
     try {
+      final isSource =
+          identical(input, _source) ||
+          (input.labels.isNotEmpty &&
+              input.labels.every((l) => l.endsWith('-lh') || l.endsWith('-rh')));
       final options = _cfg.toExtractionOptions(
-        nonEegChannels: _channels.nonEegChannels,
+        nonEegChannels: isSource ? const [] : _channels.nonEegChannels,
         // Filename exclusions filter a batch queue; they make no sense when
         // the user has explicitly chosen this one file.
         applyExclusions: false,
+        isSourceSpace: isSource,
       );
       await _service.run(
         recordings: [input],
@@ -2593,10 +2573,10 @@ class _FeatureHomeState extends State<FeatureHome>
       MaterialPageRoute(
         fullscreenDialog: true,
         builder: (ctx) => Scaffold(
-          backgroundColor: const Color(0xFF0F172A),
+          backgroundColor: _bgColor,
           appBar: AppBar(
-            backgroundColor: const Color(0xFF060D1A),
-            foregroundColor: Colors.white,
+            backgroundColor: _panelColor,
+            foregroundColor: _textColor,
             title: const Text('Connectivity', style: TextStyle(fontSize: 16)),
           ),
           body: ConnectivityView(csvPaths: candidates),
@@ -2617,10 +2597,10 @@ class _FeatureHomeState extends State<FeatureHome>
       MaterialPageRoute(
         fullscreenDialog: true,
         builder: (ctx) => Scaffold(
-          backgroundColor: const Color(0xFF0F172A),
+          backgroundColor: _bgColor,
           appBar: AppBar(
-            backgroundColor: const Color(0xFF060D1A),
-            foregroundColor: Colors.white,
+            backgroundColor: _panelColor,
+            foregroundColor: _textColor,
             title: const Text('Plots & Report', style: TextStyle(fontSize: 16)),
           ),
           body: TopoStatsView(
@@ -2812,7 +2792,10 @@ class _FeatureHomeState extends State<FeatureHome>
   Widget _buildTopBar() {
     return Container(
       height: 50,
-      color: const Color(0xFF060D1A),
+      decoration: const BoxDecoration(
+        color: _panelColor,
+        border: Border(bottom: BorderSide(color: _borderColor)),
+      ),
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: LayoutBuilder(
         builder: (context, constraints) => SingleChildScrollView(
@@ -2848,7 +2831,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   const Text(
                     'Studio',
                     style: TextStyle(
-                      color: Colors.white,
+                      color: _textColor,
                       fontSize: 15,
                       fontWeight: FontWeight.w500,
                     ),
@@ -2910,7 +2893,7 @@ class _FeatureHomeState extends State<FeatureHome>
                         value: _presetKey,
                         dropdownColor: _cardColor,
                         style: const TextStyle(
-                          color: Colors.white,
+                          color: _textColor,
                           fontSize: 12.5,
                         ),
                         icon: const Icon(
@@ -3154,9 +3137,9 @@ class _FeatureHomeState extends State<FeatureHome>
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: const Color(0xFF0A1628),
+        color: _cardColor,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white12),
+        border: Border.all(color: _borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3171,7 +3154,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   style: const TextStyle(
                     fontSize: 10.5,
                     fontWeight: FontWeight.w600,
-                    color: Colors.white,
+                    color: _textColor,
                   ),
                 ),
               ),
@@ -3189,7 +3172,7 @@ class _FeatureHomeState extends State<FeatureHome>
             const SizedBox(height: 6),
             Text(
               'Cannot plot (${unlocated.length}): ${unlocated.take(10).join(', ')}${unlocated.length > 10 ? '…' : ''}',
-              style: const TextStyle(fontSize: 10, color: Colors.amberAccent),
+              style: const TextStyle(fontSize: 10, color: _accentAmber),
             ),
           ],
         ],
@@ -3214,6 +3197,17 @@ class _FeatureHomeState extends State<FeatureHome>
       }
     }
     final r = await _loadRecordingWithFeedback(example ?? files.first);
+    final batchCounts = <int, int>{};
+    for (final p in files.take(25)) {
+      try {
+        final info = p == r.path ? r : await _loader.load(p);
+        batchCounts[info.labels.length] =
+            (batchCounts[info.labels.length] ?? 0) + 1;
+      } catch (_) {}
+    }
+    final batchCountSummary = batchCounts.entries
+        .map((e) => '${e.key} ch (${e.value})')
+        .join(' · ');
     final controls = {
       for (final label in r.labels)
         label: TextEditingController(
@@ -3419,7 +3413,7 @@ class _FeatureHomeState extends State<FeatureHome>
                         avatar: const Icon(
                           Icons.grid_on,
                           size: 13,
-                          color: Colors.cyanAccent,
+                          color: CcsTheme.accentCyan,
                         ),
                         label: const Text(
                           'EGI HydroCel 128 -> 10-20',
@@ -3570,9 +3564,17 @@ class _FeatureHomeState extends State<FeatureHome>
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    'Set standard electrode name for each channel. Blank channels are excluded from analysis.',
+                    'Set standard electrode name for each channel (or channel #). Blank channels are excluded.',
                     style: TextStyle(color: _textMuted, fontSize: 11),
                   ),
+                  if (batchCountSummary.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        'Batch channel counts: $batchCountSummary${files.length > 25 ? ' (first 25 scanned)' : ''}',
+                        style: const TextStyle(color: _accentBlue, fontSize: 10.5),
+                      ),
+                    ),
                   const SizedBox(height: 6),
                   Expanded(
                     child: Container(
@@ -3782,10 +3784,14 @@ class _FeatureHomeState extends State<FeatureHome>
       ),
     );
     if (accepted == true) {
-      final mapping = BatchChannels({
-        ...loadedNames,
-        for (final e in controls.entries) e.key: e.value.text.trim(),
-      });
+      final ordered = [for (final c in controls.values) c.text.trim()];
+      final mapping = BatchChannels(
+        {
+          ...loadedNames,
+          for (final e in controls.entries) e.key: e.value.text.trim(),
+        },
+        byIndex: BatchChannels.indexMapFromOrdered(ordered),
+      );
       setState(() {
         _batchChannels = mapping;
         for (final e in controls.entries) {
@@ -3811,38 +3817,57 @@ class _FeatureHomeState extends State<FeatureHome>
     if (nextExample != null && mounted) await _editBatchChannels(nextExample);
   }
 
+  bool _isSourceRecordingMeta(EegRecording r) =>
+      r.path.contains('_source') ||
+      r.path.contains('src-') ||
+      r.labels.any((l) => l.endsWith('-lh') || l.endsWith('-rh'));
+
   bool _isModuleCompleted(_Module m) {
     final rec = _activeRecording;
     switch (m) {
       case _Module.loadRaw:
-        return rec != null || _raw != null;
+        return rec != null || _raw != null || _directInput != null;
       case _Module.preprocess:
         return _preprocessed != null ||
+            (_interactivePreview != null && _appliedPreviewSteps.isNotEmpty) ||
+            (_raw?.completedStages.contains('preprocessing') ?? false) ||
+            (_directInput?.completedStages.contains('preprocessing') ?? false) ||
+            (_sourceInput?.completedStages.contains('preprocessing') ?? false) ||
             (rec?.completedStages.contains('preprocessing') ?? false) ||
             (rec?.path.contains('_clean') ?? false);
       case _Module.epochs:
-        return (rec?.isEpoched ?? false) || (_directInput?.isEpoched ?? false);
+        return (_raw?.isEpoched ?? false) ||
+            (_preprocessed?.isEpoched ?? false) ||
+            (_directInput?.isEpoched ?? false) ||
+            (rec?.isEpoched ?? false);
       case _Module.sourceSpace:
-        return rec?.path.contains('_source') ?? false;
+        return _source != null ||
+            (_directInput != null && _isSourceRecordingMeta(_directInput!)) ||
+            (rec != null && _isSourceRecordingMeta(rec));
       case _Module.featureExtraction:
-        return _batchFeatOutputs.isNotEmpty;
+        return _featuresCsv != null || _batchFeatOutputs.isNotEmpty;
+      case _Module.plotsReport:
+      case _Module.topoStats:
+        return _plotsDir != null;
+      case _Module.groupStatistics:
+        return _groupInputCsv != null;
       default:
         return false;
     }
   }
 
   Widget _buildPipelineSidebar() => Material(
-    color: const Color(0xFF0A1628),
+    color: _panelColor,
     child: SizedBox(
       height: 58,
       child: Row(
         children: [
           const SizedBox(width: 12),
-          const Text('WORKFLOW MODULES', style: TextStyle(fontSize: 10)),
+          const Text('WORKFLOW MODULES', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: _textSecondary)),
           const Tooltip(
             message:
                 'Return to any step to edit settings. Run the step again to apply changes to a new output.',
-            child: Icon(Icons.account_tree, size: 18),
+            child: Icon(Icons.account_tree, size: 18, color: _textSecondary),
           ),
           if (_pipeline.contains(_Module.epochs))
             SizedBox(width: 190, child: _erpOrderChoice()),
@@ -3857,8 +3882,8 @@ class _FeatureHomeState extends State<FeatureHome>
                         Icons.chevron_right,
                         size: 16,
                         color: _isModuleCompleted(_orderedPipeline[i - 1])
-                            ? Colors.greenAccent.withValues(alpha: 0.7)
-                            : Colors.white24,
+                            ? _accentGreen
+                            : _textMuted.withValues(alpha: 0.45),
                       ),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -3868,12 +3893,13 @@ class _FeatureHomeState extends State<FeatureHome>
                         return Tooltip(
                           message: 'Step ${i + 1}: ${_moduleSubtitle(mod)}',
                           child: ChoiceChip(
+                            showCheckmark: false,
                             avatar: Icon(
                               done
                                   ? Icons.check_circle_rounded
                                   : _moduleIcon(mod),
                               size: 16,
-                              color: done ? Colors.greenAccent : null,
+                              color: done ? _accentGreen : null,
                             ),
                             label: Text(_moduleLabel(mod)),
                             selected: _selectedModule == mod,
@@ -4163,7 +4189,7 @@ class _FeatureHomeState extends State<FeatureHome>
           SizedBox(
             width: 280,
             child: Material(
-              color: const Color(0xFF0A1628),
+              color: _panelColor,
               child: ListView(
                 padding: const EdgeInsets.only(bottom: 4),
                 children: [
@@ -4275,7 +4301,7 @@ class _FeatureHomeState extends State<FeatureHome>
         SizedBox(
           width: 300,
           child: Material(
-            color: const Color(0xFF0A1628),
+            color: _panelColor,
             child: ListView(
               padding: const EdgeInsets.only(bottom: 4),
               children: [
@@ -4860,7 +4886,7 @@ class _FeatureHomeState extends State<FeatureHome>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Material(
-          color: const Color(0xFF0A1628),
+          color: _panelColor,
           child: InkWell(
             onTap: () => setState(() => _channelsExpanded = !_channelsExpanded),
             child: Padding(
@@ -4986,7 +5012,7 @@ class _FeatureHomeState extends State<FeatureHome>
                                         style: TextStyle(
                                           fontSize: 11.5,
                                           color: isEeg
-                                              ? Colors.white
+                                              ? _textColor
                                               : _textMuted,
                                         ),
                                       ),
@@ -5063,7 +5089,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   '${_cfg.sourceModelPath.trim().isEmpty ? 'DK68 (68 ROIs)' : 'Custom atlas'} · '
                   'fixed normals · λ² = ${(1.0 / (_cfg.sourceSnr * _cfg.sourceSnr)).toStringAsFixed(4)} · '
                   '${_cfg.sourceMethod == 'lcmv' ? '5% reg. data cov' : 'identity noise cov'}',
-                  style: const TextStyle(fontSize: 10.5, color: Colors.white70, height: 1.3),
+                  style: const TextStyle(fontSize: 10.5, color: _textSecondary, height: 1.3),
                 ),
               ),
               Align(
@@ -5306,9 +5332,9 @@ class _FeatureHomeState extends State<FeatureHome>
                 style: TextStyle(fontSize: 12),
               ),
               style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF38BDF8),
+                foregroundColor: CcsTheme.accentCyan,
                 side: BorderSide(
-                  color: const Color(0xFF38BDF8).withValues(alpha: 0.5),
+                  color: CcsTheme.accentCyan.withValues(alpha: 0.5),
                 ),
                 padding: const EdgeInsets.symmetric(vertical: 9),
               ),
@@ -5510,10 +5536,10 @@ class _FeatureHomeState extends State<FeatureHome>
                   return Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Colors.orangeAccent.withValues(alpha: 0.12),
+                      color: CcsTheme.accentAmber.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(6),
                       border: Border.all(
-                        color: Colors.orangeAccent.withValues(alpha: 0.5),
+                        color: CcsTheme.accentAmber.withValues(alpha: 0.45),
                       ),
                     ),
                     child: Column(
@@ -5522,7 +5548,7 @@ class _FeatureHomeState extends State<FeatureHome>
                         Text(
                           '⚠ ${unloc.length} non-EEG / unlocated channel(s): ${unloc.join(', ')}',
                           style: const TextStyle(
-                            color: Colors.orangeAccent,
+                            color: CcsTheme.accentAmber,
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
                           ),
@@ -5560,6 +5586,91 @@ class _FeatureHomeState extends State<FeatureHome>
           open: false,
         ),
 
+        if (!_batchMaximized)
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 4),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: _accentBlue.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _accentBlue.withValues(alpha: 0.3)),
+                  ),
+                  child: Text(
+                    '${_appliedPreviewSteps.length} applied · ${_stepSelection.length} selected',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: _accentBlue,
+                    ),
+                  ),
+                ),
+                ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  label: const Text('Standard (5)', style: TextStyle(fontSize: 11)),
+                  tooltip: 'Resample, Filter, Bad channels, Interpolate, Common average reference',
+                  onPressed: _running
+                      ? null
+                      : () => setState(() {
+                          _cfg
+                            ..downsample = true
+                            ..filter = true
+                            ..badChannels = true
+                            ..interpolate = true
+                            ..referenceMode = 'average'
+                            ..icaMethod = 'none'
+                            ..asrMode = 'off'
+                            ..muscleMethod = 'none'
+                            ..gedai = false;
+                          _stepSelection
+                            ..clear()
+                            ..addAll([
+                              'resample',
+                              'filter',
+                              'badchannels',
+                              'interpolate',
+                              'reference',
+                            ]);
+                        }),
+                ),
+                ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  label: const Text('Full (ICA+ASR)', style: TextStyle(fontSize: 11)),
+                  tooltip: 'Standard 5 steps + ICA + ASR',
+                  onPressed: _running
+                      ? null
+                      : () => setState(() {
+                          _cfg
+                            ..downsample = true
+                            ..filter = true
+                            ..badChannels = true
+                            ..interpolate = true
+                            ..referenceMode = 'average'
+                            ..icaMethod = 'runica'
+                            ..asrMode = 'correct'
+                            ..muscleMethod = 'none'
+                            ..gedai = false;
+                          _stepSelection
+                            ..clear()
+                            ..addAll([
+                              'resample',
+                              'filter',
+                              'badchannels',
+                              'ica',
+                              'asr',
+                              'interpolate',
+                              'reference',
+                            ]);
+                        }),
+                ),
+              ],
+            ),
+          ),
         if (!_batchMaximized)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 8),
@@ -5787,9 +5898,9 @@ class _FeatureHomeState extends State<FeatureHome>
                       width: double.infinity,
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.04),
+                        color: _panelColor,
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: Colors.white12),
+                        border: Border.all(color: _borderColor),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -5799,6 +5910,7 @@ class _FeatureHomeState extends State<FeatureHome>
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
+                              color: _textColor,
                             ),
                           ),
                           const SizedBox(height: 4),
@@ -5806,14 +5918,14 @@ class _FeatureHomeState extends State<FeatureHome>
                             'Auto detected: ${autoBad.isEmpty ? "None" : autoBad.join(", ")}',
                             style: const TextStyle(
                               fontSize: 11,
-                              color: Colors.amberAccent,
+                              color: _accentAmber,
                             ),
                           ),
                           Text(
                             'Manual rejected: ${_cfg.manualBadChannels.isEmpty ? "None" : _cfg.manualBadChannels.join(", ")}',
                             style: const TextStyle(
                               fontSize: 11,
-                              color: Colors.redAccent,
+                              color: CcsTheme.accentRed,
                             ),
                           ),
                         ],
@@ -6073,11 +6185,39 @@ class _FeatureHomeState extends State<FeatureHome>
         _previewStep(
           'interpolate',
           'Bad channel interpolation',
-          'Spherical spline reconstruction',
-          {'interpolate': true},
+          _cfg.interpolateRequireSurround
+              ? 'Spherical spline (surround-aware)'
+              : 'Spherical spline (all bad ch)',
+          {
+            'interpolate': true,
+            'interpolate_require_surround': _cfg.interpolateRequireSurround,
+            'interpolate_min_neighbors': _cfg.interpolateMinNeighbors,
+            'interpolate_max_angle_deg': _cfg.interpolateMaxAngleDeg,
+            'interpolate_max_gap_deg': _cfg.interpolateMaxGapDeg,
+          },
           [
             const Text(
               'Reconstructs detected bad channels after artifact cleaning. Apply bad channel detection first.',
+              style: TextStyle(fontSize: 11),
+            ),
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text(
+                'Require electrode surround support',
+                style: TextStyle(fontSize: 12),
+              ),
+              subtitle: Text(
+                'Skip edge/isolated electrodes lacking ≥${_cfg.interpolateMinNeighbors} good neighbors within ${_cfg.interpolateMaxAngleDeg.round()}° (max gap ≤${_cfg.interpolateMaxGapDeg.round()}°)',
+                style: const TextStyle(fontSize: 10.5),
+              ),
+              value: _cfg.interpolateRequireSurround,
+              onChanged: _running
+                  ? null
+                  : (v) => setState(
+                      () => _cfg.interpolateRequireSurround = v ?? true,
+                    ),
+              controlAffinity: ListTileControlAffinity.leading,
             ),
           ],
         ),
@@ -6297,7 +6437,7 @@ class _FeatureHomeState extends State<FeatureHome>
                             ? 'Using event-based trials defined in Stage 1 (${_cfg.stimMarkerGroups.length} groups, ${_cfg.stimTmin} to ${_cfg.stimTmax} s). Primary trial boundaries are preserved.'
                             : 'Using fixed-length windows defined in Stage 1 (${_cfg.preprocessingEpochSeconds} s windows, ${_cfg.preprocessingOverlapSeconds} s overlap). Primary boundaries are preserved.',
                         style: const TextStyle(
-                          color: Colors.white,
+                          color: _textColor,
                           fontSize: 11,
                         ),
                       ),
@@ -6375,7 +6515,7 @@ class _FeatureHomeState extends State<FeatureHome>
             DropdownButtonFormField<DurationMode>(
               value: _cfg.mode,
               dropdownColor: _cardColor,
-              style: const TextStyle(color: Colors.white, fontSize: 12),
+              style: const TextStyle(color: _textColor, fontSize: 12),
               decoration: const InputDecoration(labelText: 'Duration mode'),
               items: DurationMode.values
                   .map(
@@ -6440,6 +6580,16 @@ class _FeatureHomeState extends State<FeatureHome>
 
           _subLabel('SPECTRAL'),
           _check('PSD band power', _cfg.psd, (v) => _cfg.psd = v),
+          _check(
+            'Individual Alpha (IAF, Ind. Alpha & Theta)',
+            _cfg.individualAlpha,
+            (v) => _cfg.individualAlpha = v,
+          ),
+          _check(
+            'Spectral Ratios (8 band ratios)',
+            _cfg.spectralRatios,
+            (v) => _cfg.spectralRatios = v,
+          ),
           _check('FOOOF / specparam', _cfg.fooof, (v) => _cfg.fooof = v),
           _check('IRASA', _cfg.irasa, (v) => _cfg.irasa = v),
           const SizedBox(height: 6),
@@ -6604,7 +6754,7 @@ class _FeatureHomeState extends State<FeatureHome>
             Expanded(
               child: Text(
                 '$title · ${name.isEmpty ? (selected.isEmpty ? "default" : "custom") : name} · ${shown.length} ch',
-                style: const TextStyle(fontSize: 12, color: Colors.white),
+                style: const TextStyle(fontSize: 12, color: _textColor),
               ),
             ),
             PopupMenuButton<String>(
@@ -7085,7 +7235,7 @@ class _FeatureHomeState extends State<FeatureHome>
     return Container(
       height: fillAvailable ? null : 320,
       decoration: const BoxDecoration(
-        color: Color(0xFF060D1A),
+        color: _panelColor,
         border: Border(top: BorderSide(color: _borderColor)),
       ),
       child: Column(
@@ -7271,7 +7421,7 @@ class _FeatureHomeState extends State<FeatureHome>
                         style: TextStyle(
                           color: _batchGlobalOutputDir == null
                               ? _textMuted
-                              : Colors.white,
+                              : _textColor,
                           fontSize: 12,
                           fontWeight: _batchGlobalOutputDir == null
                               ? FontWeight.normal
@@ -7515,7 +7665,7 @@ class _FeatureHomeState extends State<FeatureHome>
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: const Color(0xFF0A1628),
+        color: _panelColor,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: _borderColor),
       ),
@@ -7541,7 +7691,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   ),
                   decoration: BoxDecoration(
                     color: _batchActiveStage == stages[i].index
-                        ? stages[i].color.withOpacity(0.18)
+                        ? stages[i].color.withOpacity(0.14)
                         : Colors.transparent,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
@@ -7571,7 +7721,7 @@ class _FeatureHomeState extends State<FeatureHome>
                           style: TextStyle(
                             color: stages[i].enabled
                                 ? (_batchActiveStage == stages[i].index
-                                      ? Colors.white
+                                      ? _textColor
                                       : _textMuted)
                                 : _borderColor,
                             fontWeight: _batchActiveStage == stages[i].index
@@ -7589,15 +7739,15 @@ class _FeatureHomeState extends State<FeatureHome>
                         ),
                         decoration: BoxDecoration(
                           color: !stages[i].stageActive
-                              ? Colors.orange.withOpacity(0.18)
-                              : stages[i].color.withOpacity(0.15),
+                              ? _accentAmber.withOpacity(0.14)
+                              : stages[i].color.withOpacity(0.14),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
                           stages[i].badge,
                           style: TextStyle(
                             color: !stages[i].stageActive
-                                ? Colors.orangeAccent
+                                ? _accentAmber
                                 : stages[i].color,
                             fontSize: 9.5,
                             fontWeight: FontWeight.w600,
@@ -7635,7 +7785,7 @@ class _FeatureHomeState extends State<FeatureHome>
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.06),
+              color: _cardColor,
               borderRadius: BorderRadius.circular(4),
               border: Border.all(color: _accentPurple.withValues(alpha: 0.4)),
             ),
@@ -7646,7 +7796,7 @@ class _FeatureHomeState extends State<FeatureHome>
                 SizedBox(width: 4),
                 Text(
                   'Load',
-                  style: TextStyle(fontSize: 10, color: Colors.white70),
+                  style: TextStyle(fontSize: 10, color: _textSecondary),
                 ),
               ],
             ),
@@ -7662,7 +7812,7 @@ class _FeatureHomeState extends State<FeatureHome>
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.06),
+              color: _cardColor,
               borderRadius: BorderRadius.circular(4),
               border: Border.all(color: _accentPurple.withValues(alpha: 0.4)),
             ),
@@ -7673,7 +7823,7 @@ class _FeatureHomeState extends State<FeatureHome>
                 SizedBox(width: 4),
                 Text(
                   'Save',
-                  style: TextStyle(fontSize: 10, color: Colors.white70),
+                  style: TextStyle(fontSize: 10, color: _textSecondary),
                 ),
               ],
             ),
@@ -7952,7 +8102,7 @@ class _FeatureHomeState extends State<FeatureHome>
             const SizedBox(height: 4),
             Text(
               '${_batchResultCsvs.length} feature result CSVs ready for statistical modeling.',
-              style: const TextStyle(fontSize: 11, color: Colors.white),
+              style: const TextStyle(fontSize: 11, color: _textColor),
             ),
           ],
           const Spacer(),
@@ -8074,8 +8224,8 @@ class _FeatureHomeState extends State<FeatureHome>
                           ),
                           decoration: BoxDecoration(
                             color: stageEnabled
-                                ? color.withOpacity(0.18)
-                                : Colors.white.withOpacity(0.06),
+                                ? color.withOpacity(0.14)
+                                : _panelColor,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                               color: stageEnabled
@@ -8137,9 +8287,9 @@ class _FeatureHomeState extends State<FeatureHome>
                           Expanded(
                             child: Text(
                               'Stage Skipped: This stage will be bypassed when running the pipeline. You can still run it standalone below.',
-                              style: TextStyle(
+                              style: const TextStyle(
                                 fontSize: 11,
-                                color: Colors.amber.shade200,
+                                color: _accentAmber,
                               ),
                             ),
                           ),
@@ -8151,7 +8301,7 @@ class _FeatureHomeState extends State<FeatureHome>
                       title: Text(
                         usePreviousLabel ?? '',
                         style: const TextStyle(
-                          color: Colors.white,
+                          color: _textColor,
                           fontSize: 11,
                         ),
                       ),
@@ -8184,7 +8334,7 @@ class _FeatureHomeState extends State<FeatureHome>
                                 outputDir == null &&
                                     _batchGlobalOutputDir == null
                                 ? _textMuted
-                                : Colors.white70,
+                                : _textSecondary,
                             fontSize: 11,
                           ),
                           overflow: TextOverflow.ellipsis,
@@ -8306,7 +8456,7 @@ class _FeatureHomeState extends State<FeatureHome>
                                       child: Text(
                                         _shortName(files[idx]),
                                         style: const TextStyle(
-                                          color: Colors.white,
+                                          color: _textColor,
                                           fontSize: 11,
                                         ),
                                         overflow: TextOverflow.ellipsis,
@@ -8403,7 +8553,7 @@ class _FeatureHomeState extends State<FeatureHome>
                       style: FilledButton.styleFrom(
                         backgroundColor: color,
                         foregroundColor: Colors.white,
-                        disabledBackgroundColor: const Color(0xFF334155),
+                        disabledBackgroundColor: CcsTheme.panelAlt,
                         padding: const EdgeInsets.symmetric(vertical: 10),
                       ),
                     ),
@@ -8586,7 +8736,7 @@ class _FeatureHomeState extends State<FeatureHome>
     final repairableIssues = _batchVhdrIssues.where((i) => i.isResolved).toList();
     Color statusColor(String status) {
       if (status.startsWith('Done')) return _accentGreen;
-      if (status.startsWith('Failed')) return Colors.redAccent;
+      if (status.startsWith('Failed')) return CcsTheme.accentRed;
       if (status.startsWith('Running') || status.startsWith('Loading')) {
         return _accentBlue;
       }
@@ -8625,10 +8775,10 @@ class _FeatureHomeState extends State<FeatureHome>
                       ),
                       decoration: BoxDecoration(
                         color: st.isActive
-                            ? _accentBlue.withValues(alpha: 0.16)
+                            ? _accentBlue.withValues(alpha: 0.14)
                             : (st.isCompleted
                                   ? _accentGreen.withValues(alpha: 0.14)
-                                  : const Color(0xFF0F172A)),
+                                  : _bgColor),
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color: st.isActive
@@ -8659,7 +8809,7 @@ class _FeatureHomeState extends State<FeatureHome>
                                   ? FontWeight.w600
                                   : FontWeight.normal,
                               color: st.isActive || st.isCompleted
-                                  ? Colors.white
+                                  ? _textColor
                                   : _textMuted,
                             ),
                           ),
@@ -8673,7 +8823,7 @@ class _FeatureHomeState extends State<FeatureHome>
             Text(
               _batchCurrent,
               style: const TextStyle(
-                color: Colors.white,
+                color: _textColor,
                 fontWeight: FontWeight.w600,
               ),
               overflow: TextOverflow.ellipsis,
@@ -8683,7 +8833,7 @@ class _FeatureHomeState extends State<FeatureHome>
               value: overall,
               minHeight: 7,
               borderRadius: BorderRadius.circular(4),
-              backgroundColor: const Color(0xFF0F172A),
+              backgroundColor: _panelColor,
               color: _batchFailed > 0 ? _accentAmber : _accentBlue,
             ),
             const SizedBox(height: 6),
@@ -8710,7 +8860,7 @@ class _FeatureHomeState extends State<FeatureHome>
               height: 220,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
+                  color: _bgColor,
                   border: Border.all(color: _borderColor),
                   borderRadius: BorderRadius.circular(6),
                 ),
@@ -8737,7 +8887,7 @@ class _FeatureHomeState extends State<FeatureHome>
                       title: Text(
                         _shortName(entry.key),
                         style: const TextStyle(
-                          color: Colors.white,
+                          color: _textColor,
                           fontSize: 11,
                         ),
                         overflow: TextOverflow.ellipsis,
@@ -8756,8 +8906,9 @@ class _FeatureHomeState extends State<FeatureHome>
               child: Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF080D16),
+                  color: _panelColor,
                   borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: _borderColor),
                 ),
                 child: ListView.builder(
                   reverse: true,
@@ -8769,10 +8920,10 @@ class _FeatureHomeState extends State<FeatureHome>
                       line,
                       style: TextStyle(
                         color: line.contains('ERROR') || line.contains('Failed')
-                            ? Colors.red.shade200
+                            ? CcsTheme.accentRed
                             : line.contains('⚠') || line.contains('mismatch')
                             ? _accentAmber
-                            : Colors.grey.shade300,
+                            : _textSecondary,
                         fontFamily: 'monospace',
                         fontSize: 10.5,
                       ),
@@ -9091,9 +9242,7 @@ class _FeatureHomeState extends State<FeatureHome>
     final scratch = await Directory.systemTemp.createTemp(
       'ccs_batch_features_',
     );
-    IOSink? combinedSink;
-    var combinedHasHeader = false;
-    if (_cfg.combinedCsv) combinedSink = File(combinedPath).openWrite();
+    final combinedParts = <String>[];
     final written = <String>[];
     var succeeded = 0;
     final acknowledgedWarnings = <String>{};
@@ -9113,17 +9262,7 @@ class _FeatureHomeState extends State<FeatureHome>
           _log(
             '[${i + 1}/${kept.length}] ${_shortName(path)} ↳ Skipping (already extracted: ${_shortName(perFilePath)})',
           );
-          if (combinedSink != null) {
-            var firstLine = true;
-            for (final line in await File(perFilePath).readAsLines()) {
-              if (firstLine) {
-                firstLine = false;
-                if (combinedHasHeader) continue;
-                combinedHasHeader = true;
-              }
-              combinedSink.writeln(line);
-            }
-          }
+          if (_cfg.combinedCsv) combinedParts.add(perFilePath);
           if (_cfg.perFileCsv) { saveRecordingSubject(perFilePath, _batchSubject(path), path); written.add(perFilePath); }
           succeeded++;
           _updateBatchFile(
@@ -9161,10 +9300,16 @@ class _FeatureHomeState extends State<FeatureHome>
               break;
             }
           }
-          final nonEeg = ChannelTypeMap.autoDetect(rec.labels).nonEegChannels;
+          final isSource =
+              rec.labels.isNotEmpty &&
+              rec.labels.every((l) => l.endsWith('-lh') || l.endsWith('-rh'));
+          final nonEeg = isSource
+              ? const <String>[]
+              : ChannelTypeMap.autoDetect(rec.labels).nonEegChannels;
           final options = _cfg.toExtractionOptions(
             nonEegChannels: nonEeg,
             applyExclusions: false,
+            isSourceSpace: isSource,
           );
           _updateBatchFile(path, 'Running', progress: 0);
           await _service.run(
@@ -9186,17 +9331,7 @@ class _FeatureHomeState extends State<FeatureHome>
             },
           );
 
-          if (combinedSink != null) {
-            var firstLine = true;
-            for (final line in await File(jobCsv).readAsLines()) {
-              if (firstLine) {
-                firstLine = false;
-                if (combinedHasHeader) continue;
-                combinedHasHeader = true;
-              }
-              combinedSink.writeln(line);
-            }
-          }
+          if (_cfg.combinedCsv) combinedParts.add(jobCsv);
 
           if (_cfg.perFileCsv) { saveRecordingSubject(perFilePath, _batchSubject(path), path); written.add(perFilePath); }
           if (_cfg.generatePdfReport) {
@@ -9228,10 +9363,50 @@ class _FeatureHomeState extends State<FeatureHome>
           _log('✗ Failed ${_shortName(path)}: $e');
         }
       }
-      await combinedSink?.flush();
-      await combinedSink?.close();
-      combinedSink = null;
-      if (_cfg.combinedCsv && combinedHasHeader) {
+      var wroteCombined = false;
+      if (_cfg.combinedCsv && combinedParts.isNotEmpty) {
+        final unifiedHeader = <String>[];
+        final seenCols = <String>{};
+        for (final partPath in combinedParts) {
+          final f = File(partPath);
+          if (!f.existsSync()) continue;
+          final lines = await f.readAsLines();
+          if (lines.isEmpty) continue;
+          for (final col in splitFeatureCsvLine(lines.first).map((s) => s.trim())) {
+            if (seenCols.add(col)) unifiedHeader.add(col);
+          }
+        }
+        if (unifiedHeader.isNotEmpty) {
+          final sink = File(combinedPath).openWrite();
+          String csvCell(String v) =>
+              v.contains(RegExp(r'[,"\n]')) ? '"${v.replaceAll('"', '""')}"' : v;
+          sink.writeln(unifiedHeader.map(csvCell).join(','));
+          for (final partPath in combinedParts) {
+            final f = File(partPath);
+            if (!f.existsSync()) continue;
+            final lines = await f.readAsLines();
+            if (lines.length < 2) continue;
+            final cols = splitFeatureCsvLine(lines.first).map((s) => s.trim()).toList();
+            final colIndex = {for (var c = 0; c < cols.length; c++) cols[c]: c};
+            for (var r = 1; r < lines.length; r++) {
+              if (lines[r].trim().isEmpty) continue;
+              final vals = splitFeatureCsvLine(lines[r]);
+              sink.writeln([
+                for (final h in unifiedHeader)
+                  csvCell(
+                    colIndex.containsKey(h) && colIndex[h]! < vals.length
+                        ? vals[colIndex[h]!]
+                        : '',
+                  ),
+              ].join(','));
+            }
+          }
+          await sink.flush();
+          await sink.close();
+          wroteCombined = true;
+        }
+      }
+      if (wroteCombined) {
         written.add(combinedPath);
         _log('✓ Combined: $combinedPath');
       } else if (_cfg.combinedCsv) {
@@ -9266,7 +9441,6 @@ class _FeatureHomeState extends State<FeatureHome>
       }
       return written;
     } finally {
-      await combinedSink?.close();
       try {
         await scratch.delete(recursive: true);
       } catch (_) {}
@@ -9594,7 +9768,7 @@ class _FeatureHomeState extends State<FeatureHome>
         style: FilledButton.styleFrom(
           backgroundColor: color,
           foregroundColor: Colors.white,
-          disabledBackgroundColor: const Color(0xFF243044),
+          disabledBackgroundColor: CcsTheme.panelAlt,
           disabledForegroundColor: _textMuted,
           padding: const EdgeInsets.symmetric(vertical: 11),
         ),
@@ -9637,7 +9811,7 @@ class _FeatureHomeState extends State<FeatureHome>
                 style: TextStyle(
                   fontWeight: active ? FontWeight.w700 : FontWeight.w600,
                   fontSize: 12,
-                  color: Colors.white,
+                  color: _textColor,
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
@@ -9718,7 +9892,7 @@ class _FeatureHomeState extends State<FeatureHome>
   }) => TextField(
     controller: controller,
     enabled: !_running,
-    style: const TextStyle(color: Colors.white, fontSize: 12),
+    style: const TextStyle(color: _textColor, fontSize: 12),
     decoration: InputDecoration(
       labelText: label,
       suffixText: suffix,
@@ -9802,6 +9976,7 @@ class _FeatureHomeState extends State<FeatureHome>
     'GEDAI denoising',
     'Interpolate bad channels',
     'PSD band power',
+    'Individual Alpha (IAF, Ind. Alpha & Theta)',
     'FOOOF / specparam',
     'IRASA',
     'Nonlinear dynamics',
@@ -9830,7 +10005,7 @@ class _FeatureHomeState extends State<FeatureHome>
             Expanded(
               child: Text(
                 text,
-                style: const TextStyle(fontSize: 12, color: Colors.white),
+                style: const TextStyle(fontSize: 12, color: _textColor),
               ),
             ),
             if (_hasParameterSettings(text))
@@ -9858,6 +10033,7 @@ class _FeatureHomeState extends State<FeatureHome>
                             'Bandpass + notch filter' => 'Filter',
                             'GEDAI denoising' => 'GEDAI',
                             'PSD band power' => 'PSD',
+                            'Individual Alpha (IAF, Ind. Alpha & Theta)' => 'IAF',
                             'FOOOF / specparam' => 'FOOOF',
                             'IRASA' => 'IRASA',
                             'Nonlinear dynamics' => 'Nonlinear',
@@ -9929,7 +10105,7 @@ class _FeatureHomeState extends State<FeatureHome>
             Text(
               title,
               style: const TextStyle(
-                color: Colors.white,
+                color: _textColor,
                 fontSize: 22,
                 fontWeight: FontWeight.bold,
               ),
@@ -9977,7 +10153,7 @@ class _FeatureHomeState extends State<FeatureHome>
                   const Text(
                     'Planned capabilities',
                     style: TextStyle(
-                      color: Colors.white70,
+                      color: _textSecondary,
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                       letterSpacing: 0.5,
@@ -10024,7 +10200,7 @@ class _FeatureHomeState extends State<FeatureHome>
     return Container(
       height: 170,
       decoration: const BoxDecoration(
-        color: Color(0xFF060D1A),
+        color: _panelColor,
         border: Border(top: BorderSide(color: _borderColor)),
       ),
       child: Column(
@@ -10151,7 +10327,7 @@ class _ChannelHeadmapPainter extends CustomPainter {
     final cy = size.height / 2 + 4;
     final headPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..color = Colors.white38
+      ..color = _textMuted
       ..strokeWidth = 1.4;
     canvas.drawCircle(Offset(cx, cy), r, headPaint);
     // Nose
@@ -10181,7 +10357,7 @@ class _ChannelHeadmapPainter extends CustomPainter {
         final tp = TextPainter(
           text: TextSpan(
             text: locatedLabels[i],
-            style: const TextStyle(fontSize: 8.5, color: Colors.white70),
+            style: const TextStyle(fontSize: 8.5, color: _textSecondary),
           ),
           textDirection: TextDirection.ltr,
         )..layout();

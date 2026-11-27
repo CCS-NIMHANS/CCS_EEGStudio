@@ -359,7 +359,7 @@ class _ConfigurableStatsPlotWidgetState
                         ? '**'
                         : '*';
                     return '$mark ${widget.config.factorLabel(factor)}: ${widget.config.levelLabel(factor, "${p['group_a']}")} ↔ ${widget.config.levelLabel(factor, "${p['group_b']}")} · ${context.isEmpty ? 'marginal' : context} · adjusted p=${q.toStringAsPrecision(3)}';
-                  }(), style: const TextStyle(fontSize: 11, color: Colors.tealAccent)),
+                  }(), style: const TextStyle(fontSize: 11, color: const Color(0xFF0F766E))),
               ],
             ),
           ),
@@ -422,12 +422,12 @@ class _ConfigurableStatsPlotWidgetState
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
+        color: const Color(0xFFF8F9FB),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: widget.isDummyPreview
-              ? Colors.amberAccent.withValues(alpha: 0.45)
-              : Colors.white12,
+              ? const Color(0xFFD97706).withValues(alpha: 0.45)
+              : const Color(0xFFCBD5E1),
         ),
       ),
       child: Column(
@@ -444,7 +444,7 @@ class _ConfigurableStatsPlotWidgetState
                   ),
                   margin: const EdgeInsets.only(right: 8),
                   decoration: BoxDecoration(
-                    color: Colors.amberAccent.withValues(alpha: 0.18),
+                    color: const Color(0xFFD97706).withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: const Text(
@@ -452,7 +452,7 @@ class _ConfigurableStatsPlotWidgetState
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
-                      color: Colors.amberAccent,
+                      color: const Color(0xFFD97706),
                     ),
                   ),
                 ),
@@ -470,7 +470,7 @@ class _ConfigurableStatsPlotWidgetState
                 const SizedBox(width: 8),
                 const Text(
                   'Brackets:',
-                  style: TextStyle(fontSize: 11, color: Colors.white70),
+                  style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
                 ),
                 const SizedBox(width: 6),
                 SegmentedButton<_BracketMode>(
@@ -485,9 +485,9 @@ class _ConfigurableStatsPlotWidgetState
                       vertical: 0,
                     ),
                     textStyle: const TextStyle(fontSize: 10.5),
-                    foregroundColor: Colors.white70,
+                    foregroundColor: const Color(0xFF475569),
                     selectedForegroundColor: Colors.white,
-                    selectedBackgroundColor: const Color(0xFF1E3A8A),
+                    selectedBackgroundColor: const Color(0xFF3B6EA5),
                   ),
                   segments: const [
                     ButtonSegment(value: _BracketMode.off, label: Text('Off')),
@@ -513,7 +513,7 @@ class _ConfigurableStatsPlotWidgetState
               children: [
                 Text(
                   '${widget.config.factorLabel(widget.config.seriesFactor)}:',
-                  style: const TextStyle(fontSize: 11, color: Colors.white70),
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF475569)),
                 ),
                 for (var s = 0; s < seriesLevels.length; s++)
                   Row(
@@ -580,7 +580,7 @@ class _ConfigurableStatsPlotWidgetState
                           style: const TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w600,
-                            color: Colors.lightBlueAccent,
+                            color: const Color(0xFF3B6EA5),
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -646,7 +646,7 @@ class _ConfigurableStatsPlotWidgetState
                           style: const TextStyle(
                             fontSize: 10.5,
                             fontWeight: FontWeight.bold,
-                            color: Colors.white70,
+                            color: Color(0xFF475569),
                           ),
                         ),
                       ),
@@ -762,7 +762,7 @@ class _FacetPlotPainter extends CustomPainter {
       }
       final y = topPad - 14.0 - (brackets.length - 1 - i) * 20.0;
       final bracketColor = isCrossSeries
-          ? Colors.amberAccent
+          ? const Color(0xFFD97706)
           : palette[b.seriesA % palette.length];
       final paint = Paint()
         ..color = bracketColor.withValues(alpha: 0.9)
@@ -792,12 +792,12 @@ class _FacetPlotPainter extends CustomPainter {
 
     // Axes & grid
     final gridPaint = Paint()
-      ..color = Colors.white12
+      ..color = const Color(0xFFCBD5E1)
       ..strokeWidth = 1.0;
     canvas.drawRect(
       Rect.fromLTWH(leftPad, topPad, plotW, plotH),
       Paint()
-        ..color = Colors.white12
+        ..color = const Color(0xFFCBD5E1)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.0,
     );
@@ -820,7 +820,7 @@ class _FacetPlotPainter extends CustomPainter {
       final tp = TextPainter(
         text: TextSpan(
           text: yVal.toStringAsFixed(decimals),
-          style: const TextStyle(color: Colors.white70, fontSize: 10.5),
+          style: const TextStyle(color: Color(0xFF475569), fontSize: 10.5),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -836,7 +836,7 @@ class _FacetPlotPainter extends CustomPainter {
         Offset(leftPad, zeroY),
         Offset(leftPad + plotW, zeroY),
         Paint()
-          ..color = Colors.white30
+          ..color = const Color(0xFF94A3B8)
           ..strokeWidth = 1.2,
       );
     }
@@ -847,7 +847,7 @@ class _FacetPlotPainter extends CustomPainter {
       final tp = TextPainter(
         text: TextSpan(
           text: xLevels[x],
-          style: const TextStyle(color: Colors.white70, fontSize: 11.0),
+          style: const TextStyle(color: Color(0xFF475569), fontSize: 11.0),
         ),
         textDirection: TextDirection.ltr,
         maxLines: 1,
@@ -905,7 +905,7 @@ class _FacetPlotPainter extends CustomPainter {
               ..strokeWidth = 2.2,
           );
           final outlinePaint = Paint()
-            ..color = const Color(0xFF0F172A)
+            ..color = const Color(0xFFF8F9FB)
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1.2;
           final fillPaint = Paint()..color = col;
@@ -937,7 +937,7 @@ class _FacetPlotPainter extends CustomPainter {
             );
             canvas.drawRect(rect, Paint()..color = col.withValues(alpha: 0.7));
             final errPaint = Paint()
-              ..color = Colors.white70
+              ..color = const Color(0xFF475569)
               ..strokeWidth = 1.3;
             canvas.drawLine(
               Offset(bx, yOf(st.mean + st.err)),
@@ -1001,7 +1001,7 @@ class _FacetPlotPainter extends CustomPainter {
             final ptRadius = nPts > 40 ? 2.0 : 2.3;
             final ptFill = Paint()..color = col.withValues(alpha: 0.34);
             final ptStroke = Paint()
-              ..color = Colors.white.withValues(alpha: 0.24)
+              ..color = const Color(0xFFCBD5E1)
               ..style = PaintingStyle.stroke
               ..strokeWidth = 0.6;
             final maxJitter = itemW * 0.24;
@@ -1018,7 +1018,7 @@ class _FacetPlotPainter extends CustomPainter {
               Offset(rect.left, yOf(st.median)),
               Offset(rect.right, yOf(st.median)),
               Paint()
-                ..color = Colors.white
+                ..color = const Color(0xFF1E293B)
                 ..strokeWidth = 2.0,
             );
           }

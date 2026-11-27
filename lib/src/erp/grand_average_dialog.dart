@@ -538,7 +538,7 @@ class _GrandAverageLocalizerDialogState
     return AlertDialog(
       title: Row(
         children: [
-          const Icon(Icons.insights, size: 20, color: Colors.amberAccent),
+          const Icon(Icons.insights, size: 20, color: Color(0xFFD97706)),
           const SizedBox(width: 8),
           const Expanded(
             child: Text(
@@ -822,9 +822,9 @@ class _GrandAverageLocalizerDialogState
                         Expanded(
                           child: Container(
                             decoration: BoxDecoration(
-                              color: const Color(0xFF0F172A),
+                              color: const Color(0xFFF8F9FB),
                               borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.white12),
+                              border: Border.all(color: const Color(0xFFCBD5E1)),
                             ),
                             child: LayoutBuilder(
                               builder: (context, constraints) {
@@ -1010,9 +1010,9 @@ class _GrandAverageLocalizerDialogState
                     child: Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF0F172A),
+                        color: const Color(0xFFF8F9FB),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.white12),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
                       ),
                       child: Column(
                         children: [
@@ -1211,7 +1211,7 @@ class _GrandAveragePainter extends CustomPainter {
           wave: avgGrid[ch],
           color: isRoi
               ? const Color(0xFFEF4444)
-              : Colors.white.withValues(alpha: 0.18),
+              : const Color(0xFFE2E8F0),
           width: isRoi ? 2.0 : 1.0,
         ));
       }
@@ -1281,7 +1281,7 @@ class _GrandAveragePainter extends CustomPainter {
 
     // Axes (0 uV and 0 ms)
     final axisPaint = Paint()
-      ..color = Colors.white24
+      ..color = const Color(0xFFCBD5E1)
       ..strokeWidth = 1.0;
     canvas.drawLine(
       Offset(leftPad, yOf(0)),
@@ -1349,7 +1349,7 @@ class _GrandAveragePainter extends CustomPainter {
       final tp = TextPainter(
         text: TextSpan(
           text: '${ms.round()}',
-          style: const TextStyle(color: Colors.white60, fontSize: 10),
+          style: const TextStyle(color: Color(0xFF64748B), fontSize: 10),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -1364,7 +1364,7 @@ class _GrandAveragePainter extends CustomPainter {
       final tp = TextPainter(
         text: TextSpan(
           text: '${uv.toStringAsFixed(1)}µV',
-          style: const TextStyle(color: Colors.white60, fontSize: 9.5),
+          style: const TextStyle(color: Color(0xFF64748B), fontSize: 9.5),
         ),
         textDirection: TextDirection.ltr,
       )..layout();

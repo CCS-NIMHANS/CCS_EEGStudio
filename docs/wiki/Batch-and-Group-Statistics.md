@@ -22,7 +22,8 @@ flowchart LR
 ## Key Batch & Server Capabilities
 
 - **Direct Step Toggles:** In **Stage 1: Preprocessing**, each step card (`Resample`, `Bandpass + notch`, `Detect bad channels`, `ICA`, `Muscle`, `ASR`, `GEDAI`, `Interpolate`, `Re-reference`) has a direct **Checkbox + Switch** (`Included` / `Skipped`) on its header.
-- **Channel Mapping & Manual Bad Channels Across Batches:** Use **Interactive Montage & Channel Mapping** to apply channel renames, 10–20 presets, or non-EEG exclusions across all queued files (`.ccschannels`), and enter batch manual bad-channel exclusions in the Bad Channel Detection card.
+- **Channel Numbers, Mixed Counts & Unified Batch CSVs:** **Interactive Montage & Channel Mapping** automatically detects mixed channel counts across queued files, supports positional/numeric channel labels (`1`, `Ch1`, `EEG 1`), and harmonizes varying channel/feature column headers cleanly in `Batch_features.csv`.
+- **Standalone Group Statistics (LMM / GLM):** Runs natively via `ccs-eeg-engine` with zero external Python requirements, supporting composable factor grouping (`Factors & Groups…`), custom factor-level ordering, **Contrast scope** (`All factors` vs focused factor), and **Multiple ERP differences** (`+ Add difference`).
 - **Publication Parameter Logs & Methodology Reports:** Every single-file and batch run writes `preprocessing_parameters.json`, `feature_parameters.json`, `analysis_parameters_log.md`, and `batch_methodology_and_results_report.md` directly into the output directory.
 - **Interactive ERP Batch Review & Statistics:** Use the **Unbiased Grand Average Localizer** and **Factor & Grouping Designer** (`Groups.xlsx` / BIDS / interactive filename cropper), then run **Mixed-Design ANOVA / Permutation GLM & LMM** with live factor plot configuration.
 - **Multi-User Linux Server Support:** Install system-wide via `scripts/install_linux.sh` or per-user without `sudo` (see [Server & Plot Controls](../server_and_plot_controls.md)).

@@ -83,7 +83,19 @@ Future<bool> showProcessingSettings(
       stiffness = TextEditingController(text: '${config.splineStiffness}'),
       regularization = TextEditingController(
         text: '${config.splineRegularization}',
-      );
+      ),
+      interpMinNbrs = TextEditingController(
+        text: '${config.interpolateMinNeighbors}',
+      ),
+      interpMaxAngle = TextEditingController(
+        text: '${config.interpolateMaxAngleDeg}',
+      ),
+      interpMaxGap = TextEditingController(
+        text: '${config.interpolateMaxGapDeg}',
+      ),
+      iafMinCtrl = TextEditingController(text: '${config.iafMinHz}'),
+      iafMaxCtrl = TextEditingController(text: '${config.iafMaxHz}');
+  var interpRequireSurround = config.interpolateRequireSurround;
   final icaEye = TextEditingController(text: config.icaEyeChannel),
       icaEpochs = TextEditingController(text: '${config.icaBlinkEpochs}'),
       icaBlinkHi = TextEditingController(text: '${config.icaBlinkThreshold}'),
@@ -280,6 +292,35 @@ Future<bool> showProcessingSettings(
                         'Spline regularization',
                         help: 'Positive; default 0.00001.',
                       ),
+                      CheckboxListTile(
+                        title: const Text('Require electrode surround support'),
+                        subtitle: const Text(
+                          'Skip spherical interpolation for edge/isolated bad channels lacking surrounding good electrodes',
+                        ),
+                        value: interpRequireSurround,
+                        onChanged: (v) =>
+                            setState(() => interpRequireSurround = v ?? true),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                      if (interpRequireSurround) ...[
+                        field(
+                          interpMinNbrs,
+                          'Minimum surrounding good electrodes',
+                          help: 'Default 3 neighbors.',
+                        ),
+                        field(
+                          interpMaxAngle,
+                          'Maximum neighbor angular radius (°)',
+                          help: 'Spherical angle cutoff (0–180°). Default 60°.',
+                        ),
+                        field(
+                          interpMaxGap,
+                          'Maximum allowed azimuthal gap (°)',
+                          help:
+                              'Max open sector around bad electrode (default 210°). Smaller = stricter surround.',
+                        ),
+                      ],
                     ],
                   ),
                   ExpansionTile(
@@ -410,7 +451,7 @@ Future<bool> showProcessingSettings(
                         child: Text(
                           'Decomposition copy high-pass filter: 1.0 Hz FIR (reuses main filter if ≥ 1.0 Hz). '
                           'Stage 2 safety caps: stops if >10% of components or >30% of signal variance would be removed.',
-                          style: TextStyle(fontSize: 11, color: Colors.white70),
+                          style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
                         ),
                       ),
                       CheckboxListTile(
@@ -645,9 +686,9 @@ Future<bool> showProcessingSettings(
                         margin: const EdgeInsets.only(top: 8, bottom: 8),
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF0F172A),
+                          color: const Color(0xFFF0F4F8),
                           borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.white12),
+                          border: Border.all(color: const Color(0xFFCBD5E1)),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -657,7 +698,7 @@ Future<bool> showProcessingSettings(
                               style: TextStyle(
                                 fontSize: 11.5,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.cyanAccent,
+                                color: Color(0xFF0284C7),
                               ),
                             ),
                             const SizedBox(height: 4),
@@ -666,7 +707,7 @@ Future<bool> showProcessingSettings(
                               'Conductivities: $condLabel\n'
                               'Atlas map: $atlasLabel\n'
                               'Inverse: ${sourceMethod.toUpperCase()} · fixed surface-normal orientations · SNR $snrVal (λ² = ${lambda2.toStringAsFixed(4)}) · $covLabel',
-                              style: const TextStyle(fontSize: 10.5, color: Colors.white70, height: 1.35),
+                              style: const TextStyle(fontSize: 10.5, color: Color(0xFF475569), height: 1.35),
                             ),
                           ],
                         ),
@@ -846,11 +887,23 @@ Future<bool> showProcessingSettings(
                     help:
                         'Empty = standard 17 factors. Custom list between 1 and 2; rounded to two decimals.',
                   ),
+                  if (section == null || section == 'PSD' || section == 'IAF') ...[
+                    field(
+                      iafMinCtrl,
+                      'IAF search lower bound (Hz)',
+                      help: 'Individual alpha peak search range min (default 7.0 Hz).',
+                    ),
+                    field(
+                      iafMaxCtrl,
+                      'IAF search upper bound (Hz)',
+                      help: 'Individual alpha peak search range max (default 14.0 Hz).',
+                    ),
+                  ],
                   if (section == null || section == 'PSD' || section == 'Bands' || roiSettings || spectralSettings)
                     _FrequencyBandEditor(controller: bands),
                 ],
                 if (error != null)
-                  Text(error!, style: const TextStyle(color: Colors.redAccent)),
+                  Text(error!, style: const TextStyle(color: Color(0xFFDC2626))),
               ],
             ),
           ),
@@ -886,14 +939,24 @@ Future<bool> showProcessingSettings(
                   final vr = double.parse(variance.text),
                       sr = double.parse(regularization.text);
                   final ss = int.parse(stiffness.text);
+                  final mn = int.parse(interpMinNbrs.text);
+                  final ma = double.parse(interpMaxAngle.text);
+                  final mg = double.parse(interpMaxGap.text);
                   if (!vr.isFinite ||
                       vr < 2 ||
                       !sr.isFinite ||
                       sr <= 0 ||
                       ss < 2 ||
-                      ss > 8)
+                      ss > 8 ||
+                      mn < 1 ||
+                      !ma.isFinite ||
+                      ma <= 0 ||
+                      ma > 180 ||
+                      !mg.isFinite ||
+                      mg <= 0 ||
+                      mg > 360)
                     throw const FormatException(
-                      'Invalid bad-channel or spline parameters.',
+                      'Invalid bad-channel, spline, or surround-support parameters.',
                     );
                   final o = int.parse(order.text);
                   if (o < 2 || o > 12 || o.isOdd)
@@ -986,6 +1049,10 @@ Future<bool> showProcessingSettings(
                     ..badVarianceRatio = vr
                     ..splineStiffness = ss
                     ..splineRegularization = sr
+                    ..interpolateRequireSurround = interpRequireSurround
+                    ..interpolateMinNeighbors = mn
+                    ..interpolateMaxAngleDeg = ma
+                    ..interpolateMaxGapDeg = mg
                     ..gedaiThreshold = gedaiThreshold.text.trim()
                     ..filterType = filterType
                     ..iirOrder = o
@@ -1093,9 +1160,16 @@ Future<bool> showProcessingSettings(
                       ..roiSeedName = seed.isEmpty ? 'default' : 'Custom'
                       ..roiTargetName = target.isEmpty ? 'default' : 'Custom';
                   }
+                  final iafMin = double.parse(iafMinCtrl.text);
+                  final iafMax = double.parse(iafMaxCtrl.text);
+                  if (!iafMin.isFinite || !iafMax.isFinite || iafMin < 4.0 || iafMax > 20.0 || iafMax <= iafMin) {
+                    throw const FormatException('IAF search range must be valid within 4–20 Hz.');
+                  }
                   config
                     ..featureReferenceMode = featureReference
                     ..featureReferenceChannels = refs
+                    ..iafMinHz = iafMin
+                    ..iafMaxHz = iafMax
                     ..psdMethod = psdMethod
                     ..psdAverage = average
                     ..psdWindowSeconds = psdWinVal

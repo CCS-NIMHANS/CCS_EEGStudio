@@ -11,14 +11,81 @@ void main() {
   runZonedGuarded(
     () {
       WidgetsFlutterBinding.ensureInitialized();
-      MediaKit.ensureInitialized();
+      try {
+        MediaKit.ensureInitialized();
+      } catch (e) {
+        debugPrint('MediaKit initialization note (video player): $e');
+      }
       FilePicker.skipEntitlementsChecks();
+      FlutterError.onError = FlutterError.presentError;
       PlatformDispatcher.instance.onError = (error, stack) {
         FlutterError.reportError(
           FlutterErrorDetails(exception: error, stack: stack),
         );
         return true;
       };
+      ErrorWidget.builder = (details) => Material(
+        color: const Color(0xFFF8F9FB),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 620),
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline, size: 42, color: Colors.red),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'CCS EEG Studio could not render this view',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1E293B),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'The application is still running. Close the current dialog '
+                    'or reopen the recording. Technical details:',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Color(0xFF475569)),
+                  ),
+                  const SizedBox(height: 10),
+                  SelectableText(
+                    details.exceptionAsString(),
+                    maxLines: 8,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.arrow_back, size: 18),
+                    label: const Text('Back / Dismiss View'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF3B6EA5),
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () {
+                      final ctx = details.context as BuildContext? ??
+                          WidgetsBinding.instance.rootElement;
+                      if (ctx == null) return;
+                      final nav = Navigator.maybeOf(ctx);
+                      if (nav != null && nav.canPop()) {
+                        nav.pop();
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
       runApp(const CcsEegApp());
     },
     (error, stack) => FlutterError.reportError(

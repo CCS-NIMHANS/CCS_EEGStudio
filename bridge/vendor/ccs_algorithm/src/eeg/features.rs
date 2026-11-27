@@ -441,6 +441,137 @@ pub fn integrate_trapezoid(frequencies:&[f64],values:&[f64],low:f64,high:f64)->f
 }
 
 pub fn acw50(signal:&[f64],sfreq:f64)->f64 {acw_fraction(signal,sfreq,0.5)}
+
+pub fn individual_alpha_features(
+    signal: &[f64],
+    sfreq: f64,
+    psd_method: &str,
+    window_seconds: f64,
+    mean_average: bool,
+    multitaper_nw: f64,
+    multitaper_adaptive: bool,
+    iaf_min_hz: f64,
+    iaf_max_hz: f64,
+) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    let (lo_search, hi_search) = if iaf_min_hz.is_finite() && iaf_max_hz.is_finite() && iaf_max_hz > iaf_min_hz {
+        (iaf_min_hz, iaf_max_hz)
+    } else {
+        (7.0, 14.0)
+    };
+    let (frequencies, psd) = if psd_method.eq_ignore_ascii_case("multitaper") {
+        multitaper_psd(signal, sfreq, multitaper_nw, multitaper_adaptive)
+    } else {
+        welch_psd_nperseg(signal, sfreq, (window_seconds * sfreq).round() as usize, mean_average)
+    };
+    if frequencies.len() < 3 || psd.len() != frequencies.len() {
+        out.insert("IAF_Hz".into(), 0.5 * (lo_search + hi_search));
+        out.insert("IndAlpha_PSD".into(), 0.0);
+        out.insert("IndTheta_PSD".into(), 0.0);
+        return out;
+    }
+
+    let in_range: Vec<usize> = frequencies
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &f)| (f >= lo_search && f <= hi_search).then_some(i))
+        .collect();
+
+    let mut best_local: Option<usize> = None;
+    let mut best_local_val = f64::NEG_INFINITY;
+    for &i in &in_range {
+        if i > 0 && i + 1 < frequencies.len() && psd[i] >= psd[i - 1] && psd[i] >= psd[i + 1] && psd[i] > best_local_val {
+            best_local_val = psd[i];
+            best_local = Some(i);
+        }
+    }
+
+    let iaf = if let Some(idx) = best_local {
+        let y_l = psd[idx - 1];
+        let y_c = psd[idx];
+        let y_r = psd[idx + 1];
+        let denom = 2.0 * (y_l - 2.0 * y_c + y_r);
+        let df = frequencies[idx + 1] - frequencies[idx];
+        let delta = if denom.abs() > 1e-18 && denom < 0.0 {
+            ((y_l - y_r) / denom).clamp(-0.5, 0.5)
+        } else {
+            0.0
+        };
+        (frequencies[idx] + delta * df).clamp(lo_search, hi_search)
+    } else {
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for &i in &in_range {
+            let p = psd[i].max(0.0);
+            num += frequencies[i] * p;
+            den += p;
+        }
+        if den > 0.0 {
+            (num / den).clamp(lo_search, hi_search)
+        } else {
+            0.5 * (lo_search + hi_search)
+        }
+    };
+
+    let total = integrate_trapezoid(&frequencies, &psd, 1.0, 40.0);
+    let alpha_lo = iaf - 2.0;
+    let alpha_hi = iaf + 2.0;
+    let theta_lo = (iaf - 6.0).max(1.0);
+    let theta_hi = (iaf - 2.0).max(1.5).max(theta_lo + 0.5);
+    let ind_alpha = if total > 0.0 {
+        integrate_trapezoid(&frequencies, &psd, alpha_lo, alpha_hi) / total
+    } else {
+        0.0
+    };
+    let ind_theta = if total > 0.0 {
+        integrate_trapezoid(&frequencies, &psd, theta_lo, theta_hi) / total
+    } else {
+        0.0
+    };
+    out.insert("IAF_Hz".into(), iaf);
+    out.insert("IndAlpha_PSD".into(), ind_alpha);
+    out.insert("IndTheta_PSD".into(), ind_theta);
+    out
+}
+
+pub const SPECTRAL_RATIO_NAMES: [&str; 8] = [
+    "Ratio_Theta_Delta",
+    "Ratio_Alpha_Theta",
+    "Ratio_Alpha_Delta",
+    "Ratio_Beta_Alpha",
+    "Ratio_Beta_ThetaAlpha",
+    "Ratio_Gamma_AlphaBeta",
+    "Ratio_Gamma_Beta",
+    "Ratio_Beta2_Beta1",
+];
+
+pub fn spectral_ratios_from_bandpowers(bp: &BTreeMap<String, f64>) -> BTreeMap<String, f64> {
+    let g = |k: &str| bp.get(k).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
+    let delta = g("Delta_PSD");
+    let theta = g("Theta_PSD");
+    let alpha = g("Alpha_PSD");
+    let beta1 = g("Beta1_PSD");
+    let beta2 = g("Beta2_PSD");
+    let gamma1 = g("Gamma1_PSD");
+    let beta = beta1 + beta2;
+    let div = |num: f64, den: f64| -> f64 {
+        if den > 0.0 && num.is_finite() && den.is_finite() {
+            num / den
+        } else {
+            f64::NAN
+        }
+    };
+    let mut out = BTreeMap::new();
+    out.insert("Ratio_Theta_Delta".into(), div(theta, delta));
+    out.insert("Ratio_Alpha_Theta".into(), div(alpha, theta));
+    out.insert("Ratio_Alpha_Delta".into(), div(alpha, delta));
+    out.insert("Ratio_Beta_Alpha".into(), div(beta, alpha));
+    out.insert("Ratio_Beta_ThetaAlpha".into(), div(beta, theta + alpha));
+    out.insert("Ratio_Gamma_AlphaBeta".into(), div(gamma1, alpha + beta));
+    out.insert("Ratio_Gamma_Beta".into(), div(gamma1, beta));
+    out.insert("Ratio_Beta2_Beta1".into(), div(beta2, beta1));
+    out
+}
 pub fn acw_fraction(signal: &[f64], sfreq: f64, fraction:f64) -> f64 {
     if signal.is_empty() || sfreq == 0.0 {
         return f64::NAN;
@@ -496,5 +627,28 @@ mod tests {
             .collect();
         let powers = bandpowers(&signal, sfreq);
         assert!(powers["Alpha_PSD"] > powers["Delta_PSD"]);
+    }
+
+    #[test]
+    fn individual_alpha_and_ratios_work() {
+        let sfreq = 250.0;
+        let signal: Vec<f64> = (0..3750)
+            .map(|index| (2.0 * std::f64::consts::PI * 10.0 * index as f64 / sfreq).sin())
+            .collect();
+        let iaf = individual_alpha_features(&signal, sfreq, "welch", 1.0, false, 3.0, true, 7.0, 14.0);
+        assert!((iaf["IAF_Hz"] - 10.0).abs() < 0.5, "got {}", iaf["IAF_Hz"]);
+        assert!(iaf["IndAlpha_PSD"] > 0.7, "got {}", iaf["IndAlpha_PSD"]);
+
+        let mut bp = BTreeMap::new();
+        bp.insert("Delta_PSD".into(), 0.2);
+        bp.insert("Theta_PSD".into(), 0.1);
+        bp.insert("Alpha_PSD".into(), 0.4);
+        bp.insert("Beta1_PSD".into(), 0.1);
+        bp.insert("Beta2_PSD".into(), 0.1);
+        bp.insert("Gamma1_PSD".into(), 0.1);
+        let ratios = spectral_ratios_from_bandpowers(&bp);
+        assert!((ratios["Ratio_Alpha_Theta"] - 4.0).abs() < 1e-12);
+        assert!((ratios["Ratio_Beta_Alpha"] - 0.5).abs() < 1e-12);
+        assert!((ratios["Ratio_Beta2_Beta1"] - 1.0).abs() < 1e-12);
     }
 }

@@ -643,12 +643,12 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   }
 
   Widget _buildUniformMicrostateBatchWorkspace(BuildContext context) {
-    const bgColor = Color(0xFF060D1A);
-    const cardColor = Color(0xFF0F1D32);
-    const borderColor = Color(0xFF1E293B);
-    const textMuted = Color(0xFF94A3B8);
-    const accentBlue = Color(0xFF3B82F6);
-    const accentGreen = Color(0xFF10B981);
+    const bgColor = Color(0xFFF0F4F8);
+    const cardColor = Color(0xFFFFFFFF);
+    const borderColor = Color(0xFFCBD5E1);
+    const textMuted = Color(0xFF64748B);
+    const accentBlue = Color(0xFF3B6EA5);
+    const accentGreen = Color(0xFF16A34A);
 
     return Container(
       decoration: const BoxDecoration(
@@ -738,7 +738,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                       icon: const Icon(Icons.stop_circle, size: 14),
                       label: const Text('Cancel', style: TextStyle(fontSize: 11)),
                       style: TextButton.styleFrom(
-                        foregroundColor: Colors.redAccent,
+                        foregroundColor: const Color(0xFFDC2626),
                       ),
                     )
                   else
@@ -800,7 +800,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                 ),
                 child: const Text(
                   'Batch parameters are configured inside each stage below. Preprocess raw recordings in Stage 1, configure canonical microstate clustering in Stage 2, set back-fitting & syntax parameters in Stage 3, and inspect/export group microstate maps in Stage 4.',
-                  style: TextStyle(color: Colors.white70, fontSize: 11),
+                  style: TextStyle(color: Color(0xFF475569), fontSize: 11),
                 ),
               ),
             ),
@@ -844,7 +844,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                           style: TextStyle(
                             color: _outputDirectory == null
                                 ? textMuted
-                                : Colors.white,
+                                : const Color(0xFF1E293B),
                             fontSize: 12,
                             fontWeight: _outputDirectory == null
                                 ? FontWeight.normal
@@ -1019,8 +1019,8 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   }
 
   Widget _buildMicrostateBatchStageTabs() {
-    const borderColor = Color(0xFF1E293B);
-    const textMuted = Color(0xFF94A3B8);
+    const borderColor = Color(0xFFCBD5E1);
+    const textMuted = Color(0xFF64748B);
     final stages = [
       (
         index: 0,
@@ -1072,7 +1072,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: const Color(0xFF0A1628),
+        color: const Color(0xFFF0F4F8),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: borderColor),
       ),
@@ -1125,7 +1125,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                           style: TextStyle(
                             color: stages[i].enabled
                                 ? (_batchActiveStage == stages[i].index
-                                    ? Colors.white
+                                    ? const Color(0xFF1E293B)
                                     : textMuted)
                                 : borderColor,
                             fontWeight: _batchActiveStage == stages[i].index
@@ -1148,7 +1148,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                           stages[i].badge,
                           style: TextStyle(
                             color: !stages[i].stageActive
-                                ? Colors.orangeAccent
+                                ? const Color(0xFFD97706)
                                 : stages[i].color,
                             fontSize: 9.5,
                             fontWeight: FontWeight.w600,
@@ -1178,9 +1178,9 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
     VoidCallback? onPrevious,
     VoidCallback? onNext,
   }) {
-    const cardColor = Color(0xFF0F1D32);
-    const borderColor = Color(0xFF1E293B);
-    const textMuted = Color(0xFF94A3B8);
+    const cardColor = Color(0xFFFFFFFF);
+    const borderColor = Color(0xFFCBD5E1);
+    const textMuted = Color(0xFF64748B);
 
     return Material(
       color: cardColor,
@@ -1226,7 +1226,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                         decoration: BoxDecoration(
                           color: stageEnabled
                               ? color.withValues(alpha: 0.18)
-                              : Colors.white.withValues(alpha: 0.06),
+                              : const Color(0xFFF0F4F8),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
                             color: stageEnabled
@@ -1292,7 +1292,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                       style: FilledButton.styleFrom(
                         backgroundColor: color,
                         foregroundColor: Colors.white,
-                        disabledBackgroundColor: const Color(0xFF1E293B),
+                        disabledBackgroundColor: const Color(0xFFE2E8F0),
                         padding: const EdgeInsets.symmetric(vertical: 10),
                       ),
                     ),
@@ -1319,8 +1319,8 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
       return widget.stage1Builder!(onNext: onNext);
     }
     const accentPurple = Color(0xFF8B5CF6);
-    const borderColor = Color(0xFF1E293B);
-    const textMuted = Color(0xFF94A3B8);
+    const borderColor = Color(0xFFCBD5E1);
+    const textMuted = Color(0xFF64748B);
 
     return _msBatchCardShell(
       title: 'Stage 1: Preprocessing',
@@ -1400,7 +1400,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         Container(
           height: 110,
           decoration: BoxDecoration(
-            color: const Color(0xFF0A1628),
+            color: const Color(0xFFF0F4F8),
             borderRadius: BorderRadius.circular(6),
             border: Border.all(color: borderColor),
           ),
@@ -1522,7 +1522,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   }
 
   Widget _buildMsStage2Card({VoidCallback? onPrevious, VoidCallback? onNext}) {
-    const accentGreen = Color(0xFF10B981);
+    const accentGreen = Color(0xFF16A34A);
 
     return _msBatchCardShell(
       title: 'Stage 2: Template & Clustering',
@@ -1541,7 +1541,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           controlAffinity: ListTileControlAffinity.leading,
           title: const Text(
             'Use Stage 1 outputs (or choose recordings directly)',
-            style: TextStyle(fontSize: 11, color: Colors.white),
+            style: TextStyle(fontSize: 11, color: Color(0xFF1E293B)),
           ),
           value: _batchUseStage1Outputs,
           onChanged: _running
@@ -1743,7 +1743,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   }
 
   Widget _buildMsStage4Card({VoidCallback? onPrevious}) {
-    const accentBlue = Color(0xFF3B82F6);
+    const accentBlue = Color(0xFF3B6EA5);
 
     return _msBatchCardShell(
       title: 'Stage 4: Maps & Group Stats',
@@ -1766,7 +1766,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           ),
           child: const Text(
             'Shared group canonical headmaps, global explained variance (GEV), state duration/coverage/occurrence, Markov transition matrices, and Lempel-Ziv / entropy syntax complexity.',
-            style: TextStyle(fontSize: 11, color: Colors.white70),
+            style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
           ),
         ),
         const SizedBox(height: 14),
@@ -1787,7 +1787,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           const SizedBox(height: 8),
           Text(
             'Output folder: ${_result!.outputDirectory}',
-            style: const TextStyle(fontSize: 11, color: Colors.white70),
+            style: const TextStyle(fontSize: 11, color: Color(0xFF475569)),
           ),
         ],
       ],
@@ -1799,7 +1799,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
       SizedBox(
         width: 300,
         child: Material(
-          color: const Color(0xFF0A1628),
+          color: const Color(0xFFF0F4F8),
           child: ListView(
             padding: const EdgeInsets.all(14),
             children: [
@@ -2311,7 +2311,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
       ),
     ];
     return Card(
-      color: const Color(0xFF101B30),
+      color: const Color(0xFFF0F4F8),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(
@@ -2322,7 +2322,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
             const Text(
               'Microstates: the scalp pattern of the EEG at every moment is assigned to one of a few recurring patterns. '
               'This page shows the patterns (heads), how the recording moves between them over time, and how regular that sequence is.',
-              style: TextStyle(fontSize: 12, color: Color(0xFFCBD5E1), height: 1.4),
+              style: TextStyle(fontSize: 12, color: Color(0xFF475569), height: 1.4),
             ),
             const SizedBox(height: 8),
             for (final (title, text) in lines)
@@ -2388,7 +2388,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           'A “word” is a run of consecutive microstates (staying in a state does not count, so A A A B C → A B C). '
           'Syntax asks whether the recording visits states in more (or less) structured orders than chance. '
           'Words are grouped by how varied they are: a low entropy word uses fewer distinct states more often; a highest-entropy word visits all different states. Entropy describes state counts within a word, not its exact order.',
-          style: TextStyle(fontSize: 12, color: Color(0xFFCBD5E1), height: 1.4),
+          style: TextStyle(fontSize: 12, color: Color(0xFF475569), height: 1.4),
         ),
         const SizedBox(height: 8),
         Text('Example: ${List.generate(len, (i) => i.isEven ? 'A' : 'B').join(' → ')} repeatedly alternates two maps. ${List.generate(len, (i) => String.fromCharCode(65 + i % k)).join(' → ')} visits different maps. Each sliding word is counted; classes combine many sequences with the same state-count distribution.', style: const TextStyle(fontSize: 12)),
@@ -2596,7 +2596,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           onSelectionChanged: (v) => setState(() => _transitionMode = v.first),
         ),
         const SizedBox(height: 6),
-        Text(blurbs[_transitionMode], style: const TextStyle(fontSize: 12, color: Color(0xFFCBD5E1), height: 1.4)),
+        Text(blurbs[_transitionMode], style: const TextStyle(fontSize: 12, color: Color(0xFF475569), height: 1.4)),
         const SizedBox(height: 6),
         SizedBox(
           height: 320,
@@ -2640,7 +2640,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
     final source = _recordingFor(recording);
 
     return Card(
-      color: const Color(0xFF101B30),
+      color: const Color(0xFFF0F4F8),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -2876,7 +2876,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           radius: 11,
           backgroundColor: complete
               ? const Color(0xFF06B6D4)
-              : const Color(0xFF1E293B),
+              : const Color(0xFFFFFFFF),
           child: complete
               ? const Icon(Icons.check, size: 13, color: Colors.black)
               : Text(number, style: const TextStyle(fontSize: 10)),
@@ -2894,7 +2894,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
     child: Container(
       height: 1,
       margin: const EdgeInsets.only(bottom: 16),
-      color: active ? const Color(0xFF06B6D4) : const Color(0x33FFFFFF),
+      color: active ? const Color(0xFF06B6D4) : const Color(0xFFCBD5E1),
     ),
   );
 
@@ -2928,7 +2928,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
   Widget _info(String text) => Container(
     padding: const EdgeInsets.all(9),
     decoration: BoxDecoration(
-      color: const Color(0xFF0F172A),
+      color: const Color(0xFFF8F9FB),
       borderRadius: BorderRadius.circular(6),
     ),
     child: Text(
@@ -2970,7 +2970,7 @@ class _TimelineSequencePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final rect = _timelinePlotRect(size);
-    canvas.drawRect(rect, Paint()..color = const Color(0xFF0F172A));
+    canvas.drawRect(rect, Paint()..color = const Color(0xFFFFFFFF));
     if (sequence.isEmpty || end <= start) return;
     var runStart = start;
     for (var i = start + 1; i <= end; i++) {
@@ -3385,7 +3385,7 @@ class _TopographyPainter extends CustomPainter {
       }
       if (s < subtitles.length && subtitles[s].isNotEmpty) {
         final sp = TextPainter(
-          text: TextSpan(text: subtitles[s], style: const TextStyle(fontSize: 10.5, color: Color(0xFFE2E8F0))),
+          text: TextSpan(text: subtitles[s], style: const TextStyle(fontSize: 10.5, color: Color(0xFF475569))),
           textDirection: TextDirection.ltr,
         )..layout(maxWidth: cellWidth - 8);
         sp.paint(c, Offset(center.dx - sp.width / 2, barTop - 18));
@@ -3473,7 +3473,7 @@ class _SyntaxBarsPainter extends CustomPainter {
       final t = TextPainter(
         text: TextSpan(
           text: (examples[v(classes[i], 'entropy_bits').toStringAsFixed(3)] ?? v(classes[i], 'entropy_bits').toStringAsFixed(2)),
-          style: const TextStyle(fontSize: 9, color: Color(0xFFCBD5E1)),
+          style: const TextStyle(fontSize: 9, color: Color(0xFF475569)),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -3511,12 +3511,12 @@ class _TransitionPainter extends CustomPainter {
         if (mode == 0 || i != j) maxV = math.max(maxV, matrix[i][j]);
       }
     }
-    final title = _t('TO state →', 11, const Color(0xFF94A3B8), w: FontWeight.w600);
+    final title = _t('TO state →', 11, const Color(0xFF475569), w: FontWeight.w600);
     title.paint(c, Offset(left + (side - title.width) / 2, 0));
     c.save();
-    c.translate(12, top + (side + _t('FROM state →', 11, Colors.white).width) / 2);
+    c.translate(12, top + (side + _t('FROM state →', 11, const Color(0xFF475569)).width) / 2);
     c.rotate(-math.pi / 2);
-    _t('FROM state →', 11, const Color(0xFF94A3B8), w: FontWeight.w600).paint(c, Offset.zero);
+    _t('FROM state →', 11, const Color(0xFF475569), w: FontWeight.w600).paint(c, Offset.zero);
     c.restore();
     for (var i = 0; i < n; i++) {
       final color = _stateColors[i % _stateColors.length];
@@ -3526,8 +3526,8 @@ class _TransitionPainter extends CustomPainter {
       for (var j = 0; j < n; j++) {
         final rect = Rect.fromLTWH(left + j * cell, top + i * cell, cell - 1.5, cell - 1.5);
         if (i == j && mode != 0) {
-          c.drawRect(rect, Paint()..color = const Color(0xFF0B1220));
-          final dash = _t('—', 11, const Color(0xFF475569));
+          c.drawRect(rect, Paint()..color = const Color(0xFFF0F4F8));
+          final dash = _t('—', 11, const Color(0xFF64748B));
           dash.paint(c, Offset(rect.center.dx - dash.width / 2, rect.center.dy - dash.height / 2));
           continue;
         }

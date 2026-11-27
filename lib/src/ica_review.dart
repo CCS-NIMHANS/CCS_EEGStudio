@@ -167,7 +167,7 @@ class _IcaReviewState extends State<_IcaReview> {
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.cyanAccent,
+                color: Color(0xFF0284C7),
               ),
             ),
           ),
@@ -218,7 +218,7 @@ class _IcaReviewState extends State<_IcaReview> {
                             majorLabel(i),
                             style: TextStyle(
                               fontSize: 11.5,
-                              color: isRemoved ? Colors.redAccent : null,
+                              color: isRemoved ? const Color(0xFFDC2626) : null,
                             ),
                           ),
                           leading: Icon(
@@ -226,8 +226,8 @@ class _IcaReviewState extends State<_IcaReview> {
                                 ? Icons.cancel
                                 : Icons.check_circle,
                             color: isRemoved
-                                ? Colors.redAccent
-                                : Colors.greenAccent,
+                                ? const Color(0xFFDC2626)
+                                : const Color(0xFF16A34A),
                             size: 18,
                           ),
                           onTap: () => setState(() => component = i),
@@ -655,7 +655,7 @@ class _TracePainter extends CustomPainter {
     canvas.drawPath(
       path,
       Paint()
-        ..color = Colors.lightBlueAccent
+        ..color = const Color(0xFF3B6EA5)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1,
     );
