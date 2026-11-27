@@ -4,6 +4,25 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.66]
+
+### Universal Intel Mac (`x86_64`) CI Engine Fix, Physiological Event Extraction (HEP / Cognitive Strain / EOG / EMG / ECG) & Preprocessing Outcome Logs
+
+- **Guaranteed Universal macOS (`x86_64` + `arm64`) Release Bundles**
+  - Fixed the root cause of Intel-based Mac failures in GitHub Releases: `scripts/sign_and_notarize_macos.sh` now detects single-architecture `ccs-eeg-engine` binaries, compiles both `aarch64-apple-darwin` and `x86_64-apple-darwin` slices with `MACOSX_DEPLOYMENT_TARGET=12.0` + `lipo -create`, and runs a strict universal Mach-O architecture gate across all bundled executables and frameworks before packaging `.dmg`/`.zip`.
+  - Updated `scripts/build_macos.sh` and `scripts/preflight_release.sh` to enforce `x86_64` + `arm64` targets and universal packaging continuously.
+- **Native Physiological & Artifact Event Extraction (`Physio/Blink`, `Physio/EyeMovement`, `Physio/EMG`, `Physio/ECG`, `Physio/Artifact`)**
+  - Added a dedicated Rust event detector (`physio_events`) exposed via `ccs-eeg-engine` (`extract_physio_events`) and accessible anytime via the **`Extract Events`** chip in the EEG viewer or automatically before cleaning in single-file & batch preprocessing:
+    - **Eye Blinks (`Physio/Blink`)**: VEOG / frontal EEG morphological blink detection with per-event duration & z-score.
+    - **Eye Movements / Saccades (`Physio/EyeMovement`)**: HEOG or horizontal bipolar (`LEOG-REOG`, `F7-F8`, `Fp1-Fp2`) velocity detection labeled `EyeMove_Left` / `EyeMove_Right` (excluding blink coincidence).
+    - **EMG Surges (`Physio/EMG`)**: High-frequency (20–90 Hz) envelope burst detection for jaw/temporal muscle tension and cognitive strain (`emg_burden_pct`, surge rate/min, mean duration).
+    - **ECG R-Peaks (`Physio/ECG`)**: Dual-polarity R-peak detection on cardiac channels for **Heartbeat-Evoked Potential (HEP)** epoching plus HR, mean RR, SDNN, and RMSSD summaries.
+    - **High-Amplitude Artifact Bursts (`Physio/Artifact`)**: Optional multi-channel burst detector.
+  - Supports injecting extracted events directly into recording markers (`mergePhysioMarkers` preserves stimulus triggers), jumping immediately into **Epoch Events** for HEP / strain-locked ERP/ERSP extraction, and exporting EEGLAB **`.evt`** and BIDS **`_events.tsv`** sidecars (written automatically per file in batch preprocessing when enabled).
+- **Single-File & Collated Batch Preprocessing Outcome Logs**
+  - Extended `PreprocessSummary` with a structured `outcomes` telemetry block capturing input vs. output channel counts, dropped non-EEG channels, duration & percentage of **signal lost**, ASR modified %, dropped edge epochs, auto/manual bad channels, **interpolated & skipped channels**, ICA/GEDAI retention, **signal change** (median NRMSE % & median Pearson `r`), **RMS amplitude change (%)**, and **input vs. new signal range** (min/max and robust P1..P99 in µV).
+  - Added an interactive **`Outcome Log…`** dialog (`showSinglePreprocessingOutcomeDialog`), enriched **Recording History**, logged per-file outcomes in the Activity Log, and automatically collated batch preprocessing outcomes into **`Batch_Preprocessing_Outcomes.csv`**, **`Batch_Preprocessing_Outcomes.json`**, and an in-app **`Outcomes`** sortable summary table (`showBatchPreprocessingOutcomeDialog`).
+
 ## [1.2.65]
 
 ### Light Clinical UI Theme, Universal macOS Build, Individual Alpha & Spectral Ratios, Surround-Aware Interpolation, Source TopoStats & Cross-Platform Fixes

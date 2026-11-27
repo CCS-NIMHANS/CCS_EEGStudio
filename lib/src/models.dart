@@ -122,6 +122,42 @@ class EegRecording {
   bool get isEpoched => epochCount >= 1 && (pointsPerEpoch ?? 0) > 0;
   double get epochDurationSeconds =>
       isEpoched ? (pointsPerEpoch! / sampleRate) : durationSeconds;
+
+  EegRecording copyWith({
+    String? path,
+    String? dataPath,
+    double? sampleRate,
+    List<String>? labels,
+    List<Float32List>? preview,
+    int? sampleCount,
+    String? format,
+    int? epochCount,
+    int? pointsPerEpoch,
+    List<String>? epochLabels,
+    List<EegMarker>? markers,
+    double? epochTmin,
+    List<String>? completedStages,
+    List<double>? epochStartSeconds,
+    double? sourceDurationSeconds,
+    Map<String, dynamic>? provenance,
+  }) => EegRecording(
+    path: path ?? this.path,
+    dataPath: dataPath ?? this.dataPath,
+    sampleRate: sampleRate ?? this.sampleRate,
+    labels: labels ?? this.labels,
+    preview: preview ?? this.preview,
+    sampleCount: sampleCount ?? this.sampleCount,
+    format: format ?? this.format,
+    epochCount: epochCount ?? this.epochCount,
+    pointsPerEpoch: pointsPerEpoch ?? this.pointsPerEpoch,
+    epochLabels: epochLabels ?? this.epochLabels,
+    markers: markers ?? this.markers,
+    epochTmin: epochTmin ?? this.epochTmin,
+    completedStages: completedStages ?? this.completedStages,
+    epochStartSeconds: epochStartSeconds ?? this.epochStartSeconds,
+    sourceDurationSeconds: sourceDurationSeconds ?? this.sourceDurationSeconds,
+    provenance: provenance ?? this.provenance,
+  );
 }
 
 enum DurationMode { full, interval, bins, middleTwoMinutes }
@@ -632,6 +668,21 @@ class AnalysisConfig {
 
   // ── Stimulus-locked epochs (ERP) ────────────────────────────────────────
   bool stimEpochs = false;
+  // ── Physiological event extraction (blinks, EOG, EMG surges, ECG R-peaks) ─
+  bool extractPhysioEvents = false;
+  bool physioDetectBlinks = true;
+  bool physioDetectEyeMovements = true;
+  bool physioDetectEmgSurges = true;
+  bool physioDetectEcg = true;
+  bool physioDetectArtifactBursts = false;
+  String physioBlinkChannel = '';
+  String physioEogChannel = '';
+  String physioEmgChannel = '';
+  String physioEcgChannel = '';
+  double physioEyeMovementZ = 3.5;
+  double physioEmgZ = 3.5;
+  double physioEmgMinDurationSec = 0.25;
+  double physioArtifactZ = 5.0;
   List<String> stimMarkers = const [];
   String stimPattern = '';
   Map<String, List<String>> stimMarkerGroups = {};
@@ -1024,6 +1075,20 @@ class AnalysisConfig {
     'stim_baseline_end': stimBaselineEnd,
     'stim_crop_marker': stimCropMarker,
     'stim_crop_minutes': stimCropMinutes,
+    'extract_physio_events': extractPhysioEvents,
+    'physio_detect_blinks': physioDetectBlinks,
+    'physio_detect_eye_movements': physioDetectEyeMovements,
+    'physio_detect_emg_surges': physioDetectEmgSurges,
+    'physio_detect_ecg': physioDetectEcg,
+    'physio_detect_artifact_bursts': physioDetectArtifactBursts,
+    'physio_blink_channel': physioBlinkChannel,
+    'physio_eog_channel': physioEogChannel,
+    'physio_emg_channel': physioEmgChannel,
+    'physio_ecg_channel': physioEcgChannel,
+    'physio_eye_movement_z': physioEyeMovementZ,
+    'physio_emg_z': physioEmgZ,
+    'physio_emg_min_duration_sec': physioEmgMinDurationSec,
+    'physio_artifact_z': physioArtifactZ,
   };
 
   void applyPreprocessingJson(Map<String, dynamic> json) {
@@ -1160,6 +1225,36 @@ class AnalysisConfig {
       stimCropMarker = json['stim_crop_marker'] as String;
     if (json['stim_crop_minutes'] is num)
       stimCropMinutes = (json['stim_crop_minutes'] as num).toDouble();
+    if (json['extract_physio_events'] is bool)
+      extractPhysioEvents = json['extract_physio_events'] as bool;
+    if (json['physio_detect_blinks'] is bool)
+      physioDetectBlinks = json['physio_detect_blinks'] as bool;
+    if (json['physio_detect_eye_movements'] is bool)
+      physioDetectEyeMovements = json['physio_detect_eye_movements'] as bool;
+    if (json['physio_detect_emg_surges'] is bool)
+      physioDetectEmgSurges = json['physio_detect_emg_surges'] as bool;
+    if (json['physio_detect_ecg'] is bool)
+      physioDetectEcg = json['physio_detect_ecg'] as bool;
+    if (json['physio_detect_artifact_bursts'] is bool)
+      physioDetectArtifactBursts =
+          json['physio_detect_artifact_bursts'] as bool;
+    if (json['physio_blink_channel'] is String)
+      physioBlinkChannel = json['physio_blink_channel'] as String;
+    if (json['physio_eog_channel'] is String)
+      physioEogChannel = json['physio_eog_channel'] as String;
+    if (json['physio_emg_channel'] is String)
+      physioEmgChannel = json['physio_emg_channel'] as String;
+    if (json['physio_ecg_channel'] is String)
+      physioEcgChannel = json['physio_ecg_channel'] as String;
+    if (json['physio_eye_movement_z'] is num)
+      physioEyeMovementZ = (json['physio_eye_movement_z'] as num).toDouble();
+    if (json['physio_emg_z'] is num)
+      physioEmgZ = (json['physio_emg_z'] as num).toDouble();
+    if (json['physio_emg_min_duration_sec'] is num)
+      physioEmgMinDurationSec =
+          (json['physio_emg_min_duration_sec'] as num).toDouble();
+    if (json['physio_artifact_z'] is num)
+      physioArtifactZ = (json['physio_artifact_z'] as num).toDouble();
   }
 
   static String get defaultPipelinePath {

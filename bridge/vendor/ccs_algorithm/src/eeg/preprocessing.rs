@@ -255,6 +255,47 @@ pub fn cut_stim_epochs(
     Ok((out, labels, n, meta))
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct PreprocessOutcomes {
+    pub input_channels_total: usize,
+    pub non_eeg_channels_removed: Vec<String>,
+    pub input_eeg_channels: usize,
+    pub output_channels: usize,
+    pub input_sample_rate_hz: f64,
+    pub output_sample_rate_hz: f64,
+    pub input_samples: usize,
+    pub output_samples: usize,
+    pub input_duration_sec: f64,
+    pub output_duration_sec: f64,
+    pub duration_lost_sec: f64,
+    pub signal_lost_pct: f64,
+    pub asr_samples_modified: usize,
+    pub asr_samples_total: usize,
+    pub asr_modified_pct: f64,
+    pub epochs_dropped: usize,
+    pub bad_channels_count: usize,
+    pub interpolated_channels_count: usize,
+    pub skipped_interpolation_count: usize,
+    pub ica_blink_components_removed: usize,
+    pub ica_other_components_removed: usize,
+    pub ica_total_components: usize,
+    pub gedai_alpha_retention_pct: Option<f64>,
+    pub input_rms_uv: f64,
+    pub output_rms_uv: f64,
+    pub rms_change_pct: f64,
+    pub input_range_min_uv: f64,
+    pub input_range_max_uv: f64,
+    pub input_p01_uv: f64,
+    pub input_p99_uv: f64,
+    pub output_range_min_uv: f64,
+    pub output_range_max_uv: f64,
+    pub output_p01_uv: f64,
+    pub output_p99_uv: f64,
+    pub signal_change_nrmse_pct: Option<f64>,
+    pub signal_correlation_median: Option<f64>,
+    pub steps_applied: Vec<String>,
+}
+
 #[derive(Serialize)]
 pub struct PreprocessSummary {
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -278,6 +319,7 @@ pub struct PreprocessSummary {
     pub gedai_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gedai_quality: Option<serde_json::Value>,
+    pub outcomes: PreprocessOutcomes,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -339,7 +381,21 @@ pub fn run(
     }
     let mut warnings = Vec::new();
     let mut ica_report: Option<serde_json::Value> = None;
+    let input_channels_total = rec.labels.len();
+    let orig_labels = rec.labels.clone();
+    let input_sample_rate_hz = rec.rate;
+    let input_samples = rec.channels.first().map(Vec::len).unwrap_or(0);
+    let input_duration_sec = if input_sample_rate_hz > 0.0 {
+        input_samples as f64 / input_sample_rate_hz
+    } else {
+        0.0
+    };
     normalize_channel_set(rec, &options.non_eeg_channels);
+    let non_eeg_channels_removed: Vec<String> = orig_labels
+        .into_iter()
+        .filter(|l| !rec.labels.iter().any(|k| k == l))
+        .collect();
+    let input_eeg_channels = rec.labels.len();
 
     eprintln!("PROGRESS 10 Converting channels to f64...");
     // Convert to f64 for all processing in parallel
@@ -348,6 +404,8 @@ pub fn run(
         .par_iter()
         .map(|ch| ch.iter().map(|v| *v as f64).collect())
         .collect();
+    let (input_rms_uv, input_range_min_uv, input_range_max_uv, input_p01_uv, input_p99_uv) =
+        compute_signal_stats(&f64_channels);
 
     let mut cache = super::preprocessing_cache::PrefixCache::new(options.preview_cache_dir.as_deref(), &rec.labels, &options.non_eeg_channels);
     let option_json = serde_json::to_value(options).map_err(err)?;
@@ -395,6 +453,7 @@ pub fn run(
             Ok(serde_json::Value::Null)
         })?;
     }
+    let pre_clean_channels = f64_channels.clone();
     if options.filter {
         cache.apply("filter", params(&["low_hz","high_hz","notch_hz","filter_type","iir_order","fir_taps","notch_width_hz","notch_transition_hz"]), &mut f64_channels, rec, &mut warnings, |f64_channels, rec, _| {
     if options.filter {
@@ -686,6 +745,14 @@ pub fn run(
             Ok(serde_json::Value::Null)
         })?;
     }
+    let (signal_change_nrmse_pct, signal_correlation_median) =
+        if options.stim_epochs.as_ref().is_none_or(|s| s.onsets.is_empty())
+            && options.asr_mode != "reject"
+        {
+            compute_signal_change(&pre_clean_channels, &f64_channels)
+        } else {
+            (None, None)
+        };
     let mut source_localized = false;
     if options.source_localization {
         eprintln!("PROGRESS 85 Converting to source space (selected inverse and atlas)...");
@@ -704,6 +771,155 @@ pub fn run(
             Err(e) => return Err(format!("Source localization failed: {e}")),
         }
     }
+
+    let (output_rms_uv, output_range_min_uv, output_range_max_uv, output_p01_uv, output_p99_uv) =
+        compute_signal_stats(&f64_channels);
+    let output_samples = f64_channels.first().map(Vec::len).unwrap_or(0);
+    let output_duration_sec = if rec.rate > 0.0 {
+        output_samples as f64 / rec.rate
+    } else {
+        0.0
+    };
+    let duration_lost_sec = (input_duration_sec - output_duration_sec).max(0.0);
+    let signal_lost_pct = if input_duration_sec > 1e-9 && options.stim_epochs.as_ref().is_none_or(|s| s.onsets.is_empty()) {
+        (duration_lost_sec / input_duration_sec * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let rms_change_pct = if input_rms_uv > 1e-12 {
+        (output_rms_uv - input_rms_uv) / input_rms_uv * 100.0
+    } else {
+        0.0
+    };
+    let asr_samples_modified = ica_report
+        .as_ref()
+        .and_then(|r| r.get("asr"))
+        .and_then(|a| a.get("samples_changed"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let asr_samples_total = ica_report
+        .as_ref()
+        .and_then(|r| r.get("asr"))
+        .and_then(|a| a.get("samples_total"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let asr_modified_pct = if asr_samples_total > 0 {
+        asr_samples_modified as f64 / asr_samples_total as f64 * 100.0
+    } else {
+        0.0
+    };
+    let ica_blink_components_removed = ica_report
+        .as_ref()
+        .and_then(|r| r.get("ica"))
+        .and_then(|i| i.get("blink_stage"))
+        .and_then(|s| s.get("removed"))
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+    let ica_other_components_removed = ica_report
+        .as_ref()
+        .and_then(|r| r.get("ica"))
+        .and_then(|i| i.get("other_stage"))
+        .and_then(|s| s.get("removed"))
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+    let ica_total_components = ica_report
+        .as_ref()
+        .and_then(|r| r.get("ica"))
+        .and_then(|i| {
+            i.get("other_stage")
+                .and_then(|s| s.get("components"))
+                .and_then(|v| v.as_u64())
+                .or_else(|| {
+                    i.get("blink_stage")
+                        .and_then(|s| s.get("components"))
+                        .and_then(|v| v.as_u64())
+                })
+        })
+        .unwrap_or(0) as usize;
+    let gedai_alpha_retention_pct = gedai_quality
+        .as_ref()
+        .and_then(|q| q.get("median_alpha_power_ratio_common_average"))
+        .and_then(|v| v.as_f64())
+        .map(|r| r * 100.0);
+    let epochs_dropped = epoch_meta.as_ref().map(|m| m.epochs_dropped).unwrap_or(0);
+    let mut steps_applied = Vec::new();
+    if options.downsample && (options.downsample_freq - input_sample_rate_hz).abs() > 0.5 {
+        steps_applied.push(format!("Resample ({} Hz)", options.downsample_freq));
+    }
+    if options.filter {
+        steps_applied.push(format!(
+            "Filter ({}-{} Hz, notch {} Hz)",
+            options.low_hz, options.high_hz, options.notch_hz
+        ));
+    }
+    if options.badchannel || !options.manual_bad_channels.is_empty() {
+        steps_applied.push("Bad channel detection".into());
+    }
+    if ica_on {
+        steps_applied.push(format!("ICA ({})", options.ica_method));
+    }
+    if muscle_on {
+        steps_applied.push(format!("Muscle ({})", options.muscle_method));
+    }
+    if asr_on {
+        steps_applied.push(format!("ASR ({})", options.asr_mode));
+    }
+    if options.gedai && !gedai_reference.is_empty() {
+        steps_applied.push(format!("GEDAI ({})", options.gedai_threshold));
+    }
+    if options.interpolate && !interpolated_channels.is_empty() {
+        steps_applied.push("Spline interpolation".into());
+    }
+    if !options.reference_mode.is_empty() && options.reference_mode != "none" {
+        steps_applied.push(format!("Ref ({})", options.reference_mode));
+    }
+    if source_localized {
+        steps_applied.push(format!(
+            "Source ({})",
+            if options.source_method.is_empty() { "mne" } else { &options.source_method }
+        ));
+    }
+    let outcomes = PreprocessOutcomes {
+        input_channels_total,
+        non_eeg_channels_removed,
+        input_eeg_channels,
+        output_channels: f64_channels.len(),
+        input_sample_rate_hz,
+        output_sample_rate_hz: rec.rate,
+        input_samples,
+        output_samples,
+        input_duration_sec,
+        output_duration_sec,
+        duration_lost_sec,
+        signal_lost_pct,
+        asr_samples_modified,
+        asr_samples_total,
+        asr_modified_pct,
+        epochs_dropped,
+        bad_channels_count: bad_channels.len(),
+        interpolated_channels_count: interpolated_channels.len(),
+        skipped_interpolation_count: skipped_interpolation_channels.len(),
+        ica_blink_components_removed,
+        ica_other_components_removed,
+        ica_total_components,
+        gedai_alpha_retention_pct,
+        input_rms_uv,
+        output_rms_uv,
+        rms_change_pct,
+        input_range_min_uv,
+        input_range_max_uv,
+        input_p01_uv,
+        input_p99_uv,
+        output_range_min_uv,
+        output_range_max_uv,
+        output_p01_uv,
+        output_p99_uv,
+        signal_change_nrmse_pct,
+        signal_correlation_median,
+        steps_applied,
+    };
 
     // Copy back to f32 in parallel
     eprintln!("PROGRESS 88 Copying back to f32...");
@@ -731,7 +947,103 @@ pub fn run(
         source_localized,
         ica: ica_report,
         gedai_reference: if gedai_reference.is_empty() { None } else { Some(gedai_reference.to_string()) },
+        outcomes,
     })
+}
+
+fn compute_signal_stats(channels: &[Vec<f64>]) -> (f64, f64, f64, f64, f64) {
+    if channels.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    let mut rms_list = Vec::with_capacity(channels.len());
+    let mut min_v = f64::INFINITY;
+    let mut max_v = f64::NEG_INFINITY;
+    let total_pts: usize = channels.iter().map(Vec::len).sum();
+    let stride = (total_pts / 200_000).max(1);
+    let mut sample_pool = Vec::with_capacity((total_pts / stride).min(200_000) + 1);
+
+    for ch in channels {
+        let mut sq_sum = 0.0_f64;
+        let mut count = 0usize;
+        for (i, &v) in ch.iter().enumerate() {
+            if !v.is_finite() {
+                continue;
+            }
+            sq_sum += v * v;
+            count += 1;
+            if v < min_v {
+                min_v = v;
+            }
+            if v > max_v {
+                max_v = v;
+            }
+            if i % stride == 0 {
+                sample_pool.push(v);
+            }
+        }
+        if count > 0 {
+            rms_list.push((sq_sum / count as f64).sqrt());
+        }
+    }
+    if rms_list.is_empty() || sample_pool.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    let rms_med = median(rms_list);
+    sample_pool.sort_by(|a, b| a.total_cmp(b));
+    let n = sample_pool.len();
+    let p01 = sample_pool[(n / 100).min(n - 1)];
+    let p99 = sample_pool[((n * 99) / 100).min(n - 1)];
+    (rms_med, min_v, max_v, p01, p99)
+}
+
+fn compute_signal_change(before: &[Vec<f64>], after: &[Vec<f64>]) -> (Option<f64>, Option<f64>) {
+    if before.is_empty() || before.len() != after.len() {
+        return (None, None);
+    }
+    let mut nrmse_vals = Vec::with_capacity(before.len());
+    let mut corr_vals = Vec::with_capacity(before.len());
+    for (b, a) in before.iter().zip(after.iter()) {
+        let n = b.len().min(a.len());
+        if n < 8 {
+            continue;
+        }
+        let b_sl = &b[..n];
+        let a_sl = &a[..n];
+        let mb = b_sl.iter().sum::<f64>() / n as f64;
+        let ma = a_sl.iter().sum::<f64>() / n as f64;
+        let (mut diff_sq, mut ref_sq, mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for k in 0..n {
+            if !b_sl[k].is_finite() || !a_sl[k].is_finite() {
+                continue;
+            }
+            let d = a_sl[k] - b_sl[k];
+            diff_sq += d * d;
+            ref_sq += b_sl[k] * b_sl[k];
+            let db = b_sl[k] - mb;
+            let da = a_sl[k] - ma;
+            sab += db * da;
+            sbb += db * db;
+            saa += da * da;
+        }
+        if ref_sq > 1e-12 {
+            nrmse_vals.push((diff_sq / ref_sq).sqrt() * 100.0);
+        }
+        let denom = (saa * sbb).sqrt();
+        if denom > 1e-12 {
+            corr_vals.push((sab / denom).clamp(-1.0, 1.0));
+        }
+    }
+    let nrmse = if nrmse_vals.is_empty() {
+        None
+    } else {
+        Some(median(nrmse_vals))
+    };
+    let corr = if corr_vals.is_empty() {
+        None
+    } else {
+        Some(median(corr_vals))
+    };
+    (nrmse, corr)
 }
 
 #[cfg(windows)]
@@ -2996,4 +3308,71 @@ fn run_ica_asr(
         }
     }
     Ok((report, keep_mask))
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn preprocessing_summary_populates_outcomes_metrics() {
+        let fs = 250.0;
+        let n = 2500;
+        let labels: Vec<String> = ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "ECG"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut channels = Vec::new();
+        for ci in 0..labels.len() {
+            let mut ch = Vec::with_capacity(n);
+            for s in 0..n {
+                let t = s as f64 / fs;
+                let v = if labels[ci] == "C4" {
+                    // Huge flat/noisy contrast to trigger bad channel or manual bad channel
+                    0.0
+                } else {
+                    20.0 * (2.0 * PI * 10.0 * t + ci as f64 * 0.2).sin()
+                        + 5.0 * (2.0 * PI * 50.0 * t).sin()
+                };
+                ch.push(v as f32);
+            }
+            channels.push(ch);
+        }
+        let mut rec = Recording {
+            rate: fs,
+            labels,
+            channels,
+            source_epoch_samples: None,
+            epoch_labels: None,
+        };
+        let opts: PreprocessOptions = serde_json::from_value(serde_json::json!({
+            "downsample": false,
+            "filter": true,
+            "low_hz": 1.0,
+            "high_hz": 40.0,
+            "notch_hz": 50.0,
+            "badchannel": true,
+            "gedai": false,
+            "interpolate": true,
+            "interpolate_require_surround": false,
+            "reference_mode": "average"
+        }))
+        .unwrap();
+        let tmp = std::env::temp_dir().join("ccs_outcome_test.ccseeg");
+        let tmp_str = tmp.to_string_lossy().to_string();
+        let summary = run(&mut rec, "synthetic.edf", &tmp_str, &opts).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        assert_eq!(summary.outcomes.input_channels_total, 7);
+        assert_eq!(summary.outcomes.non_eeg_channels_removed, vec!["ECG".to_string()]);
+        assert_eq!(summary.outcomes.input_eeg_channels, 6);
+        assert_eq!(summary.outcomes.output_channels, 6);
+        assert!(summary.outcomes.input_rms_uv > 10.0);
+        assert!(summary.outcomes.output_rms_uv > 1.0);
+        assert!(summary.outcomes.signal_change_nrmse_pct.is_some());
+        assert!(summary.outcomes.signal_correlation_median.is_some());
+        assert_eq!(summary.outcomes.interpolated_channels_count, summary.interpolated_channels.len());
+        assert!(summary.outcomes.output_range_max_uv > summary.outcomes.output_range_min_uv);
+        assert!(summary.outcomes.signal_lost_pct >= 0.0);
+    }
 }

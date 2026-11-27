@@ -1,6 +1,7 @@
 import 'ica_review.dart';
 import 'package:flutter/material.dart';
 import 'models.dart';
+import 'preprocessing_outcome_log.dart';
 
 Map<String, dynamic> _map(Object? value) =>
     value is Map ? Map<String, dynamic>.from(value) : {};
@@ -85,6 +86,41 @@ List<(String, String)> recordingHistory(EegRecording r) {
           ? 'None detected'
           : bad.join(', '),
     ));
+    final interp = summary['interpolated_channels'] as List? ?? [];
+    final skipped = summary['skipped_interpolation_channels'] as List? ?? [];
+    if (interp.isNotEmpty || skipped.isNotEmpty) {
+      history.add((
+        'Interpolation',
+        'Interpolated: ${interp.isEmpty ? 'none' : interp.join(', ')}'
+            '${skipped.isNotEmpty ? ' · Skipped (edge/surround): ${skipped.join(', ')}' : ''}',
+      ));
+    }
+    final outcomes = _map(summary['outcomes']);
+    if (outcomes.isNotEmpty) {
+      final lost = (outcomes['signal_lost_pct'] as num?)?.toDouble() ?? 0.0;
+      final durLost = (outcomes['duration_lost_sec'] as num?)?.toDouble() ?? 0.0;
+      history.add((
+        'Signal lost',
+        '${lost.toStringAsFixed(1)}% (${durLost.toStringAsFixed(2)} s)',
+      ));
+      final nrmse = (outcomes['signal_change_nrmse_pct'] as num?)?.toDouble();
+      final corr = (outcomes['signal_correlation_median'] as num?)?.toDouble();
+      final inRms = (outcomes['input_rms_uv'] as num?)?.toDouble() ?? 0.0;
+      final outRms = (outcomes['output_rms_uv'] as num?)?.toDouble() ?? 0.0;
+      history.add((
+        'Signal change',
+        '${nrmse != null ? '${nrmse.toStringAsFixed(1)}% NRMSE (r=${corr?.toStringAsFixed(3) ?? '-'}) · ' : ''}'
+            'RMS ${inRms.toStringAsFixed(1)} → ${outRms.toStringAsFixed(1)} µV',
+      ));
+      final outMin = (outcomes['output_range_min_uv'] as num?)?.toDouble() ?? 0.0;
+      final outMax = (outcomes['output_range_max_uv'] as num?)?.toDouble() ?? 0.0;
+      final p01 = (outcomes['output_p01_uv'] as num?)?.toDouble() ?? 0.0;
+      final p99 = (outcomes['output_p99_uv'] as num?)?.toDouble() ?? 0.0;
+      history.add((
+        'New signal range',
+        '[${outMin.toStringAsFixed(1)}, ${outMax.toStringAsFixed(1)}] µV · P1..P99 [${p01.toStringAsFixed(1)}, ${p99.toStringAsFixed(1)}] µV',
+      ));
+    }
   }
   if (p['epoch_protocol'] != null)
     history.add(('Epoching', 'Saved event protocol and condition labels'));
@@ -189,6 +225,15 @@ Future<void> showRecordingDetails(BuildContext context, EegRecording r) =>
           ),
         ),
         actions: [
+          if (_map(r.provenance['summary']).isNotEmpty)
+            TextButton.icon(
+              onPressed: () => showSinglePreprocessingOutcomeDialog(
+                context,
+                PreprocessingOutcomeEntry.fromRecording(r),
+              ),
+              icon: const Icon(Icons.fact_check_outlined),
+              label: const Text('Outcome log & CSV…'),
+            ),
           if (icaReviewReport(r).isNotEmpty)
             TextButton.icon(
               onPressed: () => showIcaReview(context, r),

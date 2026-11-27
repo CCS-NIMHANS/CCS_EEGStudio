@@ -32,9 +32,16 @@ fi
 
 # ── Build Rust engine (universal arm64 + x86_64) ───────────────────────────
 echo "==> Building Rust engine (release, arm64 + x86_64)..."
+RUSTUP_BIN="$(command -v rustup 2>/dev/null || true)"
+if [[ -z "$RUSTUP_BIN" && -x "$HOME/.cargo/bin/rustup" ]]; then
+  RUSTUP_BIN="$HOME/.cargo/bin/rustup"
+fi
+if [[ -n "$RUSTUP_BIN" ]]; then
+  "$RUSTUP_BIN" target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null || true
+fi
 cd "$ROOT/bridge"
-"$CARGO_BIN" build --release --target aarch64-apple-darwin
-"$CARGO_BIN" build --release --target x86_64-apple-darwin
+MACOSX_DEPLOYMENT_TARGET=12.0 "$CARGO_BIN" build --release --locked --target aarch64-apple-darwin
+MACOSX_DEPLOYMENT_TARGET=12.0 "$CARGO_BIN" build --release --locked --target x86_64-apple-darwin
 mkdir -p "$ROOT/bridge/target/release"
 lipo -create \
   "$ROOT/bridge/target/aarch64-apple-darwin/release/ccs-eeg-engine" \

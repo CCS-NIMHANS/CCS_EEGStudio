@@ -50,6 +50,21 @@ flowchart TD
 
 ---
 
+## Physiological Event Extraction (Blinks, Eye Movements, EMG Surges, ECG / HEP)
+
+- Click **`Extract Events`** in the waveform toolbar (or enable **`Physiological event extraction (pre-cleaning)`** in Preprocessing Options) to detect and label:
+  - **Eye Blinks (`Physio/Blink`):** VEOG / frontal EEG morphological peak detection.
+  - **Eye Movements (`Physio/EyeMovement`):** HEOG / bipolar horizontal saccade velocity events (`EyeMove_Left`, `EyeMove_Right`).
+  - **EMG Surges (`Physio/EMG`):** High-frequency (20–90 Hz) jaw/temporal burst envelopes with strain burden %.
+  - **ECG R-Peaks (`Physio/ECG`):** Cardiac R-peak detection with HR/RMSSD/SDNN metrics for **Heartbeat-Evoked Potential (HEP)** epoching.
+- Inject events directly into recording markers for **Epoch Events** / **ERP Workbench** or export EEGLAB **`.evt`** and BIDS **`_events.tsv`** sidecars.
+
+## Preprocessing Outcome Logs (Single & Collated Batch)
+
+- Click **`Outcome Log…`** after single-file preprocessing (or **`Outcomes`** in Batch Stage 1) to inspect **signal lost %**, **bad/interpolated/skipped channels**, **waveform signal change (NRMSE %, median `r`, RMS Δ%)**, **input vs. new amplitude range (`µV` & P1..P99)**, and ICA/GEDAI metrics. Batch runs automatically save **`Batch_Preprocessing_Outcomes.csv`** and **`Batch_Preprocessing_Outcomes.json`** to the batch output folder.
+
+---
+
 ## Method References
 
 | Step / Model | Reference |

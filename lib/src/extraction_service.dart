@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'dart:math' as math;
 
 import 'models.dart';
+import 'physio_events.dart';
 import 'erp/stim_epochs.dart' show markerInventory;
 import 'recording_loader.dart';
 import 'recording_storage.dart';
@@ -547,6 +548,31 @@ class ExtractionService {
             '${'$w'.startsWith('Blink detection filters saved trials independently') ? 'ℹ' : '⚠'} $w',
           );
         }
+        final outcomes = summary['outcomes'];
+        if (outcomes is Map<String, dynamic>) {
+          final lostPct = (outcomes['signal_lost_pct'] as num?)?.toDouble() ?? 0;
+          final interpCnt =
+              (outcomes['interpolated_channels_count'] as num?)?.toInt() ?? 0;
+          final skippedCnt =
+              (outcomes['skipped_interpolation_count'] as num?)?.toInt() ?? 0;
+          final nrmse =
+              (outcomes['signal_change_nrmse_pct'] as num?)?.toDouble();
+          final corr =
+              (outcomes['signal_correlation_median'] as num?)?.toDouble();
+          final inRms = (outcomes['input_rms_uv'] as num?)?.toDouble() ?? 0;
+          final outRms = (outcomes['output_rms_uv'] as num?)?.toDouble() ?? 0;
+          final outMin =
+              (outcomes['output_range_min_uv'] as num?)?.toDouble() ?? 0;
+          final outMax =
+              (outcomes['output_range_max_uv'] as num?)?.toDouble() ?? 0;
+          emit(
+            .93,
+            'Outcomes: signal lost ${lostPct.toStringAsFixed(1)}% · interpolated $interpCnt (skipped $skippedCnt) · '
+            '${nrmse != null ? 'change ${nrmse.toStringAsFixed(1)}% NRMSE (r=${corr?.toStringAsFixed(3) ?? '-'}) · ' : ''}'
+            'RMS ${inRms.toStringAsFixed(1)}→${outRms.toStringAsFixed(1)} µV · '
+            'new range [${outMin.toStringAsFixed(1)}, ${outMax.toStringAsFixed(1)}] µV',
+          );
+        }
       }
       final resultSummary = stdout.trim().isEmpty
           ? <String, dynamic>{}
@@ -730,6 +756,101 @@ class ExtractionService {
       return cleaned;
     } finally {
       heartbeat?.cancel();
+      await temp.delete(recursive: true);
+    }
+  }
+
+  /// Extracts blinks, horizontal eye movements, EMG surges, ECG R-peaks,
+  /// and optional artifact bursts via the native Rust engine.
+  Future<PhysioExtractionResult> extractPhysioEvents({
+    required EegRecording recording,
+    required PhysioEventOptions options,
+    ProgressCallback? onProgress,
+  }) async {
+    _cancelled = false;
+    onProgress?.call(0.1, 'Preparing physiological event extraction…');
+    final executable = _enginePath ?? ExtractionService.findEngine();
+    final temp = await Directory.systemTemp.createTemp('ccs_physio_');
+    try {
+      String inputPath = recording.path;
+      String inputFormat = recording.format;
+      if (!File(recording.path).existsSync() ||
+          recording.provenance.containsKey('batch_channel_mapping') ||
+          (recording.format == 'orb' || recording.format == 'xdf')) {
+        final full = recording.preview.any((c) => c.length != recording.sampleCount)
+            ? await RecordingLoader().loadFull(recording)
+            : recording;
+        final tempInput = File('${temp.path}${Platform.pathSeparator}physio_input.ccseeg.json');
+        await _writeSignalInput(tempInput.path, {
+          'format': 'ccseeg-v1',
+          'sample_rate': full.sampleRate,
+          'labels': full.labels,
+          'channels': full.preview,
+          if (full.pointsPerEpoch != null)
+            'source_epoch_samples': full.pointsPerEpoch,
+          if (full.epochLabels != null) 'epoch_labels': full.epochLabels,
+        });
+        inputPath = tempInput.path;
+        inputFormat = 'ccseeg';
+      }
+      final job = File('${temp.path}${Platform.pathSeparator}physio_job.json');
+      await job.writeAsString(
+        jsonEncode({
+          'job_type': 'extract_physio_events',
+          'input': inputPath,
+          'output': '${temp.path}${Platform.pathSeparator}unused.json',
+          'format': inputFormat,
+          'data_path': recording.dataPath,
+          'sample_rate': recording.sampleRate,
+          'labels': recording.labels,
+          'sample_count': recording.sampleCount,
+          'epoch_count': recording.epochCount,
+          'points_per_epoch': recording.pointsPerEpoch,
+          'epoch_seconds': 2.0,
+          'options': _emptyExtractionOptions().toJson(),
+          'physio_options': options.toJson(),
+        }),
+      );
+      _checkCancelled();
+      onProgress?.call(0.4, 'Detecting physiological events…');
+      final process = await Process.start(executable, [job.path]);
+      _activeProcess = process;
+      final stderrLines = <String>[];
+      process.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(stderrLines.add);
+      final stdout = await process.stdout.transform(utf8.decoder).join();
+      final code = await process.exitCode;
+      _activeProcess = null;
+      _checkCancelled();
+      if (code != 0) {
+        throw StateError(
+          stderrLines.isEmpty
+              ? 'Physiological event extraction failed with code $code'
+              : stderrLines.join('\n'),
+        );
+      }
+      final decoded = jsonDecode(stdout) as Map<String, dynamic>;
+      final rawEvents = (decoded['events'] as List? ?? const [])
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+      final markers = [for (final ev in rawEvents) EegMarker.fromJson(ev)];
+      final summary = PhysioEventSummary.fromJson(
+        Map<String, dynamic>.from(decoded['summary'] as Map? ?? const {}),
+      );
+      onProgress?.call(
+        1.0,
+        'Extracted ${markers.length} physiological events '
+        '(blinks=${summary.blinkCount}, eye=${summary.eyeMovementCount}, '
+        'EMG=${summary.emgSurgeCount}, ECG=${summary.ecgRPeakCount})',
+      );
+      return PhysioExtractionResult(
+        markers: markers,
+        rawEvents: rawEvents,
+        summary: summary,
+      );
+    } finally {
       await temp.delete(recursive: true);
     }
   }

@@ -180,6 +180,7 @@ pub mod fif_loader;
 pub mod montage;
 pub mod nonlinear;
 pub mod orb_extract;
+pub mod physio_events;
 pub mod preprocessing;
 pub mod ransac;
 pub mod set_loader;

@@ -99,6 +99,12 @@ if grep -q "media_kit" pubspec.yaml; then
   fi
 fi
 
+if grep -q "x86_64-apple-darwin" scripts/sign_and_notarize_macos.sh && grep -q "lipo -create" scripts/sign_and_notarize_macos.sh; then
+  pass_msg "scripts/sign_and_notarize_macos.sh enforces universal (x86_64 + arm64) macOS packaging"
+else
+  fail_msg "scripts/sign_and_notarize_macos.sh missing universal x86_64 + arm64 enforcement"
+fi
+
 echo "[3/5] Native Rust engine build & CI test suite (--release --locked)..."
 if [[ "$skip_tests" == true ]]; then
   warn_msg "Skipped Rust tests (--skip-tests)"

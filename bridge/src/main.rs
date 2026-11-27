@@ -204,6 +204,41 @@ fn main() -> Result<(), String> {
         println!("{}", serde_json::to_string(&res).map_err(err)?);
         return Ok(());
     }
+    if erp_value["job_type"].as_str() == Some("extract_physio_events") {
+        let input = erp_value["input"].as_str().ok_or("missing input path")?;
+        let fmt = erp_value["format"].as_str().unwrap_or("");
+        let data_path = erp_value["data_path"].as_str().unwrap_or("");
+        let physio_opts: physio_events::PhysioEventOptions = if erp_value["physio_options"].is_null() {
+            physio_events::PhysioEventOptions::default()
+        } else {
+            serde_json::from_value(erp_value["physio_options"].clone()).map_err(err)?
+        };
+        let mut recording = if fmt == "set" || input.to_lowercase().ends_with(".set") {
+            if !data_path.is_empty() {
+                let job: Job = serde_json::from_value(erp_value.clone()).map_err(err)?;
+                load_fdt(&job)?
+            } else {
+                let mat = set_loader::load_set(Path::new(input))?;
+                recording_from_embedded_set(&mat)?
+            }
+        } else if fmt == "fif" || input.to_lowercase().ends_with(".fif") {
+            mne_fif::load_fif(Path::new(input))?
+        } else if fmt == "mat" || input.to_lowercase().ends_with(".mat") {
+            fieldtrip_loader::load_fieldtrip(Path::new(input))?
+        } else if fmt == "vhdr" || input.to_lowercase().ends_with(".vhdr") {
+            vhdr_loader::load_vhdr(Path::new(input))?
+        } else if fmt == "xdf" || input.to_lowercase().ends_with(".xdf") {
+            ccs_eeg_engine::xdf_loader::load_xdf(Path::new(input))?.recording
+        } else if fmt == "ccseeg" || input.ends_with(".ccseeg.json") || input.ends_with(".ccseeg") {
+            preprocessing::load_portable(Path::new(input))?
+        } else {
+            load_edf(Path::new(input))?
+        };
+        recording_metadata::apply(&mut recording, Path::new(input))?;
+        let res = physio_events::extract_physio_events(&recording, &physio_opts)?;
+        println!("{}", serde_json::to_string(&res).map_err(err)?);
+        return Ok(());
+    }
     let job: Job = serde_json::from_slice(&fs::read(&resolved_job_path).map_err(err)?).map_err(err)?;
     eprintln!("PROGRESS 0 Loading {}", job.input);
     if job.job_type == "microstates" {

@@ -16,13 +16,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Latest release v1.2.65" src="https://img.shields.io/badge/Release-v1.2.65-2563eb"></a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Latest release v1.2.66" src="https://img.shields.io/badge/Release-v1.2.66-2563eb"></a>
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml"><img alt="Build desktop apps" src="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml/badge.svg"></a>
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Download for macOS, Windows, and Linux" src="https://img.shields.io/badge/Downloads-macOS%20%7C%20Windows%20%7C%20Linux-16a34a"></a>
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.65</b> ·
+  <b>Current version: 1.2.66</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
   <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
@@ -70,6 +70,12 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 </p>
 
 ---
+
+## ✨ What's New in v1.2.66
+
+- **Guaranteed Universal Intel + Apple Silicon macOS Releases:** Hardened `sign_and_notarize_macos.sh` and `build_macos.sh` with automatic dual-architecture (`x86_64` + `arm64`) `ccs-eeg-engine` compilation and a strict bundle-wide Mach-O slice gate so Intel Macs run natively without missing slices.
+- **Native Physiological & Artifact Event Extraction (HEP / Cognitive Strain / EOG / EMG / ECG):** Extract **Eye Blinks** (`Physio/Blink`), **Eye Movements** (`EyeMove_Left`/`EyeMove_Right`), **EMG Surges** (`EMG_Surge`, burden %), **ECG R-Peaks** (`ECG_R` with HR/SDNN/RMSSD for **Heartbeat-Evoked Potential** analysis), and optional **Artifact Bursts** via the viewer **`Extract Events`** chip or pre-cleaning preprocessing, with direct marker injection and EEGLAB `.evt` / BIDS `_events.tsv` exports.
+- **Single-File & Collated Batch Preprocessing Outcome Logs:** Reports **signal lost % & duration**, ASR modified %, dropped edge epochs, bad/interpolated/skipped channels, **signal change (NRMSE %, correlation `r`, RMS Δ%)**, **input vs. new amplitude range (`µV`)**, and physiological event counts in-app and in **`Batch_Preprocessing_Outcomes.csv` / `.json`**.
 
 ## ✨ What's New in v1.2.65
 

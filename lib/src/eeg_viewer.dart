@@ -89,6 +89,7 @@ class EegViewer extends StatefulWidget {
     this.onSelectRecording,
     this.onEpochsGenerated,
     this.onRequestEpochs,
+    this.onExtractPhysioEvents,
     required this.selection,
     required this.onSelectionChanged,
     this.autoscaleByDefault = false,
@@ -126,6 +127,7 @@ class EegViewer extends StatefulWidget {
   final ValueChanged<EegRecording>? onSelectRecording;
   final ValueChanged<EegRecording>? onEpochsGenerated;
   final VoidCallback? onRequestEpochs;
+  final VoidCallback? onExtractPhysioEvents;
 
   final ViewerSelection selection;
   final ValueChanged<ViewerSelection> onSelectionChanged;
@@ -539,6 +541,14 @@ class _EegViewerState extends State<EegViewer> {
                   () => _showEpochGeneratorDialog(context, eeg),
                 ),
             ],
+            if (!(_controlsExpanded && !_waveformFocus) &&
+                widget.onExtractPhysioEvents != null)
+              toggle(
+                'Extract Events',
+                Icons.bolt,
+                false,
+                widget.onExtractPhysioEvents!,
+              ),
           ],
         ),
       ),
@@ -1065,6 +1075,17 @@ class _EegViewerState extends State<EegViewer> {
             onPressed: () => _showEpochGeneratorDialog(context, eeg),
           ),
         ],
+        if (widget.onExtractPhysioEvents != null)
+          ActionChip(
+            avatar: const Icon(Icons.bolt, size: 14, color: CcsTheme.accentBlue),
+            label: const Text(
+              'Extract Events',
+              style: TextStyle(fontSize: 12, color: CcsTheme.text),
+            ),
+            backgroundColor: CcsTheme.surface,
+            side: const BorderSide(color: CcsTheme.border),
+            onPressed: widget.onExtractPhysioEvents,
+          ),
       ],
     );
   }

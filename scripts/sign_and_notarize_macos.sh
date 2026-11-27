@@ -34,6 +34,53 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
+# ── Ensure embedded Rust engine & bundle binaries are universal (x86_64 + arm64) ──
+ENGINE_BIN="$APP_PATH/Contents/MacOS/ccs-eeg-engine"
+if [[ -f "$ENGINE_BIN" ]] && command -v lipo >/dev/null 2>&1; then
+  ENGINE_ARCHS="$(lipo -archs "$ENGINE_BIN" 2>/dev/null || true)"
+  if [[ "$ENGINE_ARCHS" != *"x86_64"* || "$ENGINE_ARCHS" != *"arm64"* ]]; then
+    echo "==> Rebuilding ccs-eeg-engine as universal binary (x86_64 + arm64); found [$ENGINE_ARCHS]..."
+    if [[ ! -f "$ROOT/bridge/Cargo.toml" ]]; then
+      echo "Error: $ENGINE_BIN is not universal ($ENGINE_ARCHS) and bridge/Cargo.toml is missing." >&2
+      exit 1
+    fi
+    CARGO_BIN="$(command -v cargo 2>/dev/null || true)"
+    [[ -z "$CARGO_BIN" && -x "$HOME/.cargo/bin/cargo" ]] && CARGO_BIN="$HOME/.cargo/bin/cargo"
+    RUSTUP_BIN="$(command -v rustup 2>/dev/null || true)"
+    [[ -z "$RUSTUP_BIN" && -x "$HOME/.cargo/bin/rustup" ]] && RUSTUP_BIN="$HOME/.cargo/bin/rustup"
+    if [[ -z "$CARGO_BIN" || -z "$RUSTUP_BIN" ]]; then
+      echo "Error: cargo/rustup not found to rebuild universal ccs-eeg-engine." >&2
+      exit 1
+    fi
+    "$RUSTUP_BIN" target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
+    (
+      cd "$ROOT/bridge"
+      MACOSX_DEPLOYMENT_TARGET=12.0 "$CARGO_BIN" build --release --locked --target aarch64-apple-darwin
+      MACOSX_DEPLOYMENT_TARGET=12.0 "$CARGO_BIN" build --release --locked --target x86_64-apple-darwin
+      mkdir -p target/release
+      lipo -create \
+        target/aarch64-apple-darwin/release/ccs-eeg-engine \
+        target/x86_64-apple-darwin/release/ccs-eeg-engine \
+        -output target/release/ccs-eeg-engine
+    )
+    cp "$ROOT/bridge/target/release/ccs-eeg-engine" "$ENGINE_BIN"
+    chmod +x "$ENGINE_BIN"
+  fi
+fi
+
+# Strict universal architecture gate across all executables/frameworks in bundle.
+echo "==> Verifying universal architectures (x86_64 + arm64) inside .app bundle..."
+while IFS= read -r -d '' bin; do
+  if file "$bin" | grep -q "Mach-O"; then
+    archs="$(lipo -archs "$bin" 2>/dev/null || true)"
+    if [[ "$archs" != *"x86_64"* || "$archs" != *"arm64"* ]]; then
+      echo "Error: Non-universal Mach-O binary in bundle: $bin [$archs]" >&2
+      exit 1
+    fi
+  fi
+done < <(find "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Frameworks" -type f \( -name "*.dylib" -o -perm +111 \) -print0 2>/dev/null)
+echo "    ✓ All Mach-O binaries in bundle contain both x86_64 and arm64 slices."
+
 mkdir -p "$OUT_DIR"
 
 TEMP_KEYCHAIN=""

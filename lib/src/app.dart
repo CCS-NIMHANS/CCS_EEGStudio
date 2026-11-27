@@ -56,6 +56,9 @@ import 'erp/protocol_tools.dart';
 import 'erp/output_naming.dart';
 import 'topostats_analysis.dart';
 import 'microstate_analysis.dart';
+import 'physio_events.dart';
+import 'physio_events_dialog.dart';
+import 'preprocessing_outcome_log.dart';
 import 'update_checker.dart';
 
 // ── Design tokens (CCS Studio Light Clinical palette) ──────────────────────
@@ -442,6 +445,8 @@ class _FeatureHomeState extends State<FeatureHome>
   final Set<String> _stepSelection = {};
   bool _keepPreprocessingCache = false;
   Future<void> _pendingPreviewDisposal = Future.value();
+  List<PreprocessingOutcomeEntry> _lastBatchPreprocessOutcomes = const [];
+  String? _lastBatchPreprocessCsvPath;
 
   /// Latest settings of every step card, collected while the panel is built.
   final Map<String, Map<String, dynamic>> _stepSettingsCache = {};
@@ -499,6 +504,15 @@ class _FeatureHomeState extends State<FeatureHome>
         _sourceInput = null;
         _selection = const ViewerSelection.empty();
       });
+      if (next.isNotEmpty && result.provenance['summary'] is Map) {
+        final outcomeEntry = PreprocessingOutcomeEntry.fromRecording(
+          result,
+          sourceInputPath: baseline.path,
+        );
+        for (final line in outcomeEntry.toLogLines()) {
+          _log(line);
+        }
+      }
       return true;
     } catch (e) {
       _log('Interactive preprocessing failed; previous waveform retained: $e');
@@ -2163,8 +2177,125 @@ class _FeatureHomeState extends State<FeatureHome>
   //  SINGLE-RECORDING MODE — stage runners
   // ══════════════════════════════════════════════════════════════════════
 
+  PhysioEventOptions _physioOptionsFromCfg() => PhysioEventOptions(
+    detectBlinks: _cfg.physioDetectBlinks,
+    detectEyeMovements: _cfg.physioDetectEyeMovements,
+    detectEmgSurges: _cfg.physioDetectEmgSurges,
+    detectEcg: _cfg.physioDetectEcg,
+    detectArtifactBursts: _cfg.physioDetectArtifactBursts,
+    blinkChannel: _cfg.physioBlinkChannel,
+    eogChannel: _cfg.physioEogChannel,
+    emgChannel: _cfg.physioEmgChannel,
+    ecgChannel: _cfg.physioEcgChannel,
+    eyeMovementZ: _cfg.physioEyeMovementZ,
+    emgZ: _cfg.physioEmgZ,
+    emgMinDurationSec: _cfg.physioEmgMinDurationSec,
+    artifactZ: _cfg.physioArtifactZ,
+  );
+
+  void _applyPhysioOptionsToCfg(PhysioEventOptions o) {
+    _cfg
+      ..physioDetectBlinks = o.detectBlinks
+      ..physioDetectEyeMovements = o.detectEyeMovements
+      ..physioDetectEmgSurges = o.detectEmgSurges
+      ..physioDetectEcg = o.detectEcg
+      ..physioDetectArtifactBursts = o.detectArtifactBursts
+      ..physioBlinkChannel = o.blinkChannel
+      ..physioEogChannel = o.eogChannel
+      ..physioEmgChannel = o.emgChannel
+      ..physioEcgChannel = o.ecgChannel
+      ..physioEyeMovementZ = o.eyeMovementZ
+      ..physioEmgZ = o.emgZ
+      ..physioEmgMinDurationSec = o.emgMinDurationSec
+      ..physioArtifactZ = o.artifactZ;
+  }
+
+  void _applyPhysioMarkersToActiveRecording(
+    EegRecording target,
+    PhysioExtractionResult res,
+    PhysioEventOptions usedOpts,
+  ) {
+    final merged = mergePhysioMarkers(
+      target.markers,
+      res.markers,
+      replacedTypes: usedOpts.selectedEventTypes,
+    );
+    final updatedProv = Map<String, dynamic>.from(target.provenance)
+      ..['physio_events_summary'] = res.summary.toJson();
+
+    EegRecording? updateRec(EegRecording? r) {
+      if (r == null || r.path != target.path) return r;
+      return r.copyWith(markers: merged, provenance: updatedProv);
+    }
+
+    setState(() {
+      _applyPhysioOptionsToCfg(usedOpts);
+      _raw = updateRec(_raw);
+      _interactivePreview = updateRec(_interactivePreview);
+      _finalizedPreview = updateRec(_finalizedPreview);
+      _preprocessed = updateRec(_preprocessed);
+      _directInput = updateRec(_directInput);
+      _source = updateRec(_source);
+      for (var i = 0; i < _openedRecordings.length; i++) {
+        if (_openedRecordings[i].path == target.path) {
+          _openedRecordings[i] = _openedRecordings[i].copyWith(
+            markers: merged,
+            provenance: updatedProv,
+          );
+        }
+      }
+    });
+    _log(
+      '✓ Added ${res.markers.length} physiological events to ${_shortName(target.path)} '
+      '(blinks=${res.summary.blinkCount}, eye=${res.summary.eyeMovementCount}, '
+      'EMG=${res.summary.emgSurgeCount}, ECG=${res.summary.ecgRPeakCount})',
+    );
+  }
+
+  Future<void> _openPhysioEventsDialog([EegRecording? preferred]) async {
+    final target = preferred ?? _activeRecording;
+    if (target == null || _running) return;
+    await showPhysioEventsDialog(
+      context: context,
+      recording: target,
+      initialOptions: _physioOptionsFromCfg(),
+      onExtract: (opts) =>
+          _service.extractPhysioEvents(recording: target, options: opts),
+      onApplyToRecording: (res, opts) =>
+          _applyPhysioMarkersToActiveRecording(target, res, opts),
+      onRequestEpochEvents: () {
+        if (!mounted) return;
+        if (_pipeline.contains(_Module.epochs)) {
+          setState(() => _selectedModule = _Module.epochs);
+        } else {
+          _epochActiveRecording();
+        }
+      },
+    );
+  }
+
   Future<void> _runPreprocessing() async {
     if (_running || _raw == null) return;
+    if (_cfg.extractPhysioEvents && _raw != null) {
+      final opts = _physioOptionsFromCfg();
+      if (opts.anyEnabled) {
+        try {
+          _log('Extracting physiological events from raw recording before cleaning…');
+          final physio = await _service.extractPhysioEvents(
+            recording: _raw!,
+            options: opts,
+          );
+          if (!mounted) return;
+          _applyPhysioMarkersToActiveRecording(_raw!, physio, opts);
+          if (_previewSession != null) {
+            _resetInteractivePreview();
+            await _restoreInteractivePreview(_raw!, resume: false);
+          }
+        } catch (e) {
+          _log('⚠ Pre-cleaning physiological event extraction skipped: $e');
+        }
+      }
+    }
     // Interactive finalisation uses exactly the visible checked steps. The
     // configured batch defaults must never be substituted for an empty set.
     final applied = await _applySelectedPreviewSteps();
@@ -4245,6 +4376,7 @@ class _FeatureHomeState extends State<FeatureHome>
                           }
                         },
                         onRequestEpochs: _epochActiveRecording,
+                        onExtractPhysioEvents: () => _openPhysioEventsDialog(),
                         onEpochsGenerated: (epoched) {
                           if (_running) return;
                           setState(() => _preprocessed = epoched);
@@ -4351,6 +4483,7 @@ class _FeatureHomeState extends State<FeatureHome>
                     }
                   },
                   onRequestEpochs: _epochActiveRecording,
+                  onExtractPhysioEvents: () => _openPhysioEventsDialog(),
                   onEpochsGenerated: (epoched) {
                     if (_running) return;
                     setState(() => _preprocessed = epoched);
@@ -5745,6 +5878,21 @@ class _FeatureHomeState extends State<FeatureHome>
                 icon: const Icon(Icons.save_outlined),
                 label: const Text('Save displayed signal…'),
               ),
+              OutlinedButton.icon(
+                onPressed:
+                    _running ||
+                        (_activeRecording?.provenance['summary'] is! Map)
+                    ? null
+                    : () => showSinglePreprocessingOutcomeDialog(
+                        context,
+                        PreprocessingOutcomeEntry.fromRecording(
+                          _activeRecording!,
+                          sourceInputPath: _raw?.path,
+                        ),
+                      ),
+                icon: const Icon(Icons.fact_check_outlined),
+                label: const Text('Outcome Log…'),
+              ),
             ],
           ),
         if (!_batchMaximized && _previewSession?.cachePath != null)
@@ -6256,6 +6404,56 @@ class _FeatureHomeState extends State<FeatureHome>
                 onChanged: (v) => setState(() => _cfg.referenceChannels = v),
               ),
           ],
+        ),
+
+        _preparationSection(
+          'Physiological event extraction (pre-cleaning)',
+          _cfg.extractPhysioEvents
+              ? 'Enabled before cleaning (blinks, EOG, EMG, ECG)'
+              : 'Off (or run interactively from Viewer)',
+          [
+            _check(
+              'Extract blinks, eye movements, EMG surges & ECG before cleaning',
+              _cfg.extractPhysioEvents,
+              (v) => _cfg.extractPhysioEvents = v,
+            ),
+            if (_cfg.extractPhysioEvents) ...[
+              _check(
+                'Eye blinks (VEOG / frontal)',
+                _cfg.physioDetectBlinks,
+                (v) => _cfg.physioDetectBlinks = v,
+              ),
+              _check(
+                'Eye movements / horizontal saccades',
+                _cfg.physioDetectEyeMovements,
+                (v) => _cfg.physioDetectEyeMovements = v,
+              ),
+              _check(
+                'EMG surges (muscle tension / cognitive strain)',
+                _cfg.physioDetectEmgSurges,
+                (v) => _cfg.physioDetectEmgSurges = v,
+              ),
+              _check(
+                'ECG R-peaks (Heartbeat-Evoked Potential / HEP)',
+                _cfg.physioDetectEcg,
+                (v) => _cfg.physioDetectEcg = v,
+              ),
+              _check(
+                'High-amplitude artifact bursts',
+                _cfg.physioDetectArtifactBursts,
+                (v) => _cfg.physioDetectArtifactBursts = v,
+              ),
+            ],
+            if (!_batchMaximized && (_raw ?? _activeRecording) != null)
+              OutlinedButton.icon(
+                onPressed: _running
+                    ? null
+                    : () => _openPhysioEventsDialog(_raw ?? _activeRecording),
+                icon: const Icon(Icons.bolt, size: 15),
+                label: const Text('Extract / Tune Events on Raw…'),
+              ),
+          ],
+          open: false,
         ),
 
         // Step 6: Saved output structure
@@ -7830,6 +8028,39 @@ class _FeatureHomeState extends State<FeatureHome>
           ),
         ),
       ),
+      if (_lastBatchPreprocessOutcomes.isNotEmpty) ...[
+        const SizedBox(width: 4),
+        Tooltip(
+          message: 'Inspect collated batch preprocessing outcome log',
+          child: InkWell(
+            onTap: () => showBatchPreprocessingOutcomeDialog(
+              context,
+              _lastBatchPreprocessOutcomes,
+              savedCsvPath: _lastBatchPreprocessCsvPath,
+            ),
+            borderRadius: BorderRadius.circular(4),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+              decoration: BoxDecoration(
+                color: _cardColor,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: _accentBlue.withValues(alpha: 0.45)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.fact_check_outlined, size: 12, color: _accentBlue),
+                  SizedBox(width: 4),
+                  Text(
+                    'Outcomes',
+                    style: TextStyle(fontSize: 10, color: _textSecondary),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
       const SizedBox(width: 6),
     ],
     files: _batchPrepFiles,
@@ -9025,6 +9256,7 @@ class _FeatureHomeState extends State<FeatureHome>
     } catch (_) {}
     _cfg.saveDefaultPipeline();
     final written = <String>[];
+    final batchOutcomes = <PreprocessingOutcomeEntry>[];
     for (var i = 0; i < _batchPrepFiles.length; i++) {
       if (_batchCancelRequested) break;
       final path = _batchPrepFiles[i];
@@ -9058,6 +9290,26 @@ class _FeatureHomeState extends State<FeatureHome>
             );
             saveRecordingSubject(existing, _batchSubject(path), path);
             written.add(existing);
+            try {
+              final existingRec = await _loader.load(existing);
+              final entry = PreprocessingOutcomeEntry.fromRecording(
+                existingRec,
+                status: 'Skipped',
+                sourceInputPath: path,
+              );
+              batchOutcomes.add(entry);
+              for (final line in entry.toLogLines()) {
+                _log(line);
+              }
+            } catch (_) {
+              batchOutcomes.add(
+                PreprocessingOutcomeEntry.fromError(
+                  path,
+                  'Skipped existing file (${_shortName(existing)})',
+                  status: 'Skipped',
+                ),
+              );
+            }
             _updateBatchFile(
               path,
               'Done (Skipped)',
@@ -9069,7 +9321,7 @@ class _FeatureHomeState extends State<FeatureHome>
           }
         }
 
-        final rec = await _resolveBatchChannels(
+        var rec = await _resolveBatchChannels(
           await _loadRecordingWithFeedback(path),
         );
         _recordBatchVhdrIssues(rec);
@@ -9080,6 +9332,47 @@ class _FeatureHomeState extends State<FeatureHome>
         final channels = ChannelTypeMap.autoDetect(rec.labels);
         if (channels.nonEegCount > 0) {
           _log('  Non-EEG: ${channels.nonEegChannels.join(', ')}');
+        }
+
+        Map<String, dynamic>? physioSummaryMap;
+        if (_cfg.extractPhysioEvents) {
+          final physioOpts = _physioOptionsFromCfg();
+          if (physioOpts.anyEnabled) {
+            try {
+              final physio = await _service.extractPhysioEvents(
+                recording: rec,
+                options: physioOpts,
+              );
+              final mergedMarkers = mergePhysioMarkers(
+                rec.markers,
+                physio.markers,
+                replacedTypes: physioOpts.selectedEventTypes,
+              );
+              physioSummaryMap = physio.summary.toJson();
+              rec = rec.copyWith(
+                markers: mergedMarkers,
+                provenance: {
+                  ...rec.provenance,
+                  'physio_events_summary': physioSummaryMap,
+                },
+              );
+              final stem = _stem(path);
+              await writeEeglabEvtSidecar(
+                physio.markers,
+                '$dir${Platform.pathSeparator}${stem}_physio.evt',
+              );
+              await writeBidsEventsTsv(
+                physio.rawEvents,
+                '$dir${Platform.pathSeparator}${stem}_physio_events.tsv',
+              );
+              _log(
+                '  Physio events: blinks=${physio.summary.blinkCount}, eye=${physio.summary.eyeMovementCount}, '
+                'EMG=${physio.summary.emgSurgeCount}, ECG=${physio.summary.ecgRPeakCount}',
+              );
+            } catch (e) {
+              _log('  ⚠ Physio event extraction skipped: $e');
+            }
+          }
         }
 
         var current = await _service.preprocess(
@@ -9102,6 +9395,7 @@ class _FeatureHomeState extends State<FeatureHome>
             if (msg.isNotEmpty) _log('  $msg');
           },
         );
+        final sensorOutcomeSource = current;
 
         var finalPath = outPath;
         if (_cfg.sourceLocalization) {
@@ -9129,15 +9423,33 @@ class _FeatureHomeState extends State<FeatureHome>
           _log('  ✓ Source: ${_shortName(srcPath)}');
         }
 
+        final outcomeEntry = PreprocessingOutcomeEntry.fromRecording(
+          sensorOutcomeSource,
+          sourceInputPath: path,
+          physioSummary: physioSummaryMap,
+        );
+        batchOutcomes.add(outcomeEntry);
+        for (final line in outcomeEntry.toLogLines()) {
+          _log(line);
+        }
+
         saveRecordingSubject(finalPath, _batchSubject(path), path);
         _batchSubjects[finalPath] = _batchSubject(path);
         written.add(finalPath);
         _updateBatchFile(path, 'Done', progress: 1, completed: true);
         _log('✓ Saved: $finalPath');
       } catch (e) {
+        final failStatus = _batchCancelRequested ? 'Cancelled' : 'Failed';
+        batchOutcomes.add(
+          PreprocessingOutcomeEntry.fromError(
+            path,
+            '$e',
+            status: failStatus,
+          ),
+        );
         _updateBatchFile(
           path,
-          _batchCancelRequested ? 'Cancelled' : 'Failed',
+          failStatus,
           progress: 1,
           completed: true,
           failed: !_batchCancelRequested,
@@ -9145,7 +9457,30 @@ class _FeatureHomeState extends State<FeatureHome>
         _log('✗ ERROR on ${_shortName(path)}: $e');
       }
     }
+    String? outcomesCsvPath;
+    if (batchOutcomes.isNotEmpty) {
+      try {
+        final csvFile = File(
+          '$batchDestDir${Platform.pathSeparator}Batch_Preprocessing_Outcomes.csv',
+        );
+        final jsonFile = File(
+          '$batchDestDir${Platform.pathSeparator}Batch_Preprocessing_Outcomes.json',
+        );
+        await csvFile.writeAsString(
+          PreprocessingOutcomeEntry.buildBatchCollatedCsv(batchOutcomes),
+        );
+        await jsonFile.writeAsString(
+          PreprocessingOutcomeEntry.buildBatchCollatedJson(batchOutcomes),
+        );
+        outcomesCsvPath = csvFile.path;
+        _log('✓ Collated preprocessing outcomes saved: ${csvFile.path}');
+      } catch (e) {
+        _log('⚠ Could not save collated preprocessing outcome log: $e');
+      }
+    }
     setState(() {
+      _lastBatchPreprocessOutcomes = batchOutcomes;
+      _lastBatchPreprocessCsvPath = outcomesCsvPath;
       _batchPrepOutputs
         ..clear()
         ..addAll(written);
