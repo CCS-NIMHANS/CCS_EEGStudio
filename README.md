@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/CCS-NIMHANS/CCS_EEGStudio?style=for-the-badge&color=2563eb&label=RELEASE"></a>
-  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml"><img alt="Desktop build" src="https://img.shields.io/github/actions/workflow/status/CCS-NIMHANS/CCS_EEGStudio/build.yml?style=for-the-badge&label=BUILD"></a>
-  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/CCS-NIMHANS/CCS_EEGStudio/total?style=for-the-badge&color=16a34a&label=DOWNLOADS"></a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Latest release v1.2.65" src="https://img.shields.io/badge/Release-v1.2.65-2563eb"></a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml"><img alt="Build desktop apps" src="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml/badge.svg"></a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Download for macOS, Windows, and Linux" src="https://img.shields.io/badge/Downloads-macOS%20%7C%20Windows%20%7C%20Linux-16a34a"></a>
 </p>
 
 <p align="center">
