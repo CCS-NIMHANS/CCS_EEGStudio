@@ -19,7 +19,6 @@
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/CCS-NIMHANS/CCS_EEGStudio?style=for-the-badge&color=2563eb&label=RELEASE"></a>
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml"><img alt="Desktop build" src="https://img.shields.io/github/actions/workflow/status/CCS-NIMHANS/CCS_EEGStudio/build.yml?style=for-the-badge&label=BUILD"></a>
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/CCS-NIMHANS/CCS_EEGStudio/total?style=for-the-badge&color=16a34a&label=DOWNLOADS"></a>
-  <a href="https://joss.theoj.org/"><img alt="JOSS submission" src="https://img.shields.io/badge/JOSS-submission-brightgreen?style=for-the-badge"></a>
 </p>
 
 <p align="center">
@@ -29,7 +28,6 @@
   <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
   <a href="docs/RELEASE_SOP.md"><b>Release CI SOP</b></a> ·
   <a href="CODE_SIGNING_POLICY.md"><b>Code Signing Policy</b></a> ·
-  <a href="paper/paper.md"><b>JOSS Paper</b></a> ·
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/issues"><b>Report Issue</b></a>
 </p>
 
@@ -261,16 +259,15 @@ See [Method Validation, Parity & Limitations](docs/methods_and_validation.md) fo
 
 - **Research Collaboration:** **Centre for Consciousness Studies (CCS)**, Dept. of Neurophysiology, **NIMHANS**, Bengaluru & **[Axxonet](https://axxonet.com/)**.
 - **Related Repositories:** [CCS Sleep Studio](https://github.com/CCS-NIMHANS/CCS_SleepStudio) · [CCS Mobile Studio](https://github.com/CCS-NIMHANS/CCS_MobileStudio) · [CCS PPG Studio](https://github.com/CCS-NIMHANS/CCS_PPGStudio)
-- **Scientific Validation:** [Method Validation & References](docs/methods_and_validation.md) · [JOSS Paper](paper/paper.md)
+- **Scientific Validation:** [Method Validation & References](docs/methods_and_validation.md)
 - **License:** [MIT License](LICENSE) © 2026 Dr. Arun Sasidharan, Centre for Consciousness Studies, NIMHANS.
 
 ```bibtex
-@article{Sasidharan2026CCSEEGStudio,
-  author    = {Arun Sasidharan},
-  title     = {{CCS EEG Studio}: A cross-platform desktop application for cognitive and clinical neurophysiology research, artifact cleaning, and quantitative electroencephalography},
-  journal   = {Journal of Open Source Software},
-  year      = {2026},
-  publisher = {The Open Journal},
-  url       = {https://github.com/CCS-NIMHANS/CCS_EEGStudio}
+@software{Sasidharan2026CCSEEGStudio,
+  author      = {Arun Sasidharan},
+  title       = {{CCS EEG Studio}: A cross-platform desktop application for cognitive and clinical neurophysiology research, artifact cleaning, and quantitative electroencephalography},
+  year        = {2026},
+  institution = {Centre for Consciousness Studies, NIMHANS},
+  url         = {https://github.com/CCS-NIMHANS/CCS_EEGStudio}
 }
 ```
