@@ -17,6 +17,7 @@ import 'erp/factor_grouping_designer.dart'
         FilenameCropRule,
         FactorGroupingDesignerDialog;
 import 'group_statistics_plots.dart';
+import 'theme.dart';
 
 /// Top-level entry point for running N-way permutation GLM/LMM models inside
 /// [Isolate.run] without capturing any UI [State] or [BuildContext].
@@ -249,7 +250,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   );
   bool _includeInteractions = true;
   bool _fittedFactorial = true;
-  String? _contrastFocusFactor;
+  final Set<String> _selectedContrastFactors = {};
+  String _contrastScopeMode = 'both'; // 'simple', 'marginal', 'both'
+  final Map<String, Set<String>> _selectedContrastPairs = {};
   bool _erpDiffMode = false;
   final List<({String condB, String condA})> _erpDiffPairs = [];
   String? _erpDiffCondB;
@@ -258,6 +261,11 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Map<String, dynamic>? _dartAnalysisResults;
   String? _selectedDartMetric;
   int _dartResultTab = 0;
+  String? _plotBracketFactorFilter;
+  String? _posthocTableFactorFilter;
+  bool _posthocTableSigOnly = false;
+  String _posthocTableScope = 'all'; // 'all', 'simple', 'marginal'
+  bool _isExportingStatsPlot = false;
 
   @override
   void initState() {
@@ -1230,7 +1238,13 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       }
       _dartExcludedLevels.clear();
       _dartLevelOrder.clear();
-      _contrastFocusFactor = null;
+      _selectedContrastFactors.clear();
+      _contrastScopeMode = 'both';
+      _selectedContrastPairs.clear();
+      _plotBracketFactorFilter = null;
+      _posthocTableFactorFilter = null;
+      _posthocTableSigOnly = false;
+      _posthocTableScope = 'all';
       _erpDiffMode = false;
       _erpDiffPairs.clear();
       _erpDiffCondB = null;
@@ -1278,6 +1292,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   Future<void> _openGroupedFigures({bool difference = false}) async {
     final inspection = _dartInspection;
     if (inspection == null) return;
+    final condCol = _detectConditionFactorCol(inspection);
+    final activePairs = condCol == null
+        ? const <({String condB, String condA})>[]
+        : _effectiveErpDiffPairs(inspection, condCol);
     final csv = await Navigator.of(context).push<String>(
       MaterialPageRoute(
         builder: (_) => ErpGroupFigureStudio(
@@ -1288,6 +1306,10 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           excludedLevels: _dartExcludedLevels,
           findPython: _findPythonExecutable,
           differenceOnly: difference,
+          initialPlotDifferences: !difference && _erpDiffMode,
+          initialDifferencePairs: [
+            for (final p in activePairs) [p.condB, p.condA],
+          ],
         ),
       ),
     );
@@ -1304,6 +1326,607 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           );
           _workflowStep = 1;
         });
+    }
+  }
+
+  void _assignPlotRole(String role, String? rawNext) {
+    final next = (rawNext == null || rawNext == 'None') ? null : rawNext;
+    var cfg = _plotConfig;
+    final oldVal = switch (role) {
+      'x' => cfg.xFactor,
+      'series' => cfg.seriesFactor,
+      'col' => cfg.facetColFactor,
+      'row' => cfg.facetRowFactor,
+      _ => null,
+    };
+    if (next != null) {
+      if (role != 'x' && cfg.xFactor == next) {
+        cfg = cfg.copyWith(xFactor: oldVal, clearX: oldVal == null);
+      }
+      if (role != 'series' && cfg.seriesFactor == next) {
+        cfg = cfg.copyWith(seriesFactor: oldVal, clearSeries: oldVal == null);
+      }
+      if (role != 'col' && cfg.facetColFactor == next) {
+        cfg = cfg.copyWith(
+          facetColFactor: oldVal,
+          clearFacetCol: oldVal == null,
+        );
+      }
+      if (role != 'row' && cfg.facetRowFactor == next) {
+        cfg = cfg.copyWith(
+          facetRowFactor: oldVal,
+          clearFacetRow: oldVal == null,
+        );
+      }
+    }
+    cfg = switch (role) {
+      'x' => cfg.copyWith(xFactor: next, clearX: next == null),
+      'series' => cfg.copyWith(seriesFactor: next, clearSeries: next == null),
+      'col' => cfg.copyWith(facetColFactor: next, clearFacetCol: next == null),
+      'row' => cfg.copyWith(facetRowFactor: next, clearFacetRow: next == null),
+      _ => cfg,
+    };
+    setState(() => _plotConfig = cfg);
+  }
+
+  String? _findGroupFactor(List<String> factors) {
+    for (final f in factors) {
+      final fl = f.toLowerCase();
+      if (fl == 'group' || fl.contains('cohort') || fl.contains('arm')) {
+        return f;
+      }
+    }
+    return factors.firstOrNull;
+  }
+
+  Set<String> _effectiveContrastFactors(List<String> availableFactors) {
+    final valid = _selectedContrastFactors
+        .where(availableFactors.contains)
+        .toSet();
+    return valid.isEmpty ? availableFactors.toSet() : valid;
+  }
+
+  String _describeContrastSelection(List<String> availableFactors) {
+    final sel = _effectiveContrastFactors(availableFactors);
+    final parts = <String>[];
+    for (final f in availableFactors) {
+      if (!sel.contains(f)) continue;
+      final pairs = _selectedContrastPairs[f];
+      if (pairs != null && pairs.isNotEmpty) {
+        final pairLabels = pairs
+            .map((k) {
+              final sp = k.split('\u0000');
+              return sp.length == 2
+                  ? '${_plotConfig.levelLabel(f, sp[0])} vs ${_plotConfig.levelLabel(f, sp[1])}'
+                  : k;
+            })
+            .take(3)
+            .join(', ');
+        final more = pairs.length > 3 ? ' +${pairs.length - 3}' : '';
+        parts.add('${_plotConfig.factorLabel(f)} ($pairLabels$more)');
+      } else {
+        parts.add('${_plotConfig.factorLabel(f)} (all pairs)');
+      }
+    }
+    final scopeText = switch (_contrastScopeMode) {
+      'simple' => 'Simple effects only',
+      'marginal' => 'Marginal only',
+      _ => 'Simple + Marginal',
+    };
+    return '${parts.join(' · ')} · $scopeText';
+  }
+
+  void _applyContrastSelectionToResults(Map<String, dynamic>? res) {
+    if (res == null) return;
+    final resultsList = (res['results'] as List? ?? [])
+        .cast<Map<String, dynamic>>();
+    for (final r in resultsList) {
+      final allRaw = (r['all_posthoc'] as List? ?? r['posthoc'] as List? ?? [])
+          .cast<Map<String, dynamic>>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+      r['all_posthoc'] = allRaw;
+      final factors = (r['factors'] as List? ?? []).cast<String>();
+      final selFactors = _effectiveContrastFactors(factors);
+      r['posthoc'] = ErpGroupStatsEngine.applyComparisonSelection(
+        allPosthocs: allRaw,
+        selectedFactors: selFactors,
+        scope: _contrastScopeMode,
+        selectedPairsByFactor: _selectedContrastPairs,
+        posthocMethod: _posthocMethod,
+      );
+      r['posthoc_family'] = _describeContrastSelection(factors);
+    }
+  }
+
+  Future<void> _openChoosePairsDialog(
+    List<String> availableFactors,
+    Map<String, List<String>> levelsByFactor, {
+    required bool liveUpdate,
+  }) async {
+    final selFactors = _effectiveContrastFactors(availableFactors);
+    final working = <String, Set<String>>{
+      for (final f in availableFactors)
+        if (_selectedContrastPairs[f]?.isNotEmpty ?? false)
+          f: Set<String>.from(_selectedContrastPairs[f]!),
+    };
+    final applied = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          title: const Text('Choose specific pairwise comparisons'),
+          content: SizedBox(
+            width: 640,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Select specific level pairs to test (or click a "vs Level" button to compare one reference level against all others). Leaving all unchecked includes every pair for that factor.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: CcsTheme.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  for (final f in availableFactors)
+                    if (selFactors.contains(f)) ...[
+                      Builder(
+                        builder: (_) {
+                          final lvls = levelsByFactor[f] ?? const <String>[];
+                          final allPairs = <(String, String)>[
+                            for (var i = 0; i < lvls.length; i++)
+                              for (var j = i + 1; j < lvls.length; j++)
+                                (lvls[i], lvls[j]),
+                          ];
+                          final chosen = working[f] ?? <String>{};
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 14),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  children: [
+                                    Text(
+                                      _plotConfig.factorLabel(f),
+                                      style: const TextStyle(
+                                        fontSize: 13.5,
+                                        fontWeight: FontWeight.bold,
+                                        color: CcsTheme.text,
+                                      ),
+                                    ),
+                                    ActionChip(
+                                      visualDensity: VisualDensity.compact,
+                                      label: const Text(
+                                        'All pairs',
+                                        style: TextStyle(fontSize: 11),
+                                      ),
+                                      onPressed: () => setDlgState(
+                                        () => working.remove(f),
+                                      ),
+                                    ),
+                                    for (final ref in lvls)
+                                      if (lvls.length >= 3)
+                                        ActionChip(
+                                          visualDensity: VisualDensity.compact,
+                                          label: Text(
+                                            'vs ${_plotConfig.levelLabel(f, ref)}',
+                                            style: const TextStyle(fontSize: 11),
+                                          ),
+                                          onPressed: () => setDlgState(() {
+                                            working[f] = {
+                                              for (final other in lvls)
+                                                if (other != ref)
+                                                  ErpGroupStatsEngine.canonicalPairKey(
+                                                    ref,
+                                                    other,
+                                                  ),
+                                            };
+                                          }),
+                                        ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children: [
+                                    for (final (a, b) in allPairs)
+                                      () {
+                                        final key = ErpGroupStatsEngine
+                                            .canonicalPairKey(a, b);
+                                        final isSelected =
+                                            chosen.isEmpty ||
+                                            chosen.contains(key);
+                                        return FilterChip(
+                                          visualDensity: VisualDensity.compact,
+                                          label: Text(
+                                            '${_plotConfig.levelLabel(f, a)} vs ${_plotConfig.levelLabel(f, b)}',
+                                            style: const TextStyle(fontSize: 11.5),
+                                          ),
+                                          selected: isSelected,
+                                          onSelected: (sel) => setDlgState(() {
+                                            final set = working.putIfAbsent(
+                                              f,
+                                              () => {
+                                                for (final (x, y) in allPairs)
+                                                  ErpGroupStatsEngine
+                                                      .canonicalPairKey(x, y),
+                                              },
+                                            );
+                                            if (sel) {
+                                              set.add(key);
+                                              if (set.length ==
+                                                  allPairs.length) {
+                                                working.remove(f);
+                                              }
+                                            } else {
+                                              if (set.length > 1) {
+                                                set.remove(key);
+                                              }
+                                            }
+                                          }),
+                                        );
+                                      }(),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Apply comparisons'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (applied != true || !mounted) return;
+    setState(() {
+      _selectedContrastPairs
+        ..clear()
+        ..addAll(working);
+      if (liveUpdate) {
+        _applyContrastSelectionToResults(_dartAnalysisResults);
+      }
+    });
+  }
+
+  Widget _buildComparisonSelector({
+    required List<String> availableFactors,
+    required Map<String, List<String>> levelsByFactor,
+    required bool liveUpdate,
+  }) {
+    if (availableFactors.isEmpty) return const SizedBox.shrink();
+    final selFactors = _effectiveContrastFactors(availableFactors);
+    final customPairCount = _selectedContrastPairs.entries
+        .where((e) => selFactors.contains(e.key) && e.value.isNotEmpty)
+        .fold<int>(0, (sum, e) => sum + e.value.length);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            const Text(
+              'Comparisons:',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: CcsTheme.text,
+              ),
+            ),
+            for (final f in availableFactors)
+              FilterChip(
+                visualDensity: VisualDensity.compact,
+                label: Text(
+                  _plotConfig.factorLabel(f),
+                  style: const TextStyle(fontSize: 11),
+                ),
+                selected: selFactors.contains(f),
+                onSelected: _isAnalyzing
+                    ? null
+                    : (sel) {
+                        setState(() {
+                          if (_selectedContrastFactors.isEmpty) {
+                            _selectedContrastFactors.addAll(availableFactors);
+                          }
+                          if (sel) {
+                            _selectedContrastFactors.add(f);
+                          } else if (_selectedContrastFactors.length > 1) {
+                            _selectedContrastFactors.remove(f);
+                          }
+                          final nextSel = _effectiveContrastFactors(
+                            availableFactors,
+                          );
+                          if (nextSel.length == 1) {
+                            _plotBracketFactorFilter = nextSel.first;
+                            _posthocTableFactorFilter = nextSel.first;
+                          } else {
+                            _plotBracketFactorFilter = null;
+                            _posthocTableFactorFilter = null;
+                          }
+                          if (liveUpdate) {
+                            _applyContrastSelectionToResults(
+                              _dartAnalysisResults,
+                            );
+                          }
+                        });
+                      },
+              ),
+            SegmentedButton<String>(
+              showSelectedIcon: false,
+              style: SegmentedButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                textStyle: const TextStyle(fontSize: 11),
+              ),
+              segments: const [
+                ButtonSegment(value: 'simple', label: Text('Simple')),
+                ButtonSegment(value: 'marginal', label: Text('Marginal')),
+                ButtonSegment(value: 'both', label: Text('Both')),
+              ],
+              selected: {_contrastScopeMode},
+              onSelectionChanged: _isAnalyzing
+                  ? null
+                  : (s) => setState(() {
+                      _contrastScopeMode = s.first;
+                      if (liveUpdate) {
+                        _applyContrastSelectionToResults(_dartAnalysisResults);
+                      }
+                    }),
+            ),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+              ),
+              onPressed: _isAnalyzing
+                  ? null
+                  : () => _openChoosePairsDialog(
+                      availableFactors,
+                      levelsByFactor,
+                      liveUpdate: liveUpdate,
+                    ),
+              icon: const Icon(Icons.tune, size: 14),
+              label: Text(
+                customPairCount > 0
+                    ? 'Pairs ($customPairCount chosen)…'
+                    : 'Choose pairs…',
+                style: const TextStyle(fontSize: 11),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Active comparison family (${_posthocMethod.toUpperCase()}): ${_describeContrastSelection(availableFactors)}',
+          style: const TextStyle(fontSize: 11, color: CcsTheme.textSecondary),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _applyCompareGroupsPreset({bool rerun = true}) async {
+    final activeFactors = List<String>.from(_dartFactors);
+    final groupF = _findGroupFactor(activeFactors);
+    if (groupF == null) return;
+    final others = activeFactors.where((f) => f != groupF).toList();
+    final sessionF = others
+        .where((f) => f.toLowerCase().contains('sess'))
+        .firstOrNull;
+    final condF = others
+        .where((f) => f.toLowerCase().contains('cond'))
+        .firstOrNull;
+    final xF = sessionF ?? condF ?? others.firstOrNull;
+    final colF = others.where((f) => f != xF).firstOrNull;
+    final rowF = others.where((f) => f != xF && f != colF).firstOrNull;
+    setState(() {
+      _plotConfig = _plotConfig.copyWith(
+        seriesFactor: groupF,
+        xFactor: xF,
+        clearX: xF == null,
+        facetColFactor: colF,
+        clearFacetCol: colF == null,
+        facetRowFactor: rowF,
+        clearFacetRow: rowF == null,
+      );
+      _selectedContrastFactors
+        ..clear()
+        ..add(groupF);
+      _contrastScopeMode = 'simple';
+      _plotBracketFactorFilter = groupF;
+      _posthocTableFactorFilter = groupF;
+      if (_dartAnalysisResults != null) {
+        _applyContrastSelectionToResults(_dartAnalysisResults);
+      }
+    });
+    if (rerun &&
+        _dartAnalysisResults == null &&
+        _dartInspection != null &&
+        _selectedMetrics.isNotEmpty) {
+      await _runDartPermutationAnalysis();
+    }
+  }
+
+  Future<void> _toggleResultsDifferenceMode(bool enableDiff) async {
+    final insp = _dartInspection;
+    if (insp == null) return;
+    final condCol = _detectConditionFactorCol(insp);
+    if (condCol == null) return;
+    final condLevels = _conditionLevelsForCol(insp, condCol);
+    if (condLevels.length < 2) return;
+    setState(() {
+      _erpDiffMode = enableDiff;
+      _selectedContrastPairs.remove(condCol);
+      if (enableDiff) {
+        if (_erpDiffPairs.isEmpty) {
+          final base = condLevels.contains('Freq')
+              ? 'Freq'
+              : condLevels.first;
+          for (final lvl in condLevels) {
+            if (lvl != base) {
+              _erpDiffPairs.add((condB: lvl, condA: base));
+            }
+          }
+          if (_erpDiffPairs.isNotEmpty) {
+            _erpDiffCondA = _erpDiffPairs.first.condA;
+            _erpDiffCondB = _erpDiffPairs.first.condB;
+          }
+        }
+        if (_erpDiffPairs.length >= 2 && !_dartFactors.contains(condCol)) {
+          _dartFactors.add(condCol);
+        } else if (_erpDiffPairs.length <= 1) {
+          _dropCondFactorFromRoles(condCol);
+        }
+      } else {
+        if (!_dartFactors.contains(condCol)) {
+          _dartFactors.add(condCol);
+        }
+      }
+    });
+    await _runDartPermutationAnalysis();
+  }
+
+  Future<void> _exportPublicationStatsFigure(
+    Map<String, dynamic> active,
+    Map<String, List<String>> levelsMap,
+    List<Map<String, dynamic>> posthocs,
+  ) async {
+    if (_isExportingStatsPlot) return;
+    final metric = '${active['metric'] ?? 'erp_metric'}';
+    final safeMetric = metric.replaceAll(RegExp(r'[^A-Za-z0-9_\-]+'), '_');
+    final bundle = DefaultAssetBundle.of(context);
+    final savePath = await FilePicker.saveFile(
+      dialogTitle: 'Save publication-ready statistical figure (PNG, SVG, PDF)',
+      fileName: '${safeMetric}_group_stats.png',
+      type: FileType.custom,
+      allowedExtensions: ['png'],
+    );
+    if (savePath == null || !mounted) return;
+    setState(() => _isExportingStatsPlot = true);
+    Directory? runtime;
+    try {
+      final python = await _findPythonExecutable();
+      if (python == null) {
+        throw StateError(
+          'Python with numpy, pandas, scipy, statsmodels and matplotlib is required.',
+        );
+      }
+      runtime = await Directory.systemTemp.createTemp('ccs-stats-pubfig-');
+      for (final name in ['erp_group_figures.py', 'group_stats.py']) {
+        await File(
+          '${runtime.path}${Platform.pathSeparator}$name',
+        ).writeAsString(await bundle.loadString('assets/$name'));
+      }
+      final outFile = File(savePath);
+      final stem = savePath.replaceFirst(RegExp(r'\.(png|svg|pdf)$', caseSensitive: false), '');
+      final rowLevels = _plotConfig.facetRowFactor == null
+          ? const ['All']
+          : (levelsMap[_plotConfig.facetRowFactor!] ?? const ['All']);
+      final colLevels = _plotConfig.facetColFactor == null
+          ? const ['All']
+          : (levelsMap[_plotConfig.facetColFactor!] ?? const ['All']);
+      final activeFactors = (active['factors'] as List? ?? []).cast<String>();
+      final bracketsByPanel = <String, List<Map<String, dynamic>>>{};
+      for (final r in rowLevels) {
+        for (final c in colLevels) {
+          final bList = statsPlotBrackets(
+            config: _plotConfig,
+            contrasts: posthocs,
+            factors: activeFactors,
+            levels: levelsMap,
+            row: _plotConfig.facetRowFactor == null ? null : r,
+            column: _plotConfig.facetColFactor == null ? null : c,
+            bracketFactorFilter: _plotBracketFactorFilter,
+          ).take(8).toList();
+          bracketsByPanel['$r|$c'] = [
+            for (final b in bList)
+              {
+                'x_a': b.xA,
+                'x_b': b.xB,
+                'series_a': b.seriesA,
+                'series_b': b.seriesB,
+                'label': b.label,
+              },
+          ];
+        }
+      }
+      final payload = <String, dynamic>{
+        'mode': 'stats_plot',
+        'folder': outFile.parent.path,
+        'output_dir': outFile.parent.path,
+        'output_stem': stem,
+        'dpi': 300,
+        'font_size': 10,
+        'stats_payload': {
+          'metric_label': groupMetricLabel(metric),
+          'model_summary':
+              '${active['model_type']} · N=${active['n_obs']}, participants=${active['n_subjects']}',
+          'contrast_summary':
+              '${active['posthoc_family'] ?? 'Adjusted pairwise contrasts'} (${_posthocMethod.toUpperCase()})',
+          'plot_type': _plotConfig.plotType.name,
+          'use_sem': _plotConfig.useSem,
+          'x_factor': _plotConfig.xFactor,
+          'series_factor': _plotConfig.seriesFactor,
+          'facet_col_factor': _plotConfig.facetColFactor,
+          'facet_row_factor': _plotConfig.facetRowFactor,
+          'factor_labels': _plotConfig.factorLabels,
+          'level_labels': _plotConfig.levelLabels,
+          'series_colors': _plotConfig.seriesColors,
+          'factor_levels': levelsMap,
+          'cell_descriptives': active['cell_descriptives'] ?? {},
+          'brackets_by_panel': bracketsByPanel,
+          'bracket_factor_filter': _plotBracketFactorFilter,
+        },
+      };
+      final inFile = File('${runtime.path}${Platform.pathSeparator}input.json');
+      final resFile = File('${runtime.path}${Platform.pathSeparator}result.json');
+      await inFile.writeAsString(jsonEncode(payload));
+      final proc = await Process.run(
+        python,
+        [
+          '${runtime.path}${Platform.pathSeparator}erp_group_figures.py',
+          inFile.path,
+          resFile.path,
+        ],
+        environment: {
+          'MPLCONFIGDIR': '${runtime.path}${Platform.pathSeparator}mpl',
+          'OPENBLAS_NUM_THREADS': '1',
+        },
+      );
+      if (proc.exitCode != 0) {
+        throw StateError('${proc.stderr}'.trim());
+      }
+      if (mounted) {
+        _showSnack('Saved publication figure PNG, SVG & PDF at $stem.*');
+      }
+    } catch (e) {
+      if (mounted) _showSnack('Export failed: $e');
+    } finally {
+      if (runtime != null) await runtime.delete(recursive: true);
+      if (mounted) setState(() => _isExportingStatsPlot = false);
     }
   }
 
@@ -1702,11 +2325,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         'nPermutations': nPerm,
         'excludedLevels': excluded,
         'customLevelOrder': order,
-        'contrastFactors':
-            (_contrastFocusFactor != null &&
-                factors.contains(_contrastFocusFactor))
-            ? [_contrastFocusFactor!]
-            : <String>[],
+        'contrastFactors': <String>[],
       };
 
       final res = _fittedFactorial
@@ -1722,6 +2341,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
         _showSnack('${res['error']}');
         return;
       }
+      _applyContrastSelectionToResults(res);
       final resultsList = (res['results'] as List? ?? [])
           .cast<Map<String, dynamic>>();
       setState(() {
@@ -1763,27 +2383,9 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: ThemeData.dark(useMaterial3: true).copyWith(
-        scaffoldBackgroundColor: const Color(0xFFF8F9FB),
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF38BDF8),
-          brightness: Brightness.dark,
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: const Color(0xFFFFFFFF),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
-          ),
-        ),
-      ),
+      data: buildCcsLightTheme(),
       child: Container(
-        color: const Color(0xFFF0F4F8),
+        color: CcsTheme.panel,
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -1849,7 +2451,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     padding: EdgeInsets.only(bottom: 6),
                     child: Text(
                       'Select at least one measurement above to enable Run.',
-                      style: TextStyle(color: Color(0xFF94A3B8)),
+                      style: TextStyle(color: CcsTheme.textSecondary),
                     ),
                   ),
                 _buildActionRunCard(),
@@ -1865,11 +2467,6 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   ),
                 ),
               if (_workflowStep == 2 && _dartAnalysisResults != null) ...[
-                TextButton.icon(
-                  onPressed: _exportFactorialResults,
-                  icon: const Icon(Icons.save_alt),
-                  label: const Text('Export effects, contrasts & plot labels…'),
-                ),
                 _buildDartResultsCard(),
                 const SizedBox(height: 12),
               ],
@@ -2566,6 +3163,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
           : 'None';
       return Expanded(
         child: DropdownButtonFormField<String>(
+          key: ValueKey('role-$label-$cur'),
           initialValue: cur,
           isExpanded: true,
           decoration: InputDecoration(
@@ -2671,70 +3269,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 '$f ← ${(_dartInspection?['column_sources'] as Map? ?? {})[f] ?? "measurement table"}',
                 style: const TextStyle(fontSize: 11.5, color: Color(0xFF475569)),
               ),
-            if (_dartFactors.length >= 2) ...[
+            if (_dartFactors.isNotEmpty) ...[
               const SizedBox(height: 10),
-              Builder(
-                builder: (context) {
-                  final effectiveContrastFocus =
-                      (_contrastFocusFactor != null &&
-                          _dartFactors.contains(_contrastFocusFactor))
-                      ? _contrastFocusFactor
-                      : null;
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          const Text(
-                            'Pairwise comparisons (Contrast scope):',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          ChoiceChip(
-                            label: const Text(
-                              'All factors',
-                              style: TextStyle(fontSize: 11.5),
-                            ),
-                            selected: effectiveContrastFocus == null,
-                            onSelected: _isAnalyzing
-                                ? null
-                                : (_) => setState(
-                                    () => _contrastFocusFactor = null,
-                                  ),
-                          ),
-                          for (final f in _dartFactors)
-                            ChoiceChip(
-                              label: Text(
-                                '${_plotConfig.factorLabel(f)} only',
-                                style: const TextStyle(fontSize: 11.5),
-                              ),
-                              selected: effectiveContrastFocus == f,
-                              onSelected: _isAnalyzing
-                                  ? null
-                                  : (_) => setState(
-                                      () => _contrastFocusFactor = f,
-                                    ),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        effectiveContrastFocus == null
-                            ? 'Model tests all selected factors & interactions; pairwise contrasts & FDR/Bonferroni run across all selected factors.'
-                            : 'Model still tests all factors & interactions, while pairwise contrasts & FDR/Bonferroni focus only on ${_plotConfig.factorLabel(effectiveContrastFocus)} (overall and within each level of other factors).',
-                        style: const TextStyle(
-                          fontSize: 11.5,
-                          color: Color(0xFF475569),
-                        ),
-                      ),
-                    ],
-                  );
-                },
+              _buildComparisonSelector(
+                availableFactors: _dartFactors,
+                levelsByFactor: effectiveLevelsMap,
+                liveUpdate: false,
               ),
             ],
             const SizedBox(height: 10),
@@ -2844,9 +3384,12 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                                   child: Text('Bonferroni'),
                                 ),
                               ],
-                              onChanged: (v) => setState(
-                                () => _posthocMethod = v ?? 'fdr',
-                              ),
+                              onChanged: (v) => setState(() {
+                                _posthocMethod = v ?? 'fdr';
+                                _applyContrastSelectionToResults(
+                                  _dartAnalysisResults,
+                                );
+                              }),
                             ),
                           ),
                         ],
@@ -3171,41 +3714,25 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     roleDropdown(
                       'X-Axis (Points)',
                       _plotConfig.xFactor,
-                      (v) => setState(
-                        () => _plotConfig = v == null || v == 'None'
-                            ? _plotConfig.copyWith(clearX: true)
-                            : _plotConfig.copyWith(xFactor: v),
-                      ),
+                      (v) => _assignPlotRole('x', v),
                     ),
                     const SizedBox(width: 8),
                     roleDropdown(
                       'Lines / Hue (Series)',
                       _plotConfig.seriesFactor,
-                      (v) => setState(
-                        () => _plotConfig = v == null || v == 'None'
-                            ? _plotConfig.copyWith(clearSeries: true)
-                            : _plotConfig.copyWith(seriesFactor: v),
-                      ),
+                      (v) => _assignPlotRole('series', v),
                     ),
                     const SizedBox(width: 8),
                     roleDropdown(
                       'Subplot Columns',
                       _plotConfig.facetColFactor,
-                      (v) => setState(
-                        () => _plotConfig = v == null || v == 'None'
-                            ? _plotConfig.copyWith(clearFacetCol: true)
-                            : _plotConfig.copyWith(facetColFactor: v),
-                      ),
+                      (v) => _assignPlotRole('col', v),
                     ),
                     const SizedBox(width: 8),
                     roleDropdown(
                       'Subplot Rows',
                       _plotConfig.facetRowFactor,
-                      (v) => setState(
-                        () => _plotConfig = v == null || v == 'None'
-                            ? _plotConfig.copyWith(clearFacetRow: true)
-                            : _plotConfig.copyWith(facetRowFactor: v),
-                      ),
+                      (v) => _assignPlotRole('row', v),
                     ),
                   ],
                 ),
@@ -3395,6 +3922,7 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
       (r) => r['metric'] == _selectedDartMetric,
       orElse: () => resList.first,
     );
+    final activeFactors = (active['factors'] as List? ?? []).cast<String>();
     final levelsMap = <String, List<String>>{};
     final rawLevels = (active['factor_levels'] as Map<String, dynamic>? ?? {});
     for (final e in rawLevels.entries) {
@@ -3414,9 +3942,70 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
     final posthocs = (active['posthoc'] as List? ?? [])
         .cast<Map<String, dynamic>>();
 
+    final condCol = _detectConditionFactorCol(_dartInspection);
+    final condLevels = condCol == null
+        ? const <String>[]
+        : _conditionLevelsForCol(_dartInspection, condCol);
+    final canToggleDiff = condCol != null && condLevels.length >= 2;
+    final hasErpMetrics = (_dartInspection?['metric_columns'] as List? ?? [])
+        .any((m) => '$m'.endsWith('_ERP'));
+    final groupFactor = _findGroupFactor(_dartFactors);
+    final roleChoices = ['None', ...activeFactors];
+
+    Widget compactRolePicker(String label, String? value, String role) {
+      final cur = (value != null && roleChoices.contains(value))
+          ? value
+          : 'None';
+      return SizedBox(
+        width: 148,
+        child: DropdownButtonFormField<String>(
+          key: ValueKey('res-role-$role-$cur'),
+          initialValue: cur,
+          isExpanded: true,
+          decoration: InputDecoration(
+            labelText: label,
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 8,
+            ),
+            border: const OutlineInputBorder(),
+          ),
+          items: [
+            for (final f in roleChoices)
+              DropdownMenuItem(
+                value: f,
+                child: Text(
+                  _plotConfig.factorLabel(f),
+                  style: const TextStyle(fontSize: 12),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+          onChanged: (v) => _assignPlotRole(role, v),
+        ),
+      );
+    }
+
+    final contrastSummary =
+        '${active['posthoc_family'] ?? _describeContrastSelection(activeFactors)} (${_posthocMethod.toUpperCase()})';
+
+    final filteredPosthocs = posthocs.where((c) {
+      if (_posthocTableSigOnly && c['significant'] != true) return false;
+      if (_posthocTableFactorFilter != null &&
+          activeFactors.contains(_posthocTableFactorFilter) &&
+          '${c['factor']}' != _posthocTableFactorFilter) {
+        return false;
+      }
+      final stratum = c['stratum'] as Map? ?? const {};
+      if (_posthocTableScope == 'simple' && stratum.isEmpty) return false;
+      if (_posthocTableScope == 'marginal' && stratum.isNotEmpty) return false;
+      return true;
+    }).toList();
+
     return Card(
       elevation: 0,
-      color: const Color(0xFFFFFFFF),
+      color: CcsTheme.surface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: Colors.teal.shade300),
@@ -3440,13 +4029,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
+                      color: CcsTheme.text,
                     ),
                   ),
                 ),
                 SizedBox(
                   width: 310,
                   child: DropdownButtonFormField<String>(
+                    key: ValueKey('res-metric-${active['metric']}'),
                     initialValue: active['metric'] as String?,
                     isExpanded: true,
                     decoration: const InputDecoration(
@@ -3470,25 +4060,202 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
               ],
             ),
             const SizedBox(height: 10),
+            // Quick-Control Bar: switch Raw vs Difference, Contrast Scope, Layout, and Export in 1 click
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: CcsTheme.panel,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: CcsTheme.border),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      if (canToggleDiff) ...[
+                        const Text(
+                          'Data:',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            color: CcsTheme.text,
+                          ),
+                        ),
+                        SegmentedButton<bool>(
+                          showSelectedIcon: false,
+                          style: SegmentedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            textStyle: const TextStyle(fontSize: 11.5),
+                          ),
+                          segments: const [
+                            ButtonSegment(
+                              value: false,
+                              label: Text('Raw ERPs'),
+                            ),
+                            ButtonSegment(
+                              value: true,
+                              label: Text('ERP Differences'),
+                            ),
+                          ],
+                          selected: {_erpDiffMode},
+                          onSelectionChanged: _isAnalyzing
+                              ? null
+                              : (s) => _toggleResultsDifferenceMode(s.first),
+                        ),
+                      ],
+                      if (groupFactor != null && _dartFactors.length >= 2)
+                        FilledButton.tonalIcon(
+                          onPressed: _isAnalyzing
+                              ? null
+                              : () => _applyCompareGroupsPreset(rerun: true),
+                          icon: const Icon(Icons.groups, size: 16),
+                          label: Text(
+                            'Compare ${_plotConfig.factorLabel(groupFactor)}s',
+                            style: const TextStyle(fontSize: 11.5),
+                          ),
+                        ),
+                      OutlinedButton.icon(
+                        onPressed: _isAnalyzing || _isExportingStatsPlot
+                            ? null
+                            : () => _exportPublicationStatsFigure(
+                                active,
+                                levelsMap,
+                                posthocs,
+                              ),
+                        icon: _isExportingStatsPlot
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.publish, size: 16),
+                        label: const Text(
+                          'Export Stats Figure (PNG/SVG/PDF)…',
+                          style: TextStyle(fontSize: 11.5),
+                        ),
+                      ),
+                      if (hasErpMetrics)
+                        OutlinedButton.icon(
+                          onPressed: _isAnalyzing
+                              ? null
+                              : () => _openGroupedFigures(),
+                          icon: const Icon(Icons.waves, size: 16),
+                          label: const Text(
+                            'ERP Waveforms & Topomaps…',
+                            style: TextStyle(fontSize: 11.5),
+                          ),
+                        ),
+                      TextButton.icon(
+                        onPressed: _exportFactorialResults,
+                        icon: const Icon(Icons.save_alt, size: 16),
+                        label: const Text(
+                          'Export JSON & CSV…',
+                          style: TextStyle(fontSize: 11.5),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (activeFactors.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _buildComparisonSelector(
+                      availableFactors: activeFactors,
+                      levelsByFactor: levelsMap,
+                      liveUpdate: true,
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      compactRolePicker('X-Axis', _plotConfig.xFactor, 'x'),
+                      compactRolePicker(
+                        'Lines / Hue',
+                        _plotConfig.seriesFactor,
+                        'series',
+                      ),
+                      compactRolePicker(
+                        'Columns',
+                        _plotConfig.facetColFactor,
+                        'col',
+                      ),
+                      compactRolePicker(
+                        'Rows',
+                        _plotConfig.facetRowFactor,
+                        'row',
+                      ),
+                      SegmentedButton<StatsPlotType>(
+                        showSelectedIcon: false,
+                        style: SegmentedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          textStyle: const TextStyle(fontSize: 11),
+                        ),
+                        segments: const [
+                          ButtonSegment(
+                            value: StatsPlotType.line,
+                            label: Text('Line'),
+                          ),
+                          ButtonSegment(
+                            value: StatsPlotType.bar,
+                            label: Text('Bar'),
+                          ),
+                          ButtonSegment(
+                            value: StatsPlotType.boxplot,
+                            label: Text('Box'),
+                          ),
+                        ],
+                        selected: {_plotConfig.plotType},
+                        onSelectionChanged: (s) => setState(
+                          () => _plotConfig = _plotConfig.copyWith(
+                            plotType: s.first,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
             Text(
               '${groupMetricLabel("${active['metric']}")} · ${active['n_subjects']} participants · ${active['n_obs']} measurement rows',
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                color: CcsTheme.text,
+              ),
             ),
+            const SizedBox(height: 2),
             Text(
-              'Test statistic: ${active['test_statistic'] ?? 'F'}. Participant/cell means are used for fitted models. ${active['posthoc_family'] ?? 'Adjusted across all reported contrasts for this metric.'}',
+              'Test statistic: ${active['test_statistic'] ?? 'F'}. $contrastSummary.',
+              style: const TextStyle(
+                fontSize: 12,
+                color: CcsTheme.textSecondary,
+              ),
             ),
             if (active['inference_note'] != null)
               Text(
                 '${active['inference_note']}',
-                style: const TextStyle(fontSize: 11),
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: CcsTheme.textSecondary,
+                ),
               ),
             for (final warning in (active['warnings'] as List? ?? []))
               Text(
                 'Model warning: $warning',
-                style: const TextStyle(color: Colors.amber, fontSize: 11),
+                style: const TextStyle(color: Color(0xFFB45309), fontSize: 11),
               ),
             const SizedBox(height: 6),
             const Text(
-              'Plot shows the included groups. Effects tested asks whether each factor or interaction differs; Pairwise comparisons shows which levels differ. Read the corrected p-values when comparing several levels.',
+              'Plot shows the included groups. Effects tested asks whether each factor or interaction differs; Pairwise comparisons shows which levels differ.',
+              style: TextStyle(fontSize: 12, color: CcsTheme.textSecondary),
             ),
             const SizedBox(height: 10),
             SegmentedButton<int>(
@@ -3510,11 +4277,14 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                 cellDescriptives:
                     (active['cell_descriptives'] as Map<String, dynamic>? ??
                     {}),
-                activeFactors: (active['factors'] as List? ?? [])
-                    .cast<String>(),
+                activeFactors: activeFactors,
                 isDummyPreview: false,
                 height: 380,
                 posthocs: posthocs,
+                initialBracketFactor: _plotBracketFactorFilter,
+                contrastSummary: contrastSummary,
+                onBracketFactorChanged: (v) =>
+                    setState(() => _plotBracketFactorFilter = v),
               )
             else if (_dartResultTab == 1)
               SingleChildScrollView(
@@ -3571,55 +4341,159 @@ class _GroupStatisticsWorkbenchState extends State<GroupStatisticsWorkbench> {
                   ],
                 ),
               )
-            else
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: DataTable(
-                  columns: const [
-                    DataColumn(label: Text('Factor')),
-                    DataColumn(label: Text('Comparison')),
-                    DataColumn(label: Text('Diff')),
-                    DataColumn(label: Text('t / z')),
-                    DataColumn(label: Text('p (raw)')),
-                    DataColumn(label: Text('p (adj)')),
-                  ],
-                  rows: [
-                    for (final c in posthocs)
-                      DataRow(
-                        cells: [
-                          DataCell(
-                            Text(
-                              '${_plotConfig.factorLabel("${c['factor']}")} · ${(c['stratum'] as Map? ?? {}).entries.map((e) => '${_plotConfig.factorLabel("${e.key}")}=${_plotConfig.levelLabel("${e.key}", "${e.value}")}').join(', ')}',
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              '${_plotConfig.levelLabel("${c['factor']}", "${c['group_a']}")} vs ${_plotConfig.levelLabel("${c['factor']}", "${c['group_b']}")}',
-                            ),
-                          ),
-                          DataCell(
-                            Text((c['mean_diff'] as num).toStringAsFixed(3)),
-                          ),
-                          DataCell(
-                            Text((c['t_stat'] as num).toStringAsFixed(3)),
-                          ),
-                          DataCell(Text(_formatP(c['p_raw'] as num?))),
-                          DataCell(
-                            Text(
-                              _formatP(c['p_adj'] as num?),
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: c['significant'] == true
-                                    ? Colors.teal.shade700
-                                    : null,
-                              ),
-                            ),
-                          ),
-                        ],
+            else ...[
+              Container(
+                padding: const EdgeInsets.all(10),
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  color: CcsTheme.panel,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: CcsTheme.border),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Showing ${filteredPosthocs.length} of ${posthocs.length} contrasts (${posthocs.where((c) => c['significant'] == true).length} significant at adjusted p < .05) · Correction: ${_posthocMethod.toUpperCase()} · Diff = level B − level A',
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: CcsTheme.text,
                       ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        FilterChip(
+                          label: const Text(
+                            'Significant only',
+                            style: TextStyle(fontSize: 11),
+                          ),
+                          selected: _posthocTableSigOnly,
+                          onSelected: (v) =>
+                              setState(() => _posthocTableSigOnly = v),
+                        ),
+                        ChoiceChip(
+                          label: const Text(
+                            'All factors',
+                            style: TextStyle(fontSize: 11),
+                          ),
+                          selected: _posthocTableFactorFilter == null,
+                          onSelected: (_) =>
+                              setState(() => _posthocTableFactorFilter = null),
+                        ),
+                        for (final f in activeFactors)
+                          ChoiceChip(
+                            label: Text(
+                              _plotConfig.factorLabel(f),
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            selected: _posthocTableFactorFilter == f,
+                            onSelected: (_) =>
+                                setState(() => _posthocTableFactorFilter = f),
+                          ),
+                        const SizedBox(width: 8),
+                        SegmentedButton<String>(
+                          showSelectedIcon: false,
+                          style: SegmentedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            textStyle: const TextStyle(fontSize: 11),
+                          ),
+                          segments: const [
+                            ButtonSegment(
+                              value: 'all',
+                              label: Text('All scopes'),
+                            ),
+                            ButtonSegment(
+                              value: 'simple',
+                              label: Text('Simple effects'),
+                            ),
+                            ButtonSegment(
+                              value: 'marginal',
+                              label: Text('Marginal'),
+                            ),
+                          ],
+                          selected: {_posthocTableScope},
+                          onSelectionChanged: (s) =>
+                              setState(() => _posthocTableScope = s.first),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
+              if (filteredPosthocs.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text(
+                    'No contrasts match the current filter. Clear "Significant only" or switch factor scope above.',
+                    style: TextStyle(color: CcsTheme.textSecondary),
+                  ),
+                )
+              else
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: DataTable(
+                    columns: const [
+                      DataColumn(label: Text('Factor')),
+                      DataColumn(label: Text('Within (Stratum)')),
+                      DataColumn(label: Text('Comparison (A vs B)')),
+                      DataColumn(label: Text('Diff (B−A)')),
+                      DataColumn(label: Text('t / z')),
+                      DataColumn(label: Text('p (raw)')),
+                      DataColumn(label: Text('p (adj)')),
+                    ],
+                    rows: [
+                      for (final c in filteredPosthocs)
+                        DataRow(
+                          cells: [
+                            DataCell(
+                              Text(_plotConfig.factorLabel('${c['factor']}')),
+                            ),
+                            DataCell(
+                              Text(() {
+                                final stratum = c['stratum'] as Map? ?? {};
+                                if (stratum.isEmpty) return 'Marginal (overall)';
+                                return stratum.entries
+                                    .map(
+                                      (e) =>
+                                          '${_plotConfig.factorLabel("${e.key}")}=${_plotConfig.levelLabel("${e.key}", "${e.value}")}',
+                                    )
+                                    .join(', ');
+                              }()),
+                            ),
+                            DataCell(
+                              Text(
+                                '${_plotConfig.levelLabel("${c['factor']}", "${c['group_a']}")} vs ${_plotConfig.levelLabel("${c['factor']}", "${c['group_b']}")}',
+                              ),
+                            ),
+                            DataCell(
+                              Text((c['mean_diff'] as num).toStringAsFixed(3)),
+                            ),
+                            DataCell(
+                              Text((c['t_stat'] as num).toStringAsFixed(3)),
+                            ),
+                            DataCell(Text(_formatP(c['p_raw'] as num?))),
+                            DataCell(
+                              Text(
+                                _formatP(c['p_adj'] as num?),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: c['significant'] == true
+                                      ? Colors.teal.shade700
+                                      : null,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+            ],
           ],
         ),
       ),

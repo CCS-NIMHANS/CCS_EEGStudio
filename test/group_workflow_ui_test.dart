@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ccs_eeg_app/src/group_statistics.dart';
+import 'package:ccs_eeg_app/src/theme.dart';
 
 void main() {
   testWidgets(
-    'group workflow stays readable in the dark app and exposes folder selection',
+    'group workflow stays readable in the light app and exposes folder selection',
     (tester) async {
       await tester.pumpWidget(
         MaterialApp(
-          theme: ThemeData.dark(),
+          theme: buildCcsLightTheme(),
           home: const Scaffold(
             body: SingleChildScrollView(child: GroupStatisticsWorkbench()),
           ),
@@ -17,7 +18,7 @@ void main() {
       expect(find.text('Load results folder'), findsOneWidget);
       expect(find.text('Choose feature files'), findsOneWidget);
       final element = tester.element(find.text('Measurements and participant groups'));
-      expect(Theme.of(element).brightness, Brightness.dark);
+      expect(Theme.of(element).brightness, Brightness.light);
     },
   );
 }

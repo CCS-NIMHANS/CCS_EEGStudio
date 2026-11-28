@@ -94,5 +94,44 @@ class GroupFigures(unittest.TestCase):
                 self.assertEqual(len(source),2)
                 self.assertEqual([v['n_subjects'] for v in source.values()],[2,2])
 
+    def test_2d_grid_mismatched_topo_channels_differences_and_stats_plot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);metadata=[]
+            for person,grp,chs in [('P1','CON',['Fp1','Fp2','F9','P3','P4']),('P2','ADV',['Fp1','Fp2','FT9','P3','P4'])]:
+                for sess in ['03','05']:
+                    subject=f'{person}SESSION{sess}';path=root/f'{subject}.ccseeg.json'
+                    freq=[[1.0]*3 for _ in chs];rare=[[3.0]*3 for _ in chs]
+                    record=dict(path=str(path),subject=subject,task='Custom',labels=chs,times=[-.2,0,.4],condition_names=['Freq','Rare'],channel_conditions={'Freq':freq,'Rare':rare})
+                    (root/f'{subject}_erp_results.ccserp').write_text(json.dumps({'schema':'ccs-erp-workbench-v1','files':[record]}))
+                    for cond in ['Freq','Rare']:
+                        metadata.append(dict(filename=str(path),subjid=subject,participant_id=person,group=grp,Session=sess,Condition=cond))
+            opts=dict(folder=str(root),output_dir=str(root/'plots'),metadata=metadata,subject_col='participant_id',series_factor='group',facet_factor='Session',channels='Fp1',auto_size=True,dpi=80)
+            # 2D grid raw waveforms + difference waveforms
+            res_erp=figures.render({**opts,'mode':'erp','plot_differences_only':True,'difference_pairs':[['Rare','Freq']]})
+            self.assertTrue(all(Path(p).is_file() for p in res_erp['paths']))
+            with (root/'plots/GrandAverage_erp.csv').open() as stream:
+                rows=list(csv.DictReader(stream))
+            self.assertEqual({r['condition'] for r in rows},{'Rare − Freq'})
+            self.assertEqual(float(rows[0]['mean']),2.0)
+            # Topo aligns across F9 vs FT9 without skipping P2
+            res_topo=figures.render({**opts,'mode':'topo','window_start':0,'window_end':400,'plot_differences_only':True,'difference_pairs':[['Rare','Freq']]})
+            self.assertTrue(all(Path(p).is_file() for p in res_topo['paths']))
+            self.assertEqual(res_topo['warnings'],[])
+            # Publication stats plot export
+            res_stats=figures.render({
+                'mode':'stats_plot','output_dir':str(root/'plots'),'output_stem':str(root/'plots/pub_stats'),'dpi':80,
+                'stats_payload':{
+                    'metric_label':'Mean amplitude (µV)','plot_type':'boxplot','use_sem':True,
+                    'x_factor':'Session','series_factor':'group','facet_col_factor':'Condition',
+                    'factor_levels':{'Session':['03','05'],'group':['CON','ADV'],'Condition':['Rare − Freq']},
+                    'cell_descriptives':{
+                        'Session=03|group=CON|Condition=Rare − Freq':{'values':[1.0,1.5,2.0]},
+                        'Session=03|group=ADV|Condition=Rare − Freq':{'values':[0.2,0.5,0.8]},
+                    },
+                    'brackets_by_panel':{'All|Rare − Freq':[{'x_a':0,'x_b':0,'series_a':0,'series_b':1,'label':'CON–ADV *'}]},
+                },
+            })
+            self.assertTrue(all(Path(p).is_file() for p in res_stats['paths']))
+
 
 if __name__=='__main__':unittest.main()

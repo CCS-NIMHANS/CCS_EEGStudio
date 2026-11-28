@@ -1162,7 +1162,7 @@ class _FactorGroupingDesignerDialogState
                 const Icon(
                   Icons.filter_alt_outlined,
                   size: 16,
-                  color: Colors.amber,
+                  color: Color(0xFFB45309),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -1260,7 +1260,7 @@ class _FactorGroupingDesignerDialogState
                                       style: TextStyle(
                                         fontSize: 11,
                                         color: isUnknown && isIncluded
-                                            ? Colors.amber.shade200
+                                            ? const Color(0xFFB45309)
                                             : null,
                                       ),
                                     ),
@@ -1349,7 +1349,7 @@ class _FactorGroupingDesignerDialogState
           Icon(
             _factorNames.isEmpty ? Icons.info_outline : Icons.check_circle_outline,
             size: 16,
-            color: _factorNames.isEmpty ? Colors.amber : Color(0xFF16A34A),
+            color: _factorNames.isEmpty ? const Color(0xFFB45309) : const Color(0xFF16A34A),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -1393,7 +1393,7 @@ class _FactorGroupingDesignerDialogState
                 onPressed: _excludeAllUnknown,
                 child: Text(
                   'Exclude Unknown (${activeUnknown.length})',
-                  style: const TextStyle(fontSize: 11, color: Colors.amber),
+                  style: const TextStyle(fontSize: 11, color: Color(0xFFB45309)),
                 ),
               ),
             TextButton(

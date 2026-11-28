@@ -16,13 +16,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Latest release v1.2.66" src="https://img.shields.io/badge/Release-v1.2.66-2563eb"></a>
+  <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Latest release v1.2.67" src="https://img.shields.io/badge/Release-v1.2.67-2563eb"></a>
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml"><img alt="Build desktop apps" src="https://github.com/CCS-NIMHANS/CCS_EEGStudio/actions/workflows/build.yml/badge.svg"></a>
   <a href="https://github.com/CCS-NIMHANS/CCS_EEGStudio/releases/latest"><img alt="Download for macOS, Windows, and Linux" src="https://img.shields.io/badge/Downloads-macOS%20%7C%20Windows%20%7C%20Linux-16a34a"></a>
 </p>
 
 <p align="center">
-  <b>Current version: 1.2.66</b> ·
+  <b>Current version: 1.2.67</b> ·
   <a href="docs/wiki/Home.md"><b>Visual Wiki</b></a> ·
   <a href="CHANGELOG.md"><b>Release Notes</b></a> ·
   <a href="docs/methods_and_validation.md"><b>Methods &amp; Validation</b></a> ·
@@ -70,6 +70,12 @@ Non-admin users can install/update per-user without `sudo` (see [Server Controls
 </p>
 
 ---
+
+## ✨ What's New in v1.2.67
+
+- **Light Theme Contrast & Readability Fixes:** Replaced the dark-theme overlay inside `GroupStatisticsWorkbench` with `buildCcsLightTheme()` and audited low-contrast text, segmented buttons, chips, expansion tiles, and plots across Microstates, ERP Workbench, Connectivity, Source Review, and Group Statistics.
+- **Flexible Post-Hoc Comparison Picker & Streamlined Results:** Choose any subset of factors, comparison scope (`Simple`, `Marginal`, or `Both`), and specific level pairs (`Choose pairs…` with 1-click `vs Reference` shortcuts) with instant in-place FDR/Bonferroni re-adjustment, a 1-click `Compare groups` preset, inline `Raw ERPs` vs `ERP Differences` switching, plot bracket filtering, and 1-click `Export Stats Figure (PNG/SVG/PDF)…`.
+- **Redesigned Grouped ERP Waveforms & Topomaps:** Smart 2D `facet × condition` waveform grids with one shared top legend, real 2D `cohort × condition` topography grids with one shared colorbar, canonical 10–20 channel alignment across heterogeneous channel orders (e.g. `F9`/`FT9`), and participant-level ERP difference waveforms and difference topomaps.
 
 ## ✨ What's New in v1.2.66
 

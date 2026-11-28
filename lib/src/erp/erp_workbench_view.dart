@@ -561,7 +561,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   'Select any recording above to inspect individual traces.',
                   textAlign: TextAlign.right,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+                  style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
                 ),
               ),
             ],
@@ -2281,7 +2281,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   padding: const EdgeInsets.only(left: 8, bottom: 4),
                   child: Text(
                     '• ${ec.name.isNotEmpty ? ec.name : "Condition"} (0 trials; expected: ${ec.codes.isNotEmpty ? ec.codes.join(", ") : "no groups assigned"})',
-                    style: const TextStyle(color: Colors.amber),
+                    style: const TextStyle(color: Color(0xFFB45309)),
                   ),
                 ),
               const SizedBox(height: 12),
@@ -2901,7 +2901,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                   child: Text(
                     'Conditions share amplitude scale; difference map shows B − A contrast',
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+                    style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
                   ),
                 ),
               ],
@@ -3737,7 +3737,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         style: TextStyle(
                           fontSize: 10,
                           color: _emptyConditions.isNotEmpty && !_busy
-                              ? Colors.amber.shade300
+                              ? const Color(0xFFB45309)
                               : null,
                         ),
                       ),
@@ -4226,7 +4226,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
   }) {
     const cardColor = Color(0xFFFFFFFF);
     const borderColor = Color(0xFFCBD5E1);
-    const textMuted = Color(0xFF94A3B8);
+    const textMuted = Color(0xFF475569);
 
     return Material(
       color: cardColor,
@@ -4364,7 +4364,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
     }
     const accentPurple = Color(0xFF8B5CF6);
     const borderColor = Color(0xFFCBD5E1);
-    const textMuted = Color(0xFF94A3B8);
+    const textMuted = Color(0xFF475569);
 
     return _erpBatchCardShell(
       title: 'Stage 1: Preprocessing',
@@ -5701,7 +5701,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
               children: [
                 Row(
                   children: [
-                    Icon(Icons.warning_amber_rounded, size: 18, color: Colors.amber.shade400),
+                    Icon(Icons.warning_amber_rounded, size: 18, color: Color(0xFFB45309)),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
@@ -5709,7 +5709,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
-                          color: Colors.amber.shade300,
+                          color: Color(0xFFB45309),
                         ),
                       ),
                     ),
@@ -5821,12 +5821,12 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.warning_amber_rounded, size: 14, color: Colors.amber.shade300),
+                    Icon(Icons.warning_amber_rounded, size: 14, color: Color(0xFFB45309)),
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
                         '0 matching epochs in recording',
-                        style: TextStyle(fontSize: 10, color: Colors.amber.shade200, fontWeight: FontWeight.bold),
+                        style: TextStyle(fontSize: 10, color: Color(0xFFB45309), fontWeight: FontWeight.bold),
                       ),
                     ),
                     if (_conditions.length > 1)
@@ -5842,7 +5842,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                           padding: EdgeInsets.symmetric(horizontal: 4),
                           child: Text(
                             'Skip condition',
-                            style: TextStyle(fontSize: 10, color: Colors.amber, decoration: TextDecoration.underline),
+                            style: TextStyle(fontSize: 10, color: Color(0xFFB45309), decoration: TextDecoration.underline),
                           ),
                         ),
                       ),
@@ -5914,7 +5914,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                       : '$count trials · edit groups',
                   style: TextStyle(
                     fontSize: 11,
-                    color: isEmpty ? Colors.amber.shade300 : null,
+                    color: isEmpty ? const Color(0xFFB45309) : null,
                   ),
                 ),
                 children: [
@@ -5925,7 +5925,7 @@ class _ErpWorkbenchViewState extends State<ErpWorkbenchView>
                         padding: const EdgeInsets.only(bottom: 4),
                         child: Text(
                           'Available epoch groups in recording:',
-                          style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
+                          style: TextStyle(fontSize: 10, color: Color(0xFF475569)),
                         ),
                       ),
                     ),

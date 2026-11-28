@@ -79,6 +79,7 @@ List<StatsPlotBracket> statsPlotBrackets({
   required Map<String, List<String>> levels,
   String? row,
   String? column,
+  String? bracketFactorFilter,
 }) {
   final matched = <({double pAdj, StatsPlotBracket bracket})>[];
   final xs = levels[config.xFactor] ?? ['All'],
@@ -87,6 +88,11 @@ List<StatsPlotBracket> statsPlotBrackets({
     final qNum = p['p_adj'] as num?;
     if (qNum == null || qNum >= .05) continue;
     final f = '${p['factor']}';
+    if (bracketFactorFilter != null &&
+        bracketFactorFilter.isNotEmpty &&
+        f != bracketFactorFilter) {
+      continue;
+    }
     if (f != config.xFactor && f != config.seriesFactor) continue;
     final stratum = Map<String, dynamic>.from(p['stratum'] as Map? ?? {});
     if (config.facetColFactor != null &&
@@ -152,6 +158,9 @@ class ConfigurableStatsPlotWidget extends StatefulWidget {
     this.isDummyPreview = false,
     this.height = 360,
     this.posthocs = const [],
+    this.initialBracketFactor,
+    this.contrastSummary,
+    this.onBracketFactorChanged,
   });
 
   final StatsPlotLayoutConfig config;
@@ -162,6 +171,9 @@ class ConfigurableStatsPlotWidget extends StatefulWidget {
   final bool isDummyPreview;
   final double height;
   final List<Map<String, dynamic>> posthocs;
+  final String? initialBracketFactor;
+  final String? contrastSummary;
+  final ValueChanged<String?>? onBracketFactorChanged;
 
   @override
   State<ConfigurableStatsPlotWidget> createState() =>
@@ -171,17 +183,43 @@ class ConfigurableStatsPlotWidget extends StatefulWidget {
 class _ConfigurableStatsPlotWidgetState
     extends State<ConfigurableStatsPlotWidget> {
   _BracketMode _bracketMode = _BracketMode.top4;
+  String? _bracketFactorFilter;
 
   static const _palette = [
-    Color(0xFF38BDF8),
-    Color(0xFFF472B6),
-    Color(0xFF34D399),
-    Color(0xFFFBBF24),
-    Color(0xFFA78BFA),
-    Color(0xFFFB7185),
-    Color(0xFF60A5FA),
-    Color(0xFF2DD4BF),
+    Color(0xFF0072B2), // Okabe-Ito Blue
+    Color(0xFFD55E00), // Vermilion
+    Color(0xFF009E73), // Bluish Green
+    Color(0xFFCC79A7), // Reddish Purple
+    Color(0xFFB45309), // Dark Amber
+    Color(0xFF6D28D9), // Deep Violet
+    Color(0xFF0284C7), // Strong Cyan
+    Color(0xFF334155), // Dark Slate
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _bracketFactorFilter = _validFilter(widget.initialBracketFactor);
+  }
+
+  @override
+  void didUpdateWidget(covariant ConfigurableStatsPlotWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialBracketFactor != widget.initialBracketFactor) {
+      _bracketFactorFilter = _validFilter(widget.initialBracketFactor);
+    } else {
+      _bracketFactorFilter = _validFilter(_bracketFactorFilter);
+    }
+  }
+
+  String? _validFilter(String? candidate) {
+    if (candidate == null || candidate.isEmpty) return null;
+    if (candidate == widget.config.xFactor ||
+        candidate == widget.config.seriesFactor) {
+      return candidate;
+    }
+    return null;
+  }
 
   int get _maxBracketsPerPanel => switch (_bracketMode) {
     _BracketMode.off => 0,
@@ -307,23 +345,40 @@ class _ConfigurableStatsPlotWidgetState
 
   List<Widget> _annotations() {
     if (widget.isDummyPreview) return [];
-    final significant = widget.posthocs
+    final allSignificant = widget.posthocs
         .where((p) => (p['p_adj'] as num? ?? 1) < .05)
         .toList();
+    final activeFilter = _validFilter(_bracketFactorFilter);
+    final significant = activeFilter == null
+        ? allSignificant
+        : allSignificant.where((p) => '${p['factor']}' == activeFilter).toList();
+    final filterDesc = activeFilter == null
+        ? 'All plotted factors'
+        : '${widget.config.factorLabel(activeFilter)} contrasts';
     final subtitleText = switch (_bracketMode) {
       _BracketMode.off =>
         'Significance brackets hidden on plot. Expand for all adjusted comparisons.',
       _BracketMode.top4 =>
-        'Markers show up to 4 most significant contrasts per panel. Expand for all adjusted comparisons.',
+        'Markers show up to 4 most significant contrasts per panel ($filterDesc). Expand for all adjusted comparisons.',
       _BracketMode.all =>
-        'Markers show up to 8 matching cell contrasts per panel. Expand for all adjusted comparisons.',
+        'Markers show up to 8 matching cell contrasts per panel ($filterDesc). Expand for all adjusted comparisons.',
     };
     return [
       ExpansionTile(
         title: Text(
-          'Corrected contrast details · ${significant.length} significant',
+          activeFilter == null
+              ? 'Corrected contrast details · ${significant.length} significant'
+              : 'Corrected contrast details · ${significant.length} ${widget.config.factorLabel(activeFilter)} (${allSignificant.length} total significant)',
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF1E293B),
+          ),
         ),
-        subtitle: Text(subtitleText),
+        subtitle: Text(
+          subtitleText,
+          style: const TextStyle(fontSize: 11.5, color: Color(0xFF475569)),
+        ),
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -331,14 +386,14 @@ class _ConfigurableStatsPlotWidgetState
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Post-hoc comparisons: adjusted p < .05 (${significant.length}). Simple effects apply only to the named cohort/session cells; marginal contrasts collapse other factors.',
-                  style: const TextStyle(fontSize: 11),
+                  'Post-hoc comparisons: adjusted p < .05 (${significant.length} shown of ${widget.posthocs.length} tested). Simple effects apply only to the named cohort/session cells; marginal contrasts collapse other factors.',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF334155)),
                 ),
                 const SizedBox(height: 4),
                 if (significant.isEmpty)
                   const Text(
-                    'No significant adjusted pairwise contrasts.',
-                    style: TextStyle(fontSize: 11),
+                    'No significant adjusted pairwise contrasts for this filter.',
+                    style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
                   ),
                 for (final p in significant)
                   Text(() {
@@ -359,7 +414,7 @@ class _ConfigurableStatsPlotWidgetState
                         ? '**'
                         : '*';
                     return '$mark ${widget.config.factorLabel(factor)}: ${widget.config.levelLabel(factor, "${p['group_a']}")} ↔ ${widget.config.levelLabel(factor, "${p['group_b']}")} · ${context.isEmpty ? 'marginal' : context} · adjusted p=${q.toStringAsPrecision(3)}';
-                  }(), style: const TextStyle(fontSize: 11, color: const Color(0xFF0F766E))),
+                  }(), style: const TextStyle(fontSize: 11, color: Color(0xFF0F766E))),
               ],
             ),
           ),
@@ -452,7 +507,7 @@ class _ConfigurableStatsPlotWidgetState
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
-                      color: const Color(0xFFD97706),
+                      color: Color(0xFFB45309),
                     ),
                   ),
                 ),
@@ -462,11 +517,60 @@ class _ConfigurableStatsPlotWidgetState
                   style: const TextStyle(
                     fontSize: 11.5,
                     fontWeight: FontWeight.w600,
+                    color: Color(0xFF1E293B),
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
               if (!widget.isDummyPreview && widget.posthocs.isNotEmpty) ...[
+                if (widget.config.xFactor != null &&
+                    widget.config.seriesFactor != null &&
+                    widget.config.xFactor != widget.config.seriesFactor) ...[
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Compare:',
+                    style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
+                  ),
+                  const SizedBox(width: 4),
+                  SegmentedButton<String>(
+                    showSelectedIcon: false,
+                    style: SegmentedButton.styleFrom(
+                      visualDensity: const VisualDensity(
+                        horizontal: -3,
+                        vertical: -3,
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 0,
+                      ),
+                      textStyle: const TextStyle(fontSize: 10.5),
+                      foregroundColor: const Color(0xFF475569),
+                      selectedForegroundColor: Colors.white,
+                      selectedBackgroundColor: const Color(0xFF0F766E),
+                    ),
+                    segments: [
+                      const ButtonSegment(value: '', label: Text('Both')),
+                      ButtonSegment(
+                        value: widget.config.seriesFactor!,
+                        label: Text(
+                          widget.config.factorLabel(widget.config.seriesFactor),
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: widget.config.xFactor!,
+                        label: Text(
+                          widget.config.factorLabel(widget.config.xFactor),
+                        ),
+                      ),
+                    ],
+                    selected: {_validFilter(_bracketFactorFilter) ?? ''},
+                    onSelectionChanged: (s) {
+                      final next = s.first.isEmpty ? null : s.first;
+                      setState(() => _bracketFactorFilter = next);
+                      widget.onBracketFactorChanged?.call(next);
+                    },
+                  ),
+                ],
                 const SizedBox(width: 8),
                 const Text(
                   'Brackets:',
@@ -504,6 +608,47 @@ class _ConfigurableStatsPlotWidgetState
               ],
             ],
           ),
+          if (!widget.isDummyPreview && widget.posthocs.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Builder(
+              builder: (context) {
+                final activeFilter = _validFilter(_bracketFactorFilter);
+                final sigAll = widget.posthocs
+                    .where((p) => (p['p_adj'] as num? ?? 1) < .05)
+                    .length;
+                final sigFiltered = activeFilter == null
+                    ? sigAll
+                    : widget.posthocs
+                          .where(
+                            (p) =>
+                                (p['p_adj'] as num? ?? 1) < .05 &&
+                                '${p['factor']}' == activeFilter,
+                          )
+                          .length;
+                final filterText = activeFilter == null
+                    ? 'All plotted factors'
+                    : '${widget.config.factorLabel(activeFilter)} comparisons';
+                return Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEFF6FF),
+                    borderRadius: BorderRadius.circular(5),
+                    border: Border.all(color: const Color(0xFFBFDBFE)),
+                  ),
+                  child: Text(
+                    'Active brackets: $filterText ($sigFiltered sig. of ${widget.posthocs.length} tested)${widget.contrastSummary != null ? "  ·  ${widget.contrastSummary}" : ""}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF1E3A8A),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
           const SizedBox(height: 6),
           // Legend for Series / Hue
           if (widget.config.seriesFactor != null)
@@ -536,7 +681,10 @@ class _ConfigurableStatsPlotWidgetState
                           widget.config.seriesFactor,
                           seriesLevels[s],
                         ),
-                        style: const TextStyle(fontSize: 11),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF1E293B),
+                        ),
                       ),
                     ],
                   ),
@@ -558,6 +706,7 @@ class _ConfigurableStatsPlotWidgetState
                     column: widget.config.facetColFactor == null
                         ? null
                         : colLevels[c],
+                    bracketFactorFilter: _validFilter(_bracketFactorFilter),
                   ).take(_maxBracketsPerPanel).toList(),
               ];
               final maxRowBrackets = colBrackets.fold<int>(
@@ -577,10 +726,10 @@ class _ConfigurableStatsPlotWidgetState
                       if (widget.config.facetColFactor != null)
                         Text(
                           '${widget.config.factorLabel(widget.config.facetColFactor)}: ${widget.config.levelLabel(widget.config.facetColFactor, colLevels[c])}',
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w600,
-                            color: const Color(0xFF3B6EA5),
+                            color: Color(0xFF3B6EA5),
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -762,7 +911,7 @@ class _FacetPlotPainter extends CustomPainter {
       }
       final y = topPad - 14.0 - (brackets.length - 1 - i) * 20.0;
       final bracketColor = isCrossSeries
-          ? const Color(0xFFD97706)
+          ? const Color(0xFFB45309)
           : palette[b.seriesA % palette.length];
       final paint = Paint()
         ..color = bracketColor.withValues(alpha: 0.9)

@@ -1553,7 +1553,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         const SizedBox(height: 8),
         const Text(
           'Batch inputs · shared template and per-recording results',
-          style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+          style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
         ),
         const SizedBox(height: 10),
         Row(
@@ -1586,7 +1586,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         Text(
           '${_batchPaths.length} files. One shared group template will be learned and back-fitted to every recording.',
           style: const TextStyle(
-            color: Color(0xFF94A3B8),
+            color: Color(0xFF475569),
             fontSize: 11,
           ),
         ),
@@ -1611,7 +1611,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         const SizedBox(height: 9),
         const Text(
           'Number of states',
-          style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+          style: TextStyle(color: Color(0xFF475569), fontSize: 11),
         ),
         const SizedBox(height: 6),
         Wrap(
@@ -1714,7 +1714,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         const Text(
           'Parity defaults: average reference, dataset normalization, 10 ms peak distance, 1.5 SD GFP threshold, modified k-means ×10, polarity ignored, CV models 3–8.',
           style: TextStyle(
-            color: Color(0xFF94A3B8),
+            color: Color(0xFF475569),
             fontSize: 10.5,
             height: 1.4,
           ),
@@ -1735,7 +1735,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
           const SizedBox(height: 8),
           Text(
             _message,
-            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+            style: const TextStyle(color: Color(0xFF475569), fontSize: 11),
           ),
         ],
       ],
@@ -1773,7 +1773,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         if (_result == null)
           const Text(
             'Run Stage 3 Microstate Analysis to inspect canonical maps, per-recording state dynamics, transition graphs, and CSV exports.',
-            style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+            style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
           )
         else ...[
           Text(
@@ -1814,7 +1814,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
               const SizedBox(height: 4),
               const Text(
                 'Canonical maps, temporal dynamics, and sequence complexity',
-                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                style: TextStyle(color: Color(0xFF475569), fontSize: 11),
               ),
               const SizedBox(height: 14),
               _workflowProgress(),
@@ -1826,7 +1826,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                 _batch
                     ? 'Batch inputs · shared template and per-recording results'
                     : 'Active recording · use Batch Workspace → Microstates for multiple files',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+                style: const TextStyle(fontSize: 11, color: Color(0xFF475569)),
               ),
               const SizedBox(height: 12),
               if (!_batch)
@@ -1901,7 +1901,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                 Text(
                   '${_batchPaths.length} files. One shared group template will be learned and back-fitted to every recording.',
                   style: const TextStyle(
-                    color: Color(0xFF94A3B8),
+                    color: Color(0xFF475569),
                     fontSize: 11,
                   ),
                 ),
@@ -1927,7 +1927,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
               const SizedBox(height: 9),
               const Text(
                 'Number of states',
-                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                style: TextStyle(color: Color(0xFF475569), fontSize: 11),
               ),
               const SizedBox(height: 6),
               Wrap(
@@ -1959,7 +1959,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                   const Text(
                     'Parity defaults: average reference, dataset normalization, 10 ms peak distance, 1.5 SD GFP threshold, modified k-means ×10, polarity ignored, CV models 3–8.',
                     style: TextStyle(
-                      color: Color(0xFF94A3B8),
+                      color: Color(0xFF475569),
                       fontSize: 10.5,
                       height: 1.4,
                     ),
@@ -2053,7 +2053,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                 Text(
                   _message,
                   style: const TextStyle(
-                    color: Color(0xFF94A3B8),
+                    color: Color(0xFF475569),
                     fontSize: 11,
                   ),
                 ),
@@ -2113,7 +2113,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                       const Text(
                         'Results will organize canonical headmaps, fit quality, state dynamics, transition probabilities, and complexity metrics in one workspace.',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Color(0xFF94A3B8), height: 1.5),
+                        style: TextStyle(color: Color(0xFF475569), height: 1.5),
                       ),
                     ],
                   ),
@@ -2180,7 +2180,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
               'U = unmatched: this state did not reach |r| > 0.5 with the remaining template maps.',
           ].join(' '),
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+          style: const TextStyle(color: Color(0xFF475569), fontSize: 11),
         ),
         const SizedBox(height: 14),
         Text(
@@ -2192,7 +2192,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         ),
         Text(
           'GEV ${(recording.gevTotal * 100).toStringAsFixed(2)}%  ·  normalized LZ ${_n(recording.sequenceMetrics['normalized_lz'])}  ·  MDV ${_n(recording.sequenceMetrics['duration_variance_samples2'])}  ·  entropy production ${_n(recording.sequenceMetrics['entropy_production'])}',
-          style: const TextStyle(color: Color(0xFF94A3B8)),
+          style: const TextStyle(color: Color(0xFF475569)),
         ),
         const SizedBox(height: 10),
         _timelineExplorer(result, recording),
@@ -2250,7 +2250,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         const SizedBox(height: 12),
         Text(
           'Exports: MicrostateGroupStates.csv, MicrostateGroupSyntax.csv, MicrostateGroupTransitions.csv, GroupTables_README.txt, MicrostateDictionaryDiscovery.csv, MicrostateSyntax.csv, per-recording samples.csv (labels/GFP/fit), microstates.json, MicrostateAnalysisResults.csv, MicrostateSequenceMetrics.csv, MicrostateTransitions.csv, template topographies SVG, and per-recording sequence SVG in ${result.outputDirectory}',
-          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+          style: const TextStyle(color: Color(0xFF475569), fontSize: 11),
         ),
       ],
     );
@@ -2517,7 +2517,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
               ),
             ],
           ),
-        Text('Sample labels, GFP and fit: ${recording.sampleCsv}', style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
+        Text('Sample labels, GFP and fit: ${recording.sampleCsv}', style: const TextStyle(fontSize: 11, color: Color(0xFF475569))),
       ],
     );
   }
@@ -2656,14 +2656,14 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                 Text(
                   '${_time(start)} – ${_time(start + window)}',
                   style: const TextStyle(
-                    color: Color(0xFF94A3B8),
+                    color: Color(0xFF475569),
                     fontSize: 11,
                   ),
                 ),
                 const Spacer(),
                 const Text(
                   'Window',
-                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                  style: TextStyle(color: Color(0xFF475569), fontSize: 11),
                 ),
                 const SizedBox(width: 6),
                 DropdownButton<double>(
@@ -2694,7 +2694,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
             ),
             const Text(
               'Similarity traces (tap a state to show or hide it)',
-              style: TextStyle(color: Color(0xFF94A3B8), fontSize: 10),
+              style: TextStyle(color: Color(0xFF475569), fontSize: 10),
             ),
             Wrap(
               spacing: 12,
@@ -2764,7 +2764,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                   const Text(
                     'EEG waveform',
                     style: TextStyle(
-                      color: Color(0xFF94A3B8),
+                      color: Color(0xFF475569),
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                     ),
@@ -2808,7 +2808,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
             const Text(
               'Similarity to scalp patterns',
               style: TextStyle(
-                color: Color(0xFF94A3B8),
+                color: Color(0xFF475569),
                 fontSize: 11,
                 fontWeight: FontWeight.bold,
               ),
@@ -2824,7 +2824,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
                   ? const Center(
                       child: Text(
                         'Re-run this analysis to generate similarity traces.',
-                        style: TextStyle(color: Color(0xFF94A3B8)),
+                        style: TextStyle(color: Color(0xFF475569)),
                       ),
                     )
                   : CustomPaint(
@@ -2884,7 +2884,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
         const SizedBox(height: 4),
         Text(
           label,
-          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 9),
+          style: const TextStyle(color: Color(0xFF475569), fontSize: 9),
         ),
       ],
     ),
@@ -2933,7 +2933,7 @@ class _MicrostateAnalysisViewState extends State<MicrostateAnalysisView> {
     ),
     child: Text(
       text,
-      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+      style: const TextStyle(color: Color(0xFF475569), fontSize: 11),
     ),
   );
   Widget _field(TextEditingController c, String label) => TextField(
@@ -3201,7 +3201,7 @@ void _paintTimelineAxis(
   bool darkText = false,
 }) {
   final rect = _timelinePlotRect(size);
-  final color = darkText ? const Color(0xFF475569) : const Color(0xFF94A3B8);
+  final color = darkText ? const Color(0xFF475569) : const Color(0xFF475569);
   final grid = Paint()
     ..color = color.withValues(alpha: .18)
     ..strokeWidth = .5;
@@ -3369,7 +3369,7 @@ class _TopographyPainter extends CustomPainter {
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = .6
-          ..color = const Color(0xFF94A3B8),
+          ..color = const Color(0xFF475569),
       );
       for (final (text, x, anchorRight) in [
         ('−max', barLeft - 3, true),
@@ -3377,7 +3377,7 @@ class _TopographyPainter extends CustomPainter {
         ('+max', barLeft + barWidth + 3, false),
       ]) {
         final lp = TextPainter(
-          text: TextSpan(text: text, style: const TextStyle(fontSize: 9, color: Color(0xFF94A3B8))),
+          text: TextSpan(text: text, style: const TextStyle(fontSize: 9, color: Color(0xFF475569))),
           textDirection: TextDirection.ltr,
         )..layout();
         final dx = anchorRight == true ? x - lp.width : (anchorRight == null ? x - lp.width / 2 : x);
@@ -3427,7 +3427,7 @@ class _Swatch extends StatelessWidget {
     children: [
       Container(width: 10, height: 10, color: color),
       const SizedBox(width: 4),
-      Text(label, style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
+      Text(label, style: const TextStyle(fontSize: 11, color: Color(0xFF475569))),
     ],
   );
 }
@@ -3456,7 +3456,7 @@ class _SyntaxBarsPainter extends CustomPainter {
       final y = top + plotH * (1 - g / 4);
       c.drawLine(Offset(left, y), Offset(left + plotW, y), axis);
       final t = TextPainter(
-        text: TextSpan(text: '${(maxV * g / 4 * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 9, color: Color(0xFF94A3B8))),
+        text: TextSpan(text: '${(maxV * g / 4 * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 9, color: Color(0xFF475569))),
         textDirection: TextDirection.ltr,
       )..layout();
       t.paint(c, Offset(left - t.width - 4, y - t.height / 2));

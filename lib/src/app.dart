@@ -8512,7 +8512,7 @@ class _FeatureHomeState extends State<FeatureHome>
                           const Icon(
                             Icons.info_outline,
                             size: 16,
-                            color: Colors.amber,
+                            color: Color(0xFFB45309),
                           ),
                           const SizedBox(width: 8),
                           Expanded(

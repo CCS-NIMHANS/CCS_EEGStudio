@@ -316,4 +316,117 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+  test(
+    'statsPlotBrackets filters by bracketFactorFilter to isolate between-group contrasts',
+    () {
+      const multiConfig = StatsPlotLayoutConfig(
+        xFactor: 'Condition',
+        seriesFactor: 'group',
+        facetColFactor: 'Session',
+      );
+      final multiLevels = {
+        'Condition': ['Distr', 'Freq', 'Rare'],
+        'group': ['ADV', 'CON'],
+        'Session': ['03'],
+      };
+      final mixedContrasts = <Map<String, dynamic>>[
+        {
+          'factor': 'group',
+          'group_a': 'ADV',
+          'group_b': 'CON',
+          'p_adj': 0.03,
+          'stratum': {'Condition': 'Distr', 'Session': '03'},
+        },
+        {
+          'factor': 'Condition',
+          'group_a': 'Distr',
+          'group_b': 'Freq',
+          'p_adj': 0.0001,
+          'stratum': {'group': 'ADV', 'Session': '03'},
+        },
+      ];
+      final onlyGroup = statsPlotBrackets(
+        config: multiConfig,
+        contrasts: mixedContrasts,
+        factors: multiLevels.keys.toList(),
+        levels: multiLevels,
+        column: '03',
+        bracketFactorFilter: 'group',
+      );
+      expect(onlyGroup, hasLength(1));
+      expect(onlyGroup.first.label, 'ADV–CON *');
+
+      final onlyCond = statsPlotBrackets(
+        config: multiConfig,
+        contrasts: mixedContrasts,
+        factors: multiLevels.keys.toList(),
+        levels: multiLevels,
+        column: '03',
+        bracketFactorFilter: 'Condition',
+      );
+      expect(onlyCond, hasLength(1));
+      expect(onlyCond.first.label, 'ADV ***');
+    },
+  );
+  test(
+    'ErpGroupStatsEngine.applyComparisonSelection filters factors, scope, and specific pairs with exact p-value adjustment',
+    () {
+      final allContrasts = <Map<String, dynamic>>[
+        {
+          'factor': 'group',
+          'group_a': 'CON',
+          'group_b': 'ADV',
+          'stratum': {'Session': '03'},
+          'p_raw': 0.01,
+        },
+        {
+          'factor': 'group',
+          'group_a': 'CON',
+          'group_b': 'NOV',
+          'stratum': {'Session': '03'},
+          'p_raw': 0.20,
+        },
+        {
+          'factor': 'group',
+          'group_a': 'NOV',
+          'group_b': 'ADV',
+          'stratum': <String, dynamic>{},
+          'p_raw': 0.40,
+        },
+        {
+          'factor': 'Session',
+          'group_a': '03',
+          'group_b': '05',
+          'stratum': {'group': 'CON'},
+          'p_raw': 0.001,
+        },
+      ];
+
+      // 1. Multi-factor (group + Session) + simple effects only + CON vs ADV pair only
+      final subset = ErpGroupStatsEngine.applyComparisonSelection(
+        allPosthocs: allContrasts,
+        selectedFactors: {'group', 'Session'},
+        scope: 'simple',
+        selectedPairsByFactor: {
+          'group': {ErpGroupStatsEngine.canonicalPairKey('ADV', 'CON')},
+        },
+        posthocMethod: 'bonferroni',
+      );
+      expect(subset, hasLength(2));
+      expect(subset[0]['p_adj'], closeTo(0.02, 1e-9));
+      expect(subset[0]['significant'], isTrue);
+      expect(subset[1]['p_adj'], closeTo(0.002, 1e-9));
+
+      // 2. Marginal only across group
+      final marginalOnly = ErpGroupStatsEngine.applyComparisonSelection(
+        allPosthocs: allContrasts,
+        selectedFactors: {'group'},
+        scope: 'marginal',
+        posthocMethod: 'fdr',
+      );
+      expect(marginalOnly, hasLength(1));
+      expect(marginalOnly.first['group_a'], 'NOV');
+      expect(marginalOnly.first['p_adj'], closeTo(0.40, 1e-9));
+    },
+  );
 }

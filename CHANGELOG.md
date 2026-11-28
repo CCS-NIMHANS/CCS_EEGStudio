@@ -4,6 +4,21 @@ All notable CCS EEG Studio changes are documented here. Version headings are
 also the source for GitHub Release notes, so a tagged release is rejected when
 its matching section is missing.
 
+## [1.2.67]
+
+### Light Theme Readability Fixes, Flexible Post-Hoc Comparison Picker & Redesigned Grouped ERP Publication Studio
+
+- **App-Wide Light Theme Contrast & Readability**
+  - Replaced the mismatched dark-theme wrapper inside `GroupStatisticsWorkbench` with `buildCcsLightTheme()` and added high-contrast light-theme defaults for `ChipThemeData`, `SegmentedButtonThemeData`, `ExpansionTileThemeData`, and `DataTableThemeData` in `lib/src/theme.dart`.
+  - Audited and updated low-contrast slate/amber text and palette colors across `group_statistics.dart`, `group_statistics_plots.dart`, `microstate_analysis.dart`, `erp_workbench_view.dart`, `factor_grouping_designer.dart`, `connectivity_view.dart`, `source_review_workspace.dart`, and `app.dart`.
+- **Flexible Post-Hoc Comparison Picker & In-Place Results Controls**
+  - Replaced the single-factor `X only` radio chips with a multi-factor comparison picker (`Comparisons:` factor chips + `Simple` / `Marginal` / `Both` scope + `Choose pairs…` dialog with 1-click `vs <level>` reference buttons) backed by instant in-place BH-FDR / Bonferroni re-adjustment (`ErpGroupStatsEngine.applyComparisonSelection`).
+  - Added a `Compare:` bracket filter and active comparison family banner on `ConfigurableStatsPlotWidget`, filter controls and a `Within (Stratum)` column in the Pairwise Comparisons table, automatic plot-role duplicate swapping, a 1-click `Compare groups` preset, inline `Raw ERPs` vs `ERP Differences` switching, and 1-click `Export Stats Figure (PNG/SVG/PDF)…` directly on the Results page.
+- **Redesigned Grouped ERP Waveforms, Topomaps & Studio UI**
+  - Upgraded `assets/erp_group_figures.py` to render smart 2D `facet × condition` waveform grids with a single shared top legend, real 2D `cohort × condition` scalp topography grids with a single shared colorbar (removing squished inset axes), and a new `stats_plot` publication figure renderer.
+  - Aligned topographies across recordings using the common intersection of normalized 10–20 scalp electrode names so minor label variants (`F9` vs `FT9`) no longer drop participants.
+  - Added participant-level ERP difference waveforms and difference topographies (`Rare − Freq`, `Distr − Freq`) and reorganized `ErpGroupFigureStudio` into clean, auto-sized light-themed cards.
+
 ## [1.2.66]
 
 ### Universal Intel Mac (`x86_64`) CI Engine Fix, Physiological Event Extraction (HEP / Cognitive Strain / EOG / EMG / ECG) & Preprocessing Outcome Logs

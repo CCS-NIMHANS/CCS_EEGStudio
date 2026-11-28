@@ -1540,6 +1540,53 @@ class ErpGroupStatsEngine {
     };
   }
 
+  /// Canonical order-insensitive key for a pair of factor levels.
+  static String canonicalPairKey(String a, String b) =>
+      a.compareTo(b) <= 0 ? '$a\u0000$b' : '$b\u0000$a';
+
+  /// Filters [allPosthocs] by [selectedFactors], [scope] ('both', 'simple',
+  /// 'marginal'), and optional [selectedPairsByFactor], then recomputes adjusted
+  /// p-values ('fdr' or 'bonferroni') over the selected comparison family.
+  static List<Map<String, dynamic>> applyComparisonSelection({
+    required List<Map<String, dynamic>> allPosthocs,
+    Set<String> selectedFactors = const {},
+    String scope = 'both',
+    Map<String, Set<String>> selectedPairsByFactor = const {},
+    String posthocMethod = 'fdr',
+  }) {
+    final filtered = <Map<String, dynamic>>[];
+    for (final raw in allPosthocs) {
+      final factor = '${raw['factor'] ?? ''}';
+      if (selectedFactors.isNotEmpty && !selectedFactors.contains(factor)) {
+        continue;
+      }
+      final stratum = raw['stratum'] as Map? ?? const {};
+      if (scope == 'simple' && stratum.isEmpty) continue;
+      if (scope == 'marginal' && stratum.isNotEmpty) continue;
+      final pairSet = selectedPairsByFactor[factor];
+      if (pairSet != null && pairSet.isNotEmpty) {
+        final key = canonicalPairKey(
+          '${raw['group_a'] ?? ''}',
+          '${raw['group_b'] ?? ''}',
+        );
+        if (!pairSet.contains(key)) continue;
+      }
+      filtered.add(Map<String, dynamic>.from(raw));
+    }
+    if (filtered.isEmpty) return filtered;
+    final rawPs = filtered
+        .map((p) => (p['p_raw'] as num?)?.toDouble() ?? 1.0)
+        .toList();
+    final adjPs = posthocMethod == 'bonferroni'
+        ? rawPs.map((p) => (p * rawPs.length).clamp(0.0, 1.0)).toList()
+        : StatMath.adjustFDR(rawPs);
+    for (var i = 0; i < filtered.length; i++) {
+      filtered[i]['p_adj'] = adjPs[i];
+      filtered[i]['significant'] = adjPs[i] < 0.05;
+    }
+    return filtered;
+  }
+
   static double _pct(List<double> s, double p) {
     if (s.isEmpty) return 0.0;
     if (s.length == 1) return s.first;

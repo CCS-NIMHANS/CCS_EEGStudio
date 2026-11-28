@@ -98,6 +98,41 @@ ThemeData buildCcsLightTheme() {
       selectedColor: CcsTheme.accentBlue.withValues(alpha: 0.14),
       side: const BorderSide(color: CcsTheme.border),
       labelStyle: const TextStyle(color: CcsTheme.text, fontSize: 12),
+      secondaryLabelStyle: const TextStyle(color: CcsTheme.text, fontSize: 12),
+    ),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: ButtonStyle(
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? Colors.white
+              : CcsTheme.text,
+        ),
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? CcsTheme.accentBlue
+              : CcsTheme.surface,
+        ),
+        side: WidgetStateProperty.all(
+          const BorderSide(color: CcsTheme.border),
+        ),
+      ),
+    ),
+    expansionTileTheme: const ExpansionTileThemeData(
+      textColor: CcsTheme.text,
+      collapsedTextColor: CcsTheme.text,
+      iconColor: CcsTheme.textSecondary,
+      collapsedIconColor: CcsTheme.textSecondary,
+    ),
+    dataTableTheme: const DataTableThemeData(
+      headingTextStyle: TextStyle(
+        color: CcsTheme.text,
+        fontWeight: FontWeight.w600,
+        fontSize: 12,
+      ),
+      dataTextStyle: TextStyle(
+        color: CcsTheme.text,
+        fontSize: 12,
+      ),
     ),
     popupMenuTheme: const PopupMenuThemeData(
       color: CcsTheme.surface,

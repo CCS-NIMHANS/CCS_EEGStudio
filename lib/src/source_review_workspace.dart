@@ -341,7 +341,7 @@ class _SourceReviewWorkspaceState extends State<SourceReviewWorkspace> {
                       : 'Scalp amplitudes in µV. The colour range stays fixed while navigating this recording/trial.',
                   style: const TextStyle(
                     fontSize: 10,
-                    color: Color(0xFF94A3B8),
+                    color: Color(0xFF475569),
                   ),
                 ),
                 if (sourceMode)
@@ -349,7 +349,7 @@ class _SourceReviewWorkspaceState extends State<SourceReviewWorkspace> {
                     padding: EdgeInsets.only(top: 6),
                     child: Text(
                       'fsaverage/aparc template. Orthogonal projected ROI boundaries; outline/trace = ROI identity, fill = amplitude. Not an individual MRI.',
-                      style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8)),
+                      style: TextStyle(fontSize: 10, color: Color(0xFF475569)),
                     ),
                   ),
               ],
